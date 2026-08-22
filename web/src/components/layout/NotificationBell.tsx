@@ -66,6 +66,20 @@ export function NotificationBell() {
             if (part.includes('event: order') && part.includes('data:')) {
               setLive((n) => n + 1)
               queryClient.invalidateQueries({ queryKey: ['notif-unread'] })
+              // Repaint any open order views on realtime status changes.
+              queryClient.invalidateQueries({ queryKey: ['orders'] })
+              try {
+                const dataLine = part.split('\n').find((l) => l.startsWith('data:'))
+                if (dataLine) {
+                  const ev = JSON.parse(dataLine.slice(5).trim()) as { order_id?: string }
+                  if (ev.order_id) {
+                    queryClient.invalidateQueries({ queryKey: ['order', ev.order_id] })
+                    queryClient.invalidateQueries({ queryKey: ['order-events', ev.order_id] })
+                  }
+                }
+              } catch {
+                // malformed event payload: ignore
+              }
             }
           }
           return pump()
@@ -111,7 +125,7 @@ export function NotificationBell() {
           <div className="absolute right-0 top-12 z-50 w-96 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
             <div className="p-4 border-b flex justify-between items-center">
               <h3 className="font-bold text-sm">Notifikasi</h3>
-              <Link to="/account" className="text-xs text-amber-600 hover:underline" onClick={() => setOpen(false)}>
+              <Link to="/notifications" className="text-xs text-amber-600 hover:underline" onClick={() => setOpen(false)}>
                 Semua
               </Link>
             </div>

@@ -688,11 +688,20 @@ func (r *OrderRepository) SetShippingMethodActive(ctx context.Context, methodID 
 }
 
 // ExpiredPendingOrders lists pending orders past their payment deadline.
+// Orders with a live hosted-checkout intent (e.g. an open Midtrans Snap page)
+// are skipped so buyers are not cancelled mid-payment.
 func (r *OrderRepository) ExpiredPendingOrders(ctx context.Context, deadline time.Time, limit int) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id FROM orders
-		WHERE status = 'pending' AND placed_at < $1
-		ORDER BY placed_at
+		SELECT o.id FROM orders o
+		WHERE o.status = 'pending' AND o.placed_at < $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM payment_intents pi
+			WHERE pi.order_id = o.id
+			  AND pi.gateway = 'midtrans'
+			  AND pi.status = 'initiated'
+			  AND pi.created_at > now() - interval '30 minutes'
+		  )
+		ORDER BY o.placed_at
 		LIMIT $2`, deadline, limit)
 	if err != nil {
 		return nil, err

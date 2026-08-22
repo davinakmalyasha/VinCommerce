@@ -46,6 +46,7 @@ func (h *Payments) Initiate(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"intent": intent, "payment_url": gw.RedirectURL, "gateway_ref": gw.Reference,
+		"snap_token": gw.Token, "gateway": intent.Gateway,
 	})
 }
 

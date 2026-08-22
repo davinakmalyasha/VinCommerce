@@ -24,10 +24,13 @@ func NewPaymentRepository(pool *db.Pool) *PaymentRepository {
 // CreateIntent inserts a payment intent (idempotent by key).
 func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.PaymentIntent) error {
 	tag, err := r.pool.Exec(ctx, `
-		INSERT INTO payment_intents (id, order_id, buyer_id, amount, currency, status, gateway, gateway_ref, method, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10)
+		INSERT INTO payment_intents (id, order_id, buyer_id, amount, currency, status, gateway,
+			gateway_ref, snap_token, gateway_txn_id, redirect_url, method, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
+			NULLIF($12, ''), $13)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
-		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway, in.GatewayRef, in.Method, in.IdempotencyKey)
+		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway,
+		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return domain.E(domain.KindConflict, "INTENT_EXISTS", "this order already has a payment intent")
@@ -40,39 +43,57 @@ func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.Payment
 	return nil
 }
 
+// intentColumns are the shared SELECT columns for intent lookups.
+const intentColumns = `
+	id, order_id, buyer_id, amount, currency, status, gateway,
+	COALESCE(gateway_ref,''), COALESCE(snap_token,''), COALESCE(gateway_txn_id,''), COALESCE(redirect_url,''),
+	COALESCE(method,''), idempotency_key,
+	escrow_released_at, captured_at, refunded_at, fee_amount, seller_amount, created_at, updated_at`
+
+func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
+	var in domain.PaymentIntent
+	err := row.Scan(&in.ID, &in.OrderID, &in.BuyerID, &in.Amount, &in.Currency, &in.Status, &in.Gateway,
+		&in.GatewayRef, &in.SnapToken, &in.GatewayTxnID, &in.RedirectURL,
+		&in.Method, &in.IdempotencyKey,
+		&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.FeeAmount, &in.SellerAmount,
+		&in.CreatedAt, &in.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &in, nil
+}
+
 // IntentByOrder fetches the intent for an order.
 func (r *PaymentRepository) IntentByOrder(ctx context.Context, orderID string) (*domain.PaymentIntent, error) {
-	var in domain.PaymentIntent
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, order_id, buyer_id, amount, currency, status, gateway,
-		       COALESCE(gateway_ref,''), COALESCE(method,''), idempotency_key,
-		       escrow_released_at, captured_at, refunded_at, fee_amount, seller_amount, created_at, updated_at
-		FROM payment_intents WHERE order_id = $1`, orderID).
-		Scan(&in.ID, &in.OrderID, &in.BuyerID, &in.Amount, &in.Currency, &in.Status, &in.Gateway,
-			&in.GatewayRef, &in.Method, &in.IdempotencyKey,
-			&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.FeeAmount, &in.SellerAmount,
-			&in.CreatedAt, &in.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	in, err := scanIntent(r.pool.QueryRow(ctx,
+		`SELECT `+intentColumns+` FROM payment_intents WHERE order_id = $1`, orderID))
+	if domain.Is(err, domain.KindNotFound, "") {
 		return nil, domain.E(domain.KindNotFound, "NO_INTENT", "no payment intent for order")
 	}
-	return &in, err
+	return in, err
 }
 
 // IntentByRef fetches an intent by gateway reference.
 func (r *PaymentRepository) IntentByRef(ctx context.Context, gateway, ref string) (*domain.PaymentIntent, error) {
-	var in domain.PaymentIntent
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, order_id, buyer_id, amount, currency, status, gateway,
-		       COALESCE(gateway_ref,''), COALESCE(method,''), idempotency_key,
-		       escrow_released_at, captured_at, refunded_at, created_at, updated_at
-		FROM payment_intents WHERE gateway = $1 AND gateway_ref = $2`, gateway, ref).
-		Scan(&in.ID, &in.OrderID, &in.BuyerID, &in.Amount, &in.Currency, &in.Status, &in.Gateway,
-			&in.GatewayRef, &in.Method, &in.IdempotencyKey,
-			&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.CreatedAt, &in.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	in, err := scanIntent(r.pool.QueryRow(ctx,
+		`SELECT `+intentColumns+` FROM payment_intents WHERE gateway = $1 AND gateway_ref = $2`, gateway, ref))
+	if domain.Is(err, domain.KindNotFound, "") {
 		return nil, domain.E(domain.KindNotFound, "NO_INTENT", "no payment intent for reference")
 	}
-	return &in, err
+	return in, err
+}
+
+// IntentByKey fetches an intent by its idempotency key.
+func (r *PaymentRepository) IntentByKey(ctx context.Context, key string) (*domain.PaymentIntent, error) {
+	in, err := scanIntent(r.pool.QueryRow(ctx,
+		`SELECT `+intentColumns+` FROM payment_intents WHERE idempotency_key = $1`, key))
+	if domain.Is(err, domain.KindNotFound, "") {
+		return nil, domain.E(domain.KindNotFound, "NO_INTENT", "no payment intent for key")
+	}
+	return in, err
 }
 
 // SetIntentStatus transitions the intent status.

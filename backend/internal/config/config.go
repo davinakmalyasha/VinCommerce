@@ -28,6 +28,10 @@ type Config struct {
 type PaymentConfig struct {
 	Gateway        string `env:"PAYMENT_GATEWAY" envDefault:"sandbox"`
 	SandboxBaseURL string `env:"PAYMENT_SANDBOX_BASE_URL" envDefault:"http://localhost:8080/api/v1"`
+
+	MidtransServerKey string `env:"MIDTRANS_SERVER_KEY" envDefault:""`
+	MidtransClientKey string `env:"MIDTRANS_CLIENT_KEY" envDefault:""`
+	MidtransEnv       string `env:"MIDTRANS_ENV" envDefault:"sandbox"` // sandbox | production
 }
 
 // OAuthConfig enables social login (Google).

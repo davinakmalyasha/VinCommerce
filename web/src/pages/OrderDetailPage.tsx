@@ -4,6 +4,7 @@ import { useParams, Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../lib/format'
 import { ReturnModal } from './ReturnModal'
+import { payWithSnap, midtransEnabled } from '../lib/midtrans'
 
 interface OrderEvent {
   id: number
@@ -102,6 +103,18 @@ export function OrderDetailPage() {
     },
   })
 
+  const snapPay = useMutation({
+    mutationFn: async () =>
+      payWithSnap(id!, {
+        onSuccess: () => setPayDone(true),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['order', id] })
+      queryClient.invalidateQueries({ queryKey: ['order-events', id] })
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+    },
+  })
+
   if (!data) return <div className="mx-auto max-w-4xl px-4 py-16 text-center text-gray-500">Memuat...</div>
 
   const addr = data.shipping_address
@@ -142,33 +155,44 @@ export function OrderDetailPage() {
       {data.status === 'pending' && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
           <p className="text-sm text-amber-800 mb-2">
-            Bayar di luar aplikasi (transfer bank / e-wallet pilihanmu), lalu isi bukti pembayaran di bawah.
-            Batas waktu 30 menit setelah pesanan dibuat.
+            Bayar via Midtrans (QRIS, e-wallet, VA, kartu) atau transfer di luar aplikasi lalu isi bukti
+            pembayaran. Batas waktu 30 menit setelah pesanan dibuat.
           </p>
           {payDone ? (
             <p className="text-sm text-green-700 font-medium">Pembayaran tercatat! Penjual akan segera memproses pesanan. ✅</p>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <input
-                value={payForm.reference}
-                onChange={(e) => setPayForm({ ...payForm, reference: e.target.value })}
-                placeholder="No. referensi / bukti transfer"
-                className="px-3 py-2 border rounded-lg text-sm outline-none"
-              />
-              <input
-                type="number"
-                value={payForm.amount}
-                onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
-                placeholder={`Jumlah (Rp ${Math.round(data.total_amount).toLocaleString('id-ID')})`}
-                className="px-3 py-2 border rounded-lg text-sm outline-none"
-              />
-              <input
-                type="date"
-                value={payForm.paid_at}
-                onChange={(e) => setPayForm({ ...payForm, paid_at: e.target.value })}
-                className="px-3 py-2 border rounded-lg text-sm outline-none"
-              />
-            </div>
+            <>
+              {midtransEnabled() && (
+                <button
+                  onClick={() => snapPay.mutate()}
+                  disabled={snapPay.isPending}
+                  className="mb-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {snapPay.isPending ? 'Membuka Midtrans...' : '⚡ Bayar Sekarang (Midtrans)'}
+                </button>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input
+                  value={payForm.reference}
+                  onChange={(e) => setPayForm({ ...payForm, reference: e.target.value })}
+                  placeholder="No. referensi / bukti transfer"
+                  className="px-3 py-2 border rounded-lg text-sm outline-none"
+                />
+                <input
+                  type="number"
+                  value={payForm.amount}
+                  onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
+                  placeholder={`Jumlah (Rp ${Math.round(data.total_amount).toLocaleString('id-ID')})`}
+                  className="px-3 py-2 border rounded-lg text-sm outline-none"
+                />
+                <input
+                  type="date"
+                  value={payForm.paid_at}
+                  onChange={(e) => setPayForm({ ...payForm, paid_at: e.target.value })}
+                  className="px-3 py-2 border rounded-lg text-sm outline-none"
+                />
+              </div>
+            </>
           )}
           {!payDone && (
             <div className="flex gap-2 mt-3">

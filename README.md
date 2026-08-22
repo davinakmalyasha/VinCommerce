@@ -42,7 +42,7 @@ web/                React app (port 5173)
 - **Identity**: register/login, JWT + rotating refresh tokens, Argon2id, TOTP 2FA (**with one-time backup codes**), RBAC (buyer/seller/admin/support), session management, email verification (**in-app banner + resend**) & password reset (Mailpit), Google OAuth (config-gated), audit log, Redis rate limiting. **Refresh token lives in an httpOnly cookie; the access token stays in memory with automatic silent refresh on 401.** Profile photo upload (avatar in header).
 - **Catalog**: category tree, brands, attribute facets, variants/SKU/stock, full-text search with `ts_vector` ranking, price/rating/attribute filters, reviews with moderation + aggregate triggers, related products
 - **Cart & Checkout**: guest + user carts with merge (**seller-grouped cart view**), coupons (percent/fixed, limits, per-user), weight-based shipping per seller, **multi-seller order splitting** (Shopee-style), inventory reservation with 30-min timeout auto-release, order state machine with event timeline, idempotency keys, **flash-sale pricing applied at checkout**, **save-address-to-book option**
-- **Payments**: **payment happens outside the app** — buyers pay via their own bank transfer / e-wallet and record the external reference (no. ref, amount, date); order moves pending→paid and the normal fulfillment flow continues. Escrow, wallets, payouts and the sandbox gateway remain in the backend for development only. HMAC-signed webhooks, idempotent processing, wallets + double-entry ledger, seller payouts, full/partial refunds
+- **Payments**: **Midtrans Snap checkout** (QRIS, GoPay/OVO/DANA, bank VA, cards — set `MIDTRANS_SERVER_KEY`/`MIDTRANS_CLIENT_KEY` in env, sandbox by default) with SHA512-verified webhooks and idempotent capture; buyers can also pay outside the app via their own bank transfer / e-wallet and record the external reference (no. ref, amount, date); order moves pending→paid and the normal fulfillment flow continues. Escrow, wallets, payouts and the sandbox gateway remain in the backend for development only. HMAC-signed sandbox webhooks, idempotent processing, wallets + double-entry ledger, seller payouts, full refunds
 - **Marketplace**: store onboarding + KYC verification, admin approval queue, seller dashboard KPIs, product activate/deactivate, return/refund claims (buyer → seller → admin)
 - **Engagement**: wishlists, flash sales, recommendations, **real-time SSE order updates** via Redis pub/sub, **persisted notification center** (bell + unread badge, **deep-linked**), **store following** (follow buttons, follower counts, followed-stores page + **new-product feed**, new-product alerts to followers), **back-in-stock alerts** (worker-driven, product-page button + account management)
 - **Support**: help center (admin-editable articles with FTS search + view counts), FAQ, contact form → **support tickets** (priority, status workflow, message threads with internal staff notes, agent queue), legal pages (ToS/privacy/refund/shipping)
@@ -85,7 +85,7 @@ Open http://localhost:5173
 | Admin | admin@vincommerce.com | AdminPass123! |
 
 Demo coupons: `WELCOME10` (10%, min Rp50.000) · `FLAT50K` (Rp50.000, min Rp200.000).
-Payment happens outside the app: checkout → order placed → pay via your own bank transfer/e-wallet → enter the payment reference (number, amount, date) → order becomes "paid" and the seller processes it. The sandbox gateway (dev-only) is still reachable via the API for development.
+Payments: enable **Midtrans Snap** by dropping your sandbox `MIDTRANS_SERVER_KEY` (backend `.env`) and `VITE_MIDTRANS_CLIENT_KEY` (web env) in — a "Bayar Sekarang (Midtrans)" button then opens the Snap popup (QRIS/e-wallet/VA/cards). Without keys, payment happens outside the app: checkout → order placed → pay via your own bank transfer/e-wallet → enter the payment reference (number, amount, date) → order becomes "paid" and the seller processes it. The sandbox gateway (dev-only) is still reachable via the API for development.
 
 ## API surface (v1, under `/api/v1`)
 
@@ -100,7 +100,7 @@ stream/orders (SSE)  stream/chat (SSE)  health/*  /metrics  /docs (Swagger UI + 
 /robots.txt  /sitemap.xml  /sw.js (PWA)
 ```
 
-Interactive API docs: **http://localhost:8080/docs** · AI: set `AI_API_KEY` in env for LLM mode (offline retrieval works without it) · Payment methods: bank_transfer, e_wallet, wallet (saldo), cod
+Interactive API docs: **http://localhost:8080/docs** · AI: set `AI_API_KEY` in env for LLM mode (offline retrieval works without it) · Payment methods: `midtrans_snap` (Midtrans popup — QRIS/e-wallet/VA/cards; enable by setting `MIDTRANS_SERVER_KEY` + `VITE_MIDTRANS_CLIENT_KEY`, see `.env.example`), bank_transfer, e_wallet, wallet (saldo), cod
 
 ## Tests & CI
 

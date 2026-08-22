@@ -21,7 +21,8 @@ type PaymentService struct {
 	payments      *repository.PaymentRepository
 	orders        *repository.OrderRepository
 	users         *repository.UserRepository
-	gateway       payments.Gateway
+	gateways      map[string]payments.Gateway // adapters by name ("sandbox", "midtrans", ...)
+	defaultGW     string                      // gateway used for generic bank_transfer/e_wallet methods
 	baseURL       string
 	broker        *stream.Broker
 	notifications *NotificationService
@@ -29,9 +30,17 @@ type PaymentService struct {
 	webURL        string
 }
 
-// NewPaymentService wires the payment engine.
-func NewPaymentService(payments *repository.PaymentRepository, orders *repository.OrderRepository, gateway payments.Gateway, baseURL string) *PaymentService {
-	return &PaymentService{payments: payments, orders: orders, gateway: gateway, baseURL: baseURL}
+// NewPaymentService wires the payment engine over one or more gateways.
+// primary selects the adapter used for generic card-less methods.
+func NewPaymentService(payRepo *repository.PaymentRepository, orders *repository.OrderRepository, gateways []payments.Gateway, primary, baseURL string) *PaymentService {
+	reg := make(map[string]payments.Gateway, len(gateways))
+	for _, g := range gateways {
+		reg[g.Name()] = g
+	}
+	if primary == "" {
+		primary = "sandbox"
+	}
+	return &PaymentService{payments: payRepo, orders: orders, gateways: reg, defaultGW: primary, baseURL: baseURL}
 }
 
 // SetUsers enables buyer lookup for transactional emails.
@@ -54,8 +63,31 @@ type CreateIntentInput struct {
 	IdempotencyKey string
 }
 
+// gatewayFor resolves the adapter for a payment method.
+// "midtrans_snap" routes to the Midtrans adapter; everything generic
+// (bank_transfer, e_wallet) uses the primary configured gateway.
+func (s *PaymentService) gatewayFor(method string) (payments.Gateway, error) {
+	if method == "midtrans_snap" {
+		g, ok := s.gateways["midtrans"]
+		if !ok {
+			return nil, domain.E(domain.KindInvalid, "GATEWAY_UNAVAILABLE",
+				"Midtrans payments are not configured on this server")
+		}
+		return g, nil
+	}
+	g, ok := s.gateways[s.defaultGW]
+	if !ok {
+		g, ok = s.gateways["sandbox"]
+	}
+	if !ok {
+		return nil, domain.E(domain.KindInternal, "NO_GATEWAY", "no payment gateway configured")
+	}
+	return g, nil
+}
+
 // InitiatePayment creates the gateway charge and the escrow intent.
-// Methods: bank_transfer, e_wallet (sandbox gateway); wallet (buyer balance, instant); cod.
+// Methods: bank_transfer, e_wallet (primary gateway); midtrans_snap (Snap);
+// wallet (buyer balance, instant); cod.
 func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInput) (*domain.PaymentIntent, *payments.GatewayPayment, error) {
 	order, err := s.orders.ByID(ctx, in.OrderID)
 	if err != nil {
@@ -105,13 +137,24 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		return intent, &payments.GatewayPayment{Reference: "cod", Status: "pending"}, nil
 	}
 
-	gwPayment, err := s.gateway.CreatePayment(ctx, payments.CreatePaymentInput{
+	gateway, err := s.gatewayFor(in.Method)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Redirect buyers back to the storefront order page after checkout.
+	finishBase := s.webURL
+	if finishBase == "" {
+		finishBase = s.baseURL
+	}
+
+	gwPayment, err := gateway.CreatePayment(ctx, payments.CreatePaymentInput{
 		OrderID:     order.ID,
 		OrderNumber: order.OrderNumber,
 		Amount:      order.TotalAmount,
 		Currency:    order.Currency,
 		Idempotency: key,
-		ReturnURL:   s.baseURL + "/orders/" + order.ID,
+		ReturnURL:   finishBase + "/orders/" + order.ID,
 	})
 	if err != nil {
 		return nil, nil, domain.Wrap(domain.KindInternal, "GATEWAY_ERROR", "payment gateway unavailable", err)
@@ -124,12 +167,28 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		Amount:         order.TotalAmount,
 		Currency:       order.Currency,
 		Status:         domain.IntentInitiated,
-		Gateway:        s.gateway.Name(),
+		Gateway:        gateway.Name(),
 		GatewayRef:     gwPayment.Reference,
+		SnapToken:      gwPayment.Token,
+		RedirectURL:    gwPayment.RedirectURL,
 		Method:         in.Method,
 		IdempotencyKey: key,
 	}
 	if err := s.payments.CreateIntent(ctx, intent); err != nil {
+		// Idempotent replay: hand back the stored intent instead of a conflict
+		// so a retried request still receives its checkout token/URL.
+		if domain.Is(err, domain.KindConflict, "IDEMPOTENCY_REPLAY") || domain.Is(err, domain.KindConflict, "INTENT_EXISTS") {
+			existing, ferr := s.payments.IntentByKey(ctx, key)
+			if ferr != nil {
+				return nil, nil, err
+			}
+			return existing, &payments.GatewayPayment{
+				Reference:   existing.GatewayRef,
+				Token:       existing.SnapToken,
+				RedirectURL: existing.RedirectURL,
+				Status:      "pending",
+			}, nil
+		}
 		return nil, nil, err
 	}
 	return intent, gwPayment, nil
@@ -148,10 +207,11 @@ func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 	return s.onPaid(ctx, intent)
 }
 
-// HandleWebhook processes a gateway event (idempotent).
+// HandleWebhook processes a gateway event (idempotent). Events are routed to
+// the adapter named in the URL, so sandbox and Midtrans notifications coexist.
 func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, payload []byte, signature string) error {
-	gateway := s.gateway
-	if gateway.Name() != gatewayName {
+	gateway, ok := s.gateways[gatewayName]
+	if !ok {
 		return domain.E(domain.KindInvalid, "UNKNOWN_GATEWAY", "unknown gateway")
 	}
 	ok, err := gateway.VerifyWebhook(ctx, payload, signature)
@@ -170,6 +230,11 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 
 	switch ev.Type {
 	case "payment.paid":
+		// Never capture when the provider amount disagrees with the order.
+		if ev.Amount > 0 && absDiff(ev.Amount, intent.Amount) > 0.01 {
+			return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
+				fmt.Sprintf("webhook amount %.2f does not match intent amount %.2f", ev.Amount, intent.Amount))
+		}
 		return s.onPaid(ctx, intent)
 	case "payment.refunded":
 		return s.onRefunded(ctx, intent)
@@ -179,6 +244,13 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 		}
 	}
 	return nil
+}
+
+func absDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 // onPaid captures escrow and moves the order to paid.
@@ -437,8 +509,10 @@ func (s *PaymentService) IntentForOrder(ctx context.Context, orderID string) (*d
 
 // SignWebhook produces a valid signature for a payload (dev driver tooling).
 func (s *PaymentService) SignWebhook(payload []byte) string {
-	if g, ok := s.gateway.(interface{ SignForDev([]byte) string }); ok {
-		return g.SignForDev(payload)
+	for _, g := range s.gateways {
+		if sg, ok := g.(interface{ SignForDev([]byte) string }); ok {
+			return sg.SignForDev(payload)
+		}
 	}
 	return ""
 }

@@ -216,10 +216,10 @@ func BuildOpenAPI(baseURL string) *OpenAPIDocument {
 		[]OpenAPIParameter{strParam("number", "path", "order number", true)}, jsonResp("Order+events"))
 
 	// Payments
-	add("/payments/orders/{orderId}/intent", "post", "Payments", "Create payment intent (idempotent)", true,
+	add("/payments/orders/{orderId}/intent", "post", "Payments", "Create payment intent (idempotent). Methods: bank_transfer, e_wallet, midtrans_snap, wallet, cod. Returns snap_token/payment_url for Midtrans.", true,
 		[]OpenAPIParameter{strParam("orderId", "path", "order id", true)}, jsonResp("Intent"))
-	add("/payments/webhook/{gateway}", "post", "Payments", "Gateway webhook (HMAC signed)", false,
-		[]OpenAPIParameter{strParam("gateway", "path", "gateway name", true)}, jsonResp("Received"))
+	add("/payments/webhook/{gateway}", "post", "Payments", "Gateway webhook — sandbox HMAC (X-Webhook-Signature) or Midtrans SHA512 signature_key in body", false,
+		[]OpenAPIParameter{strParam("gateway", "path", "gateway name (sandbox|midtrans)", true)}, jsonResp("Received"))
 	add("/wallet", "get", "Payments", "Wallet balance + ledger", true, nil, jsonResp("Wallet"))
 	add("/wallet/payouts", "post", "Payments", "Request a payout", true, nil, jsonResp("Payout"))
 	// Seller

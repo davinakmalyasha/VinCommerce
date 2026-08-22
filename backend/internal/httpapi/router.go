@@ -83,7 +83,21 @@ func NewRouter(deps Dependencies) http.Handler {
 	orderSvc.SetStores(stores)
 	orderSvc.SetLoyalty(loyaltyRepo)
 	orderSvc.SetWishlist(wishlistRepo)
-	paymentSvc := service.NewPaymentService(paymentRepo, orders, payments.NewGateway(cfg.Payments.Gateway, cfg.Payments.SandboxBaseURL), cfg.App.BaseURL)
+	// payment gateways: sandbox always available; Midtrans when keys configured.
+	gateways := []payments.Gateway{}
+	if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", ""); err == nil {
+		gateways = append(gateways, gw)
+	}
+	if cfg.Payments.MidtransServerKey != "" {
+		mt, err := payments.NewGateway("midtrans", "", cfg.Payments.MidtransServerKey, cfg.Payments.MidtransEnv)
+		if err != nil {
+			logger.Error("payment gateway: midtrans disabled", "reason", err.Error())
+		} else {
+			gateways = append(gateways, mt)
+			logger.Info("payment gateway: midtrans enabled", "env", cfg.Payments.MidtransEnv)
+		}
+	}
+	paymentSvc := service.NewPaymentService(paymentRepo, orders, gateways, cfg.Payments.Gateway, cfg.App.BaseURL)
 	sellerSvc := service.NewSellerService(stores, users, products, orders, paymentRepo)
 	sellerSvc.SetSessions(sessions)
 	engagementSvc := service.NewEngagementService(wishlistRepo, products)

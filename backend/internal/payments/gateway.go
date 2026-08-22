@@ -38,6 +38,7 @@ type CreatePaymentInput struct {
 // GatewayPayment is the provider's response.
 type GatewayPayment struct {
 	Reference   string
+	Token       string // provider checkout token (e.g. Midtrans Snap token)
 	RedirectURL string
 	Status      string // pending | paid | failed
 }
@@ -51,15 +52,20 @@ type GatewayEvent struct {
 	Raw       map[string]any
 }
 
-// NewGateway selects the configured adapter.
-func NewGateway(name, sandboxBaseURL string) Gateway {
-	if name == "" {
-		name = "sandbox"
+// NewGateway selects the configured adapter. Unknown names fail closed
+// instead of silently falling back to the sandbox provider.
+func NewGateway(name, sandboxBaseURL, midtransServerKey, midtransEnv string) (Gateway, error) {
+	switch name {
+	case "", "sandbox":
+		return &SandboxGateway{BaseURL: sandboxBaseURL, secret: "sandbox-webhook-secret"}, nil
+	case "midtrans":
+		if midtransServerKey == "" {
+			return nil, fmt.Errorf("PAYMENT_GATEWAY=midtrans requires MIDTRANS_SERVER_KEY")
+		}
+		return NewMidtransGateway(midtransServerKey, midtransEnv), nil
+	default:
+		return nil, fmt.Errorf("unknown payment gateway %q", name)
 	}
-	if name == "sandbox" {
-		return &SandboxGateway{BaseURL: sandboxBaseURL, secret: "sandbox-webhook-secret"}
-	}
-	return &SandboxGateway{BaseURL: sandboxBaseURL, secret: "sandbox-webhook-secret"}
 }
 
 // SandboxGateway simulates a real provider for local development.

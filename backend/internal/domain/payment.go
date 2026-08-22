@@ -32,6 +32,9 @@ type PaymentIntent struct {
 	Status           string     `json:"status"`
 	Gateway          string     `json:"gateway"`
 	GatewayRef       string     `json:"gateway_ref,omitempty"`
+	SnapToken        string     `json:"snap_token,omitempty"` // Midtrans Snap checkout token
+	GatewayTxnID     string     `json:"gateway_txn_id,omitempty"`
+	RedirectURL      string     `json:"redirect_url,omitempty"`
 	Method           string     `json:"method,omitempty"`
 	IdempotencyKey   string     `json:"-"`
 	EscrowReleasedAt *time.Time `json:"escrow_released_at,omitempty"`

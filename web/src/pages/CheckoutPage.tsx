@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { useSession } from '../stores/session'
 import { formatIDR } from '../lib/format'
 import type { Address } from '../types'
+import { payWithSnap, midtransEnabled } from '../lib/midtrans'
 
 interface Quote {
   subtotal: number
@@ -300,6 +301,11 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
     onError: (e: Error) => setErr(e.message),
   })
 
+  const snapPay = useMutation({
+    mutationFn: async () => payWithSnap(order.id, { onSuccess: () => setDone(true) }),
+    onError: (e: Error) => setErr(e.message),
+  })
+
   return (
     <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
       <div className="flex items-center justify-between mb-2">
@@ -310,6 +316,15 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
         <p className="text-sm text-green-700">✅ Pembayaran tercatat. Penjual akan memproses pesananmu.</p>
       ) : (
         <>
+          {midtransEnabled() && (
+            <button
+              onClick={() => snapPay.mutate()}
+              disabled={snapPay.isPending}
+              className="mb-2 w-full px-4 py-2 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {snapPay.isPending ? 'Membuka Midtrans...' : '⚡ Bayar via Midtrans (QRIS / e-wallet / VA / kartu)'}
+            </button>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <input
               value={form.reference}
