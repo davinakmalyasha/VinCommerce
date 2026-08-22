@@ -381,6 +381,40 @@ func (r *StoreRepository) SetKYCStatus(ctx context.Context, storeID, status, not
 	return nil
 }
 
+// StoreKYC is a KYC submission enriched with the store name (admin review).
+type StoreKYC struct {
+	domain.SellerKYC
+	StoreName string `json:"store_name"`
+}
+
+// PendingKYC lists KYC submissions awaiting review.
+func (r *StoreRepository) PendingKYC(ctx context.Context) ([]*StoreKYC, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT k.id, k.store_id, k.owner_name, k.id_number, COALESCE(k.id_document_url,''),
+		       k.bank_name, k.bank_account, k.status, COALESCE(k.admin_note,''), k.reviewed_at, k.created_at,
+		       s.name
+		FROM seller_kyc k
+		JOIN stores s ON s.id = k.store_id
+		WHERE k.status = 'pending'
+		ORDER BY k.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := []*StoreKYC{}
+	for rows.Next() {
+		var kc StoreKYC
+		if err := rows.Scan(&kc.ID, &kc.StoreID, &kc.OwnerName, &kc.IDNumber, &kc.IDDocumentURL,
+			&kc.BankName, &kc.BankAccount, &kc.Status, &kc.AdminNote, &kc.ReviewedAt, &kc.CreatedAt,
+			&kc.StoreName); err != nil {
+			return nil, err
+		}
+		list = append(list, &kc)
+	}
+	return list, rows.Err()
+}
+
 // CreateReturn registers a return request.
 func (r *StoreRepository) CreateReturn(ctx context.Context, req *domain.ReturnRequest) error {
 	if req.EvidenceURLs == nil {

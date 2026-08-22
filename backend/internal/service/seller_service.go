@@ -828,6 +828,11 @@ func (s *SellerService) AdminDecideStore(ctx context.Context, storeID, decision 
 	return nil
 }
 
+// AdminPendingKYC lists KYC submissions awaiting review (admin).
+func (s *SellerService) AdminPendingKYC(ctx context.Context) ([]*repository.StoreKYC, error) {
+	return s.stores.PendingKYC(ctx)
+}
+
 // AdminDecideKYC approves or rejects KYC (admin).
 func (s *SellerService) AdminDecideKYC(ctx context.Context, storeID, decision, note string) error {
 	switch decision {

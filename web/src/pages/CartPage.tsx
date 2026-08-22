@@ -124,7 +124,7 @@ export function CartPage() {
                       </div>
                     )}
                     <div className="flex-1">
-                      <Link to={`/product/${l.product_id}`} className="font-medium text-sm hover:text-amber-600 line-clamp-1">
+                      <Link to={`/product/${l.product_slug ?? l.product_id}`} className="font-medium text-sm hover:text-amber-600 line-clamp-1">
                         {l.product_name}
                       </Link>
                       <p className="text-xs text-gray-500 mt-0.5">

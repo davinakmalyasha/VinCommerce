@@ -47,6 +47,8 @@ import { TrackingPage } from './pages/TrackingPage'
 import { VouchersPage } from './pages/VouchersPage'
 import { ComparePage } from './pages/ComparePage'
 import { FollowedStoresPage } from './pages/FollowedStoresPage'
+import { VerifyEmailPage } from './pages/VerifyEmailPage'
+import { ResetPasswordPage } from './pages/ResetPasswordPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
 export const router = createBrowserRouter([
@@ -64,6 +66,8 @@ export const router = createBrowserRouter([
       { path: 'orders/:id', element: <OrderDetailPage /> },
       { path: 'login', element: <LoginPage /> },
       { path: 'register', element: <RegisterPage /> },
+      { path: 'verify-email', element: <VerifyEmailPage /> },
+      { path: 'reset-password', element: <ResetPasswordPage /> },
       { path: 'account', element: <AccountPage /> },
       { path: 'wishlist', element: <WishlistPage /> },
       { path: 'followed-stores', element: <FollowedStoresPage /> },

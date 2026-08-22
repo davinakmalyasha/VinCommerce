@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, setAccessToken } from '../lib/api'
+import { api, setAccessToken, guestSessionKey } from '../lib/api'
 import type { User } from '../types'
 
 interface SessionState {
@@ -10,6 +10,16 @@ interface SessionState {
   register: (data: { email: string; password: string; full_name: string }) => Promise<void>
   logout: () => Promise<void>
   restore: () => Promise<void>
+}
+
+// Best-effort: fold the anonymous cart into the user cart after auth.
+async function mergeGuestCart() {
+  try {
+    await api.post('/cart/merge', { session_key: guestSessionKey() })
+    localStorage.removeItem('vc_guest_session') // start a fresh guest identity next time
+  } catch {
+    // non-blocking: merge is opportunistic
+  }
 }
 
 export const useSession = create<SessionState>((set) => ({
@@ -39,12 +49,14 @@ export const useSession = create<SessionState>((set) => ({
     })
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
+    await mergeGuestCart()
   },
 
   register: async (data) => {
     const res = await api.post<{ access_token: string; user: User }>('/auth/register', data)
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
+    await mergeGuestCart()
   },
 
   logout: async () => {

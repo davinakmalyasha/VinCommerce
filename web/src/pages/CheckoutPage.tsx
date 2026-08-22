@@ -38,6 +38,8 @@ export function CheckoutPage() {
   const [error, setError] = useState('')
   const [paidOrder, setPaidOrder] = useState<PlacedOrder | null>(null)
   const [saveAddress, setSaveAddress] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [idemKey] = useState(() => crypto.randomUUID())
 
   const { data: addresses } = useQuery({
     queryKey: ['addresses'],
@@ -63,12 +65,17 @@ export function CheckoutPage() {
   const placeOrder = useMutation({
     mutationFn: async () =>
       (
-        await api.post<PlacedOrder>('/checkout/place', {
-          coupon_code: coupon || undefined,
-          shipping_method_code: shippingMethod,
-          address_id: selectedAddressId || undefined,
-          address: selectedAddressId ? undefined : form,
-        })
+        await api.post<PlacedOrder>(
+          '/checkout/place',
+          {
+            coupon_code: coupon || undefined,
+            shipping_method_code: shippingMethod,
+            address_id: selectedAddressId || undefined,
+            address: selectedAddressId ? undefined : form,
+            notes: notes || undefined,
+          },
+          { headers: { 'X-Idempotency-Key': idemKey } },
+        )
       ).data,
     onSuccess: async (placed) => {
       if (saveAddress && !selectedAddressId) {
@@ -227,10 +234,17 @@ export function CheckoutPage() {
         <section className="bg-white border border-gray-200 rounded-xl p-5">
           <h2 className="font-bold mb-3">3. Pembayaran</h2>
           <p className="text-sm text-gray-600">
-            Pembayaran dilakukan <b>di luar aplikasi</b> — setelah pesanan dibuat, kamu membayar lewat
-            transfer bank / e-wallet pilihanmu dan mengisi bukti pembayaran (no. referensi, jumlah, tanggal).
+            Bayar instan via <b>Midtrans</b> (QRIS / e-wallet / VA / kartu) atau transfer di luar aplikasi —
+            setelah pesanan dibuat, isi bukti pembayaran (no. referensi, jumlah, tanggal) untuk setiap pesanan.
             Penjual memproses pesanan setelah pembayaran tercatat.
           </p>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Catatan untuk penjual (opsional): warna, ukuran, titik kirim..."
+            rows={2}
+            className="mt-3 w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+          />
         </section>
 
         <section className="bg-white border border-gray-200 dark:border-gray-700 rounded-xl p-5">

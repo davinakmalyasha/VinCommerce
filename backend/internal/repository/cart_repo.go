@@ -68,7 +68,7 @@ func (r *CartRepository) GetWithItems(ctx context.Context, cartID string) (*doma
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT ci.id, ci.variant_id, ci.quantity,
-		       v.product_id, p.name, v.name, v.sku, COALESCE(v.image_url, ''),
+		       v.product_id, p.slug, p.name, v.name, v.sku, COALESCE(v.image_url, ''),
 		       v.price, v.price * ci.quantity, v.stock,
 		       p.seller_id, u.full_name, v.weight_grams, v.is_active
 		FROM cart_items ci
@@ -86,7 +86,7 @@ func (r *CartRepository) GetWithItems(ctx context.Context, cartID string) (*doma
 	for rows.Next() {
 		var l domain.CartLine
 		if err := rows.Scan(&l.ID, &l.VariantID, &l.Quantity,
-			&l.ProductID, &l.ProductName, &l.VariantName, &l.SKU, &l.ImageURL,
+			&l.ProductID, &l.ProductSlug, &l.ProductName, &l.VariantName, &l.SKU, &l.ImageURL,
 			&l.Price, &l.Subtotal, &l.Stock,
 			&l.SellerID, &l.SellerName, &l.WeightGrams, &l.IsActive); err != nil {
 			return nil, nil, err

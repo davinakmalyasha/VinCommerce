@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import { formatIDR } from '../../lib/format'
 import {
   FunnelPanel,
@@ -42,9 +42,12 @@ export function AdminAnalytics() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Analitik Platform</h1>
-        <a href="/api/v1/admin/analytics/export.csv" className="text-sm text-amber-600 hover:underline">
+        <button
+          onClick={() => downloadFile('/admin/analytics/export.csv', 'analitik-platform.csv')}
+          className="text-sm text-amber-600 hover:underline"
+        >
           ⬇ Ekspor CSV
-        </a>
+        </button>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">

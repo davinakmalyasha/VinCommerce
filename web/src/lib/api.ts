@@ -60,8 +60,33 @@ api.interceptors.request.use((config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`
   }
+  // Guest cart identity: stable per browser so anonymous carts persist.
+  config.headers['X-Session-Key'] = guestSessionKey()
   return config
 })
+
+const GUEST_KEY_STORAGE = 'vc_guest_session'
+
+export function guestSessionKey(): string {
+  let key = localStorage.getItem(GUEST_KEY_STORAGE)
+  if (!key) {
+    key = crypto.randomUUID()
+    localStorage.setItem(GUEST_KEY_STORAGE, key)
+  }
+  return key
+}
+
+// Downloads an authenticated file (e.g. CSV exports) as a blob — plain <a href>
+// links cannot send the Bearer header and would 401.
+export async function downloadFile(url: string, filename: string) {
+  const res = await api.get(url, { responseType: 'blob' })
+  const blobUrl = URL.createObjectURL(res.data as Blob)
+  const link = document.createElement('a')
+  link.href = blobUrl
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(blobUrl)
+}
 
 api.interceptors.response.use(
   (response) => response,

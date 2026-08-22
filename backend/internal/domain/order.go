@@ -86,7 +86,8 @@ type Order struct {
 	Seller *StoreSummary `json:"seller,omitempty"`
 
 	ShippingAddressJSON []byte `json:"-"`
-	SellerName          string `json:"-"`
+	BuyerName           string `json:"buyer_name,omitempty"`
+	SellerName          string `json:"seller_name,omitempty"`
 
 	TrackingNumber string `json:"tracking_number,omitempty"`
 	Carrier        string `json:"carrier,omitempty"`
@@ -145,6 +146,7 @@ type CartItem struct {
 type CartLine struct {
 	CartItem
 	ProductID   string  `json:"product_id"`
+	ProductSlug string  `json:"product_slug"`
 	ProductName string  `json:"product_name"`
 	VariantName string  `json:"variant_name"`
 	SKU         string  `json:"sku"`

@@ -780,6 +780,7 @@ func (r *OrderRepository) SearchOrders(ctx context.Context, q, status string, pa
 		       o.coupon_code, o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
 		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
 		       o.created_at, o.updated_at, b.full_name,
+		       u.full_name,
 		       COALESCE(o.external_payment_ref,''), o.external_paid_at
 		FROM orders o
 		JOIN users u ON u.id = o.buyer_id
@@ -794,11 +795,15 @@ func (r *OrderRepository) SearchOrders(ctx context.Context, q, status string, pa
 
 	items := []*domain.Order{}
 	for rows.Next() {
-		o, err := scanOrder(rows)
-		if err != nil {
+		var o domain.Order
+		if err := rows.Scan(&o.ID, &o.OrderNumber, &o.BuyerID, &o.SellerID, &o.Status, &o.Currency,
+			&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.TotalAmount, &o.PaymentStatus,
+			&o.CouponCode, &o.ShippingAddressJSON, &o.ShippingMethod, &o.Notes,
+			&o.TrackingNumber, &o.Carrier, &o.PlacedAt, &o.PaidAt, &o.ShippedAt, &o.DeliveredAt, &o.CompletedAt, &o.CancelledAt,
+			&o.CreatedAt, &o.UpdatedAt, &o.SellerName, &o.BuyerName, &o.ExternalPaymentRef, &o.ExternalPaidAt); err != nil {
 			return nil, 0, err
 		}
-		items = append(items, o)
+		items = append(items, &o)
 	}
 	return items, total, rows.Err()
 }

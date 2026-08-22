@@ -63,6 +63,7 @@ export interface CartLine {
   id: string
   variant_id: string
   product_id: string
+  product_slug: string
   product_name: string
   variant_name: string
   sku: string
@@ -93,6 +94,10 @@ export interface Order {
   placed_at: string
   items: OrderItem[]
   seller?: { id: string; name: string }
+  buyer_name?: string
+  seller_name?: string
+  tracking_number?: string
+  carrier?: string
 }
 
 export interface OrderItem {

@@ -1,27 +1,44 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../lib/api'
-import { useSession } from '../../stores/session'
+import { api, downloadFile } from '../../lib/api'
 import type { Order } from '../../types'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../../lib/format'
 
+const STATUS_TABS = [
+  { value: '', label: 'Semua' },
+  { value: 'paid', label: 'Dibayar' },
+  { value: 'packed', label: 'Dikemas' },
+  { value: 'shipped', label: 'Dikirim' },
+  { value: 'delivered', label: 'Tiba' },
+  { value: 'completed', label: 'Selesai' },
+  { value: 'cancelled', label: 'Batal' },
+]
+
 export function SellerOrders() {
   const queryClient = useQueryClient()
-  const { user } = useSession()
+  const [status, setStatus] = useState('')
+  const [page, setPage] = useState(1)
   const [trackingFor, setTrackingFor] = useState<string | null>(null)
   const [tracking, setTracking] = useState({ number: '', carrier: 'JNE' })
+  const [exporting, setExporting] = useState(false)
 
-  const { data } = useQuery({
-    queryKey: ['seller-orders'],
-    queryFn: async () => (await api.get<{ orders: Order[] }>('/orders')).data.orders,
+  const { data, isLoading } = useQuery({
+    queryKey: ['seller-orders', status, page],
+    queryFn: async () =>
+      (
+        await api.get<{ orders: Order[]; total: number }>('/seller/orders', {
+          params: { status: status || undefined, page, page_size: 20 },
+        })
+      ).data,
   })
 
-  const mine = (data ?? []).filter((o) => o.seller_id === user?.id)
+  const orders = data?.orders ?? []
 
   const transition = useMutation({
     mutationFn: async ({ id, to }: { id: string; to: string }) =>
       api.post(`/seller/orders/${id}/transition`, { to }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['seller-orders'] }),
+    onError: (e: Error) => alert(e.message),
   })
 
   const shipWithTracking = useMutation({
@@ -31,19 +48,50 @@ export function SellerOrders() {
       setTrackingFor(null)
       queryClient.invalidateQueries({ queryKey: ['seller-orders'] })
     },
+    onError: (e: Error) => alert(e.message),
   })
+
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      await downloadFile('/seller/orders/export.csv', 'pesanan-toko.csv')
+    } catch {
+      alert('Gagal mengekspor CSV')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / 20))
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Pesanan Masuk</h1>
-        <a href="/api/v1/seller/orders/export.csv" className="text-sm text-amber-600 hover:underline">
-          ⬇ Ekspor CSV
-        </a>
+        <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
+          {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {STATUS_TABS.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => {
+              setStatus(t.value)
+              setPage(1)
+            }}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border ${
+              status === t.value ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 hover:border-gray-400'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
       <div className="space-y-3">
-        {mine.length === 0 && <p className="text-gray-500 text-sm">Belum ada pesanan untuk toko ini.</p>}
-        {mine.map((o) => (
+        {isLoading && <p className="text-gray-500 text-sm">Memuat pesanan...</p>}
+        {!isLoading && orders.length === 0 && <p className="text-gray-500 text-sm">Belum ada pesanan untuk toko ini.</p>}
+        {orders.map((o) => (
           <div key={o.id} className="bg-white border border-gray-200 rounded-xl p-5">
             <div className="flex justify-between items-start mb-3">
               <div>
@@ -64,6 +112,9 @@ export function SellerOrders() {
                 </div>
               ))}
             </div>
+            {o.tracking_number && (
+              <p className="text-xs text-blue-600 mt-2">📦 Resi ({o.carrier ?? 'kurir'}): {o.tracking_number}</p>
+            )}
             <div className="flex items-center justify-between border-t mt-3 pt-3">
               <p className="text-sm text-gray-500">
                 {o.shipping_method} · {o.payment_status} · <span className="font-bold text-gray-900">{formatIDR(o.total_amount)}</span>
@@ -125,6 +176,27 @@ export function SellerOrders() {
           </div>
         ))}
       </div>
+      {(data?.total ?? 0) > 20 && (
+        <div className="flex items-center justify-center gap-3 pt-2">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"
+          >
+            ← Sebelumnya
+          </button>
+          <span className="text-sm text-gray-500">
+            Halaman {page} / {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"
+          >
+            Berikutnya →
+          </button>
+        </div>
+      )}
     </div>
   )
 }

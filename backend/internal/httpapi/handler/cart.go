@@ -281,8 +281,8 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 	var address *domain.Address
 	switch {
 	case req.AddressID != "":
-		writeErr(w, r, domain.E(domain.KindInvalid, "ADDRESS_REQUIRED", "pass address inline or address_id when address book exists"))
-		return
+		// Address book selection: ownership is verified inside PlaceOrder via ResolveAddress.
+		address = nil
 	case req.Address != nil:
 		address = &domain.Address{
 			Recipient:    req.Address.Recipient,
@@ -319,6 +319,7 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 	placed, err := h.svc.PlaceOrder(r.Context(), service.PlaceOrderInput{
 		UserID:             user.ID,
 		CartID:             cart.ID,
+		AddressID:          req.AddressID,
 		Address:            address,
 		AddressesBySeller:  bySeller,
 		CouponCode:         req.CouponCode,
@@ -365,6 +366,19 @@ func NewOrders(svc *service.OrderService, productSvc *service.ProductService) *O
 func (h *Orders) List(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
 	orders, total, err := h.svc.ListByBuyer(r.Context(), user.ID, intQuery(r.URL.Query().Get("page"), 1), intQuery(r.URL.Query().Get("page_size"), 10))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"orders": orders, "total": total})
+}
+
+// SellerList handles GET /seller/orders — incoming orders for the caller's store.
+func (h *Orders) SellerList(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	q := r.URL.Query()
+	orders, total, err := h.svc.ListBySeller(r.Context(), user.ID, q.Get("status"),
+		intQuery(q.Get("page"), 1), intQuery(q.Get("page_size"), 20))
 	if err != nil {
 		writeErr(w, r, err)
 		return

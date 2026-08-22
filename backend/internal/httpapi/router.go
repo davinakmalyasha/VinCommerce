@@ -198,6 +198,8 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	authMw := mw.Authenticate(tokens)
 	optionalAuthMw := mw.AuthenticateOptional(tokens)
+	auditMw := mw.AuditMiddleware(sessions)
+	flagMw := adminOps.FeatureFlagMiddleware
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health/live", health.Liveness)
@@ -274,7 +276,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Use(authMw)
 			r.With(rateLimiter.Limit(30, time.Minute, userKey)).
 				Post("/quote", checkout.Quote)
-			r.With(rateLimiter.Limit(15, time.Minute, userKey)).
+			r.With(rateLimiter.Limit(15, time.Minute, userKey), auditMw).
 				Post("/place", checkout.Place)
 		})
 
@@ -299,9 +301,9 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Use(authMw)
 				r.Post("/orders/{orderId}/intent", paymentsH.Initiate)
 				r.Get("/orders/{orderId}/intent", paymentsH.Intent)
-				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport)).
+				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport), auditMw).
 					Post("/orders/{orderId}/release", paymentsH.Release)
-				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport)).
+				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport), auditMw).
 					Post("/orders/{orderId}/refund", paymentsH.Refund)
 			})
 			// dev-only sandbox drivers (order owner or staff)
@@ -343,6 +345,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/coupons", seller.CreateSellerCoupon)
 			r.Put("/free-shipping", seller.SetFreeShipping)
 			r.Get("/returns", seller.Returns)
+			r.Get("/orders", ordersH.SellerList)
 			r.Post("/returns/{id}/decide", seller.DecideReturn)
 			r.Post("/orders/{id}/transition", seller.FulfillOrder)
 		})
@@ -354,8 +357,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 
 		r.Route("/admin", func(r chi.Router) {
-			r.Use(authMw, mw.RequireRoles(domain.RoleAdmin))
+			r.Use(authMw, mw.RequireRoles(domain.RoleAdmin), auditMw)
 			r.Get("/stores", admin.Stores)
+			r.Get("/kyc", admin.KYCPending)
 			r.Post("/stores/{id}/decide", admin.DecideStore)
 			r.Post("/stores/{id}/kyc/decide", admin.DecideKYC)
 			r.Post("/returns/{id}/refund", admin.RefundReturn)
@@ -401,7 +405,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Delete("/items/{variantId}", engagement.Remove)
 		})
 
-		r.Get("/flash-sales/active", engagement.FlashSale)
+		r.With(flagMw("flash_sales")).Get("/flash-sales/active", engagement.FlashSale)
 		r.Get("/recommendations", engagement.Recommended)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
 		r.With(authMw).Post("/stores/{id}/follow", seller.FollowStore)
@@ -420,7 +424,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(authMw).Delete("/back-in-stock/{id}", marketH.CancelBackInStock)
 		r.With(authMw).Get("/loyalty", marketH.Loyalty)
 		r.With(authMw).Get("/referral/code", marketH.Referral)
-		r.With(authMw).Post("/referral/redeem", marketH.RedeemReferral)
+		r.With(authMw, flagMw("referrals")).Post("/referral/redeem", marketH.RedeemReferral)
 		r.Get("/vouchers", adminOps.Vouchers)
 		r.With(authMw).Post("/disputes", marketH.OpenDispute)
 		r.With(authMw).Get("/stream/orders", streamH.Orders)
@@ -474,7 +478,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/ai", func(r chi.Router) {
 			r.Use(authMw)
-			r.Post("/ask", aiH.Ask)
+			r.With(flagMw("ai_assistant")).Post("/ask", aiH.Ask)
 			r.Post("/review-summary", aiH.ReviewSummary)
 			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin)).
 				Post("/describe-product", aiH.DescribeProduct)

@@ -62,9 +62,30 @@ func run(logger *slog.Logger) error {
 	seeded += s.seedAttributes()
 	seeded += s.seedBrandsAndProducts()
 	seeded += s.seedHelpContent()
+	seeded += s.seedFlags()
 
 	logger.Info("seed complete", "items", seeded)
 	return nil
+}
+
+// seedFlags ensures feature flags exist (enabled) so the flag-gated routes work out of the box.
+func (s *seeder) seedFlags() int {
+	flags := []struct{ key, desc string }{
+		{"flash_sales", "Flash sale engine on storefront"},
+		{"referrals", "Referral program"},
+		{"loyalty_points", "Loyalty points earn & ledger"},
+		{"ai_assistant", "AI assistant widget"},
+	}
+	for _, f := range flags {
+		if _, err := s.products.Pool().Exec(s.ctx, `
+			INSERT INTO feature_flags (id, key, description, enabled)
+			VALUES (gen_random_uuid(), $1, $2, TRUE)
+			ON CONFLICT (key) DO NOTHING`, f.key, f.desc); err != nil {
+			fmt.Println("seed flag:", err)
+			continue
+		}
+	}
+	return len(flags)
 }
 
 func (s *seeder) seedHelpContent() int {
@@ -163,6 +184,7 @@ func (s *seeder) seedUsers() int {
 		roles                        []string
 	}{
 		{"admin@vincommerce.com", "Platform Admin", "AdminPass123!", "081200000001", []string{domain.RoleAdmin, domain.RoleBuyer}},
+		{"support@vincommerce.com", "Support Agent", "SupportPass123!", "081200000007", []string{domain.RoleSupport, domain.RoleBuyer}},
 		{"seller.elektro@vincommerce.com", "ElektroStore", "SellerPass123!", "081200000002", []string{domain.RoleSeller, domain.RoleBuyer}},
 		{"seller.fashion@vincommerce.com", "FashionHub ID", "SellerPass123!", "081200000003", []string{domain.RoleSeller, domain.RoleBuyer}},
 		{"seller.rumah@vincommerce.com", "Rumah Tangga Official", "SellerPass123!", "081200000004", []string{domain.RoleSeller, domain.RoleBuyer}},

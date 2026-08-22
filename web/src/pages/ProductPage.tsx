@@ -126,6 +126,17 @@ export function ProductPage() {
     summary: string
   } | null>(null)
   const [aiSummaryOpen, setAiSummaryOpen] = useState(false)
+  const [activeImage, setActiveImage] = useState(0)
+  const [zoomOpen, setZoomOpen] = useState(false)
+
+  // Flash-sale countdown (hooks must run before any early return below).
+  const endsAtMs = flashSale?.flash_sale.ends_at ? new Date(flashSale.flash_sale.ends_at).getTime() : 0
+  const [nowTs, setNowTs] = useState(Date.now())
+  useEffect(() => {
+    if (!endsAtMs) return
+    const t = setInterval(() => setNowTs(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [endsAtMs])
 
   const loadAiSummary = useMutation({
     mutationFn: async () =>
@@ -188,19 +199,15 @@ export function ProductPage() {
   const product = data
   const selected = product.variants?.find((v) => v.id === variantId) ?? product.variants?.[0]
   const watching = !!selected && !!restockAlerts?.some((a) => a.variant_id === selected.id)
-  const image = product.images?.[0]?.url ?? selected?.image_url
+  const gallery: string[] = Array.from(
+    new Set([...(product.images ?? []).map((im) => im.url), ...(selected?.image_url ? [selected.image_url] : [])].filter(Boolean)),
+  )
+  const image = gallery[Math.min(activeImage, gallery.length - 1)]
 
   const saleItem = selected ? flashSale?.items.find((i) => i.variant_id === selected.id) : undefined
   const salePrice = saleItem?.sale_price ?? selected?.price ?? 0
   const onSale = !!saleItem && saleItem.sale_price < (selected?.price ?? 0)
   const soldPct = saleItem && saleItem.initial_stock > 0 ? Math.min(100, Math.round((saleItem.sold_count / saleItem.initial_stock) * 100)) : 0
-  const endsAtMs = flashSale?.flash_sale.ends_at ? new Date(flashSale.flash_sale.ends_at).getTime() : 0
-  const [nowTs, setNowTs] = useState(Date.now())
-  useEffect(() => {
-    if (!endsAtMs) return
-    const t = setInterval(() => setNowTs(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [endsAtMs])
   const remain = Math.max(0, endsAtMs - nowTs)
   const hh = Math.floor(remain / 3_600_000)
   const mm = Math.floor((remain % 3_600_000) / 60_000)
@@ -213,16 +220,67 @@ export function ProductPage() {
         description={product.description?.slice(0, 160)}
         path={`/product/${product.slug}`}
       />
+      {zoomOpen && image && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 cursor-zoom-out"
+          onClick={() => setZoomOpen(false)}
+        >
+          <img src={image} alt={product.name} className="max-h-full max-w-full object-contain rounded-xl" />
+          {gallery.length > 1 && (
+            <div className="absolute bottom-6 flex gap-2">
+              {gallery.map((url, i) => (
+                <button
+                  key={url + i}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setActiveImage(i)
+                  }}
+                  className={`w-14 h-14 rounded-lg overflow-hidden border-2 ${
+                    i === activeImage ? 'border-amber-400' : 'border-transparent opacity-60'
+                  }`}
+                >
+                  <img src={url} alt="" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={() => setZoomOpen(false)}
+            aria-label="Tutup"
+            className="absolute top-4 right-4 text-white text-3xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="mx-auto max-w-7xl px-4 py-6 space-y-10">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8 bg-white border border-gray-200 rounded-2xl p-6">
-        <div>
-          <div className="aspect-square rounded-xl bg-gray-100 overflow-hidden">
-            {image ? (
-              <img src={image} alt={product.name} className="w-full h-full object-cover" />
+        <div className="space-y-3">
+          <div
+            className="aspect-square rounded-xl bg-gray-100 overflow-hidden cursor-zoom-in group relative"
+            onClick={() => setZoomOpen(true)}
+          >
+            {gallery[activeImage] ? (
+              <img src={gallery[activeImage]} alt={product.name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-gray-400">{product.name}</div>
             )}
           </div>
+          {gallery.length > 1 && (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {gallery.map((url, i) => (
+                <button
+                  key={url + i}
+                  onClick={() => setActiveImage(i)}
+                  className={`w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 transition-colors ${
+                    i === activeImage ? 'border-amber-500' : 'border-transparent opacity-70 hover:opacity-100'
+                  }`}
+                >
+                  <img src={url} alt={`${product.name} ${i + 1}`} className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">

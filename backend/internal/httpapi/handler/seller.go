@@ -545,6 +545,16 @@ func (h *Admin) DecideStore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"decided": true})
 }
 
+// KYCPending handles GET /admin/kyc — KYC submissions awaiting review.
+func (h *Admin) KYCPending(w http.ResponseWriter, r *http.Request) {
+	list, err := h.svc.AdminPendingKYC(r.Context())
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kycs": list})
+}
+
 // DecideKYC handles POST /admin/stores/{id}/kyc/decide.
 func (h *Admin) DecideKYC(w http.ResponseWriter, r *http.Request) {
 	var req struct {

@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import { formatIDR } from '../../lib/format'
 import {
   FunnelPanel,
@@ -26,15 +27,25 @@ export function SellerAnalytics() {
       ).data,
   })
 
+  const [exporting, setExporting] = useState(false)
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      await downloadFile('/seller/analytics/export.csv', 'analitik-toko.csv')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const maxGmv = Math.max(...(data?.sales_series ?? []).map((p) => p.gmv), 1)
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Analitik Penjualan</h1>
-        <a href="/api/v1/seller/analytics/export.csv" className="text-sm text-amber-600 hover:underline">
-          ⬇ Ekspor CSV
-        </a>
+        <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
+          {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
+        </button>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
