@@ -1,0 +1,3 @@
+{{ define "dispute_resolved" }}
+{{ template "layout" dict "Title" "Hasil Sengketa" "Name" .Name "Body" (printf "Sengketa \"%s\" telah diputuskan: %s." .Subject .Decision) }}
+{{ end }}

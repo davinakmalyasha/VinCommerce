@@ -1,0 +1,67 @@
+# Full VinCommerce stack for Docker users.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: vincom
+      POSTGRES_PASSWORD: vincom_dev
+      POSTGRES_DB: vincom
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vincom"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    ports: ["1025:1025", "8025:8025"]
+
+  api:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    environment:
+      DB_HOST: postgres
+      DB_USER: vincom
+      DB_PASSWORD: vincom_dev
+      DB_NAME: vincom
+      REDIS_ADDR: redis:6379
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_FROM: "VinCommerce <no-reply@vincommerce.local>"
+      APP_BASE_URL: http://localhost:8080
+      WEB_URL: http://localhost:5173
+      CORS_ALLOW_ORIGINS: http://localhost:5173,http://localhost
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: { context: ., dockerfile: backend/Dockerfile.worker }
+    environment:
+      DB_HOST: postgres
+      DB_USER: vincom
+      DB_PASSWORD: vincom_dev
+      DB_NAME: vincom
+      REDIS_ADDR: redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    build: { context: ., dockerfile: web/Dockerfile }
+    ports: ["5173:80"]
+    depends_on: [api]
+
+volumes:
+  pgdata:

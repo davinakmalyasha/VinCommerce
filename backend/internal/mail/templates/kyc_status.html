@@ -1,0 +1,3 @@
+{{ define "kyc_status" }}
+{{ template "layout" dict "Title" "Verifikasi Identitas (KYC)" "Name" .Name "Body" (printf "Verifikasi identitas untuk toko %s %s." .StoreName .KYCStatus) }}
+{{ end }}

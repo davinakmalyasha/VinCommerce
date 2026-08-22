@@ -1,0 +1,3 @@
+{{ define "order_paid" }}
+{{ template "layout" dict "Title" "Pembayaran diterima" "Name" .Name "Body" (printf "Pembayaran untuk pesanan %s sebesar %s telah kami terima. Dana dipegang escrow sampai pesanan selesai." .OrderNumber .Total) "ActionURL" .OrderURL "ActionLabel" "Lacak pesanan" }}
+{{ end }}

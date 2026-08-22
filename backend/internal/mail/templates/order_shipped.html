@@ -1,0 +1,3 @@
+{{ define "order_shipped" }}
+{{ template "layout" dict "Title" "Pesanan dikirim" "Name" .Name "Body" (printf "Pesanan %s telah dikirim via %s. Nomor resi: %s. Konfirmasi penerimaan setelah barang sampai." .OrderNumber .Carrier .Tracking) "ActionURL" .OrderURL "ActionLabel" "Lacak pesanan" }}
+{{ end }}

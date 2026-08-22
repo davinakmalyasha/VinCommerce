@@ -1,0 +1,35 @@
+# --- Go ---
+backend/bin/
+backend/tmp/
+*.test
+*.out
+coverage.html
+
+# --- Node / web ---
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+web/.env
+*.local
+
+# --- Binaries & runtime data ---
+*.exe
+*.exe~
+backend/data/
+uploads/
+
+# --- Env & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Tooling ---
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Local data ---
+infra/data/

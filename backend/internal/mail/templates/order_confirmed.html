@@ -1,0 +1,3 @@
+{{ define "order_confirmed" }}
+{{ template "layout" dict "Title" "Pesanan dikonfirmasi" "Name" .Name "Body" (printf "Terima kasih! Pesanan %s berhasil dibuat sebesar %s. Selesaikan pembayaran dalam 30 menit agar stok tetap terjamin." .OrderNumber .Total) "ActionURL" .OrderURL "ActionLabel" "Lihat pesanan" }}
+{{ end }}

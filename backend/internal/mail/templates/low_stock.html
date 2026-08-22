@@ -1,0 +1,3 @@
+{{ define "low_stock" }}
+{{ template "layout" dict "Title" "Stok Menipis" "Name" .Name "Body" (printf "Varian \"%s\" (%s) tersisa %d unit. Segera tambah stok agar produk tetap tampil dan terjual." .ProductName .VariantName .Stock) }}
+{{ end }}

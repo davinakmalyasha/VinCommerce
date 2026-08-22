@@ -1,0 +1,3 @@
+{{ define "store_status" }}
+{{ template "layout" dict "Title" "Status Toko" "Name" .Name "Body" (printf "Status toko %s Anda: %s." .StoreName .StoreStatus) }}
+{{ end }}

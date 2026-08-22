@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend lint, vet, test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: vincom
+          POSTGRES_PASSWORD: vincom_dev
+          POSTGRES_DB: vincom
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vincom"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8
+        ports: ["6379:6379"]
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - name: Format check
+        run: test -z "$(gofmt -l ./internal ./cmd)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        run: go test ./internal/... -count=1
+
+      - name: Migrate + seed smoke test
+        env:
+          DB_PASSWORD: vincom_dev
+          REDIS_ADDR: 127.0.0.1:6379
+        run: |
+          go run ./cmd/seed
+          go run ./cmd/api &
+          API_PID=$!
+          sleep 8
+          curl -sf http://localhost:8080/api/v1/health/ready
+          kill $API_PID
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  e2e:
+    name: Playwright smoke
+    runs-on: ubuntu-latest
+    needs: [backend]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: vincom
+          POSTGRES_PASSWORD: vincom_dev
+          POSTGRES_DB: vincom
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vincom"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8
+        ports: ["6379:6379"]
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Start backend + web
+        env:
+          DB_PASSWORD: vincom_dev
+          REDIS_ADDR: 127.0.0.1:6379
+        run: |
+          cd ../backend && go run ./cmd/seed &
+          cd ../backend && go run ./cmd/api &
+          sleep 12
+          npm run dev -- --port 5173 --strictPort &
+          sleep 8
+          curl -sf http://localhost:8080/api/v1/health/ready
+      - run: npx playwright test

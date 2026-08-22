@@ -1,0 +1,3 @@
+{{ define "daily_digest" }}
+{{ template "layout" dict "Title" "Ringkasan Penjualan Harian" "Name" .Name "Body" (printf "Berikut ringkasan toko %s kemarin: %d pesanan, total penjualan %s. Produk terlaris: %s. Ulasan baru: %d." .StoreName .OrderCount .GMV .TopProduct .ReviewCount) "ActionURL" .OrderURL "ActionLabel" "Lihat pesanan" }}
+{{ end }}

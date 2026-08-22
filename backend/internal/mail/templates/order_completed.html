@@ -1,0 +1,3 @@
+{{ define "order_completed" }}
+{{ template "layout" dict "Title" "Pesanan selesai" "Name" .Name "Body" (printf "Pesanan %s telah selesai dan dana escrow telah dilepas ke penjual. Terima kasih telah berbelanja!" .OrderNumber) "ActionURL" .OrderURL "ActionLabel" "Lihat pesanan" }}
+{{ end }}

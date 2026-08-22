@@ -1,0 +1,3 @@
+{{ define "email_verify" }}
+{{ template "layout" dict "Title" "Verify your email" "Name" .Name "Body" "Please confirm your email address to activate your account." "ActionURL" .ActionURL "ActionLabel" "Verify email" "Expiry" "24 hours" }}
+{{ end }}

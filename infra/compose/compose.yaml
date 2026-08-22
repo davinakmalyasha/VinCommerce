@@ -1,0 +1,27 @@
+# Local infrastructure for VinCommerce.
+# Mirrors infra/scripts/start-deps.ps1 for Docker users.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: vincom
+      POSTGRES_PASSWORD: vincom_dev
+      POSTGRES_DB: vincom
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8
+    ports:
+      - "6379:6379"
+
+  mailpit:
+    image: axllent/mailpit:v1.29
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  pgdata:

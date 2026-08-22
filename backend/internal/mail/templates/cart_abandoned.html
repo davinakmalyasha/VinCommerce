@@ -1,0 +1,3 @@
+{{ define "cart_abandoned" }}
+{{ template "layout" dict "Title" "Keranjangmu menunggu! 🛒" "Name" .Name "Body" (printf "Kamu meninggalkan %d barang di keranjang: %s. Barang favoritmu bisa cepat habis — selesaikan pesananmu sekarang!" .ItemCount .ItemNames) "ActionURL" .CartURL "ActionLabel" "Lanjutkan belanja" }}
+{{ end }}
