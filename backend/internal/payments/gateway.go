@@ -54,7 +54,7 @@ type GatewayEvent struct {
 
 // NewGateway selects the configured adapter. Unknown names fail closed
 // instead of silently falling back to the sandbox provider.
-func NewGateway(name, sandboxBaseURL, midtransServerKey, midtransEnv string) (Gateway, error) {
+func NewGateway(name, sandboxBaseURL, midtransServerKey, midtransEnv string, midtransMethods []string) (Gateway, error) {
 	switch name {
 	case "", "sandbox":
 		return &SandboxGateway{BaseURL: sandboxBaseURL, secret: "sandbox-webhook-secret"}, nil
@@ -62,7 +62,7 @@ func NewGateway(name, sandboxBaseURL, midtransServerKey, midtransEnv string) (Ga
 		if midtransServerKey == "" {
 			return nil, fmt.Errorf("PAYMENT_GATEWAY=midtrans requires MIDTRANS_SERVER_KEY")
 		}
-		return NewMidtransGateway(midtransServerKey, midtransEnv), nil
+		return NewMidtransGateway(midtransServerKey, midtransEnv, midtransMethods), nil
 	default:
 		return nil, fmt.Errorf("unknown payment gateway %q", name)
 	}

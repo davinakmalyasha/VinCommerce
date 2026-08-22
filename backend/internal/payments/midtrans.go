@@ -18,24 +18,27 @@ import (
 // MidtransGateway implements Gateway against Midtrans Snap
 // (popup/redirect checkout over QRIS, VA, e-wallets and cards).
 type MidtransGateway struct {
-	serverKey string
-	apiBase   string
-	snapBase  string
-	http      *http.Client
+	serverKey      string
+	apiBase        string
+	snapBase       string
+	enabledMethods []string // optional channel allow-list; empty = all
+	http           *http.Client
 }
 
 // NewMidtransGateway builds a Snap adapter. env is "sandbox" or "production".
-func NewMidtransGateway(serverKey, env string) *MidtransGateway {
+// enabledMethods optionally restricts checkout channels server-side.
+func NewMidtransGateway(serverKey, env string, enabledMethods []string) *MidtransGateway {
 	apiBase, snapBase := "https://api.midtrans.com", "https://app.midtrans.com"
 	if env != "production" {
 		apiBase = "https://api.sandbox.midtrans.com"
 		snapBase = "https://app.sandbox.midtrans.com"
 	}
 	return &MidtransGateway{
-		serverKey: serverKey,
-		apiBase:   apiBase,
-		snapBase:  snapBase,
-		http:      &http.Client{Timeout: 15 * time.Second},
+		serverKey:      serverKey,
+		apiBase:        apiBase,
+		snapBase:       snapBase,
+		enabledMethods: enabledMethods,
+		http:           &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -70,6 +73,7 @@ type snapCreateRequest struct {
 	ItemDetails        []snapItem             `json:"item_details"`
 	Expiry             *snapExpiry            `json:"expiry,omitempty"`
 	Callbacks          *snapCallbacks         `json:"callbacks,omitempty"`
+	EnabledPayments    []string               `json:"enabled_payments,omitempty"`
 }
 
 type snapCreateResponse struct {
@@ -97,6 +101,9 @@ func (g *MidtransGateway) CreatePayment(ctx context.Context, in CreatePaymentInp
 		// Expire before the 30-minute inventory reservation window lapses.
 		Expiry:    &snapExpiry{Unit: "minutes", Duration: 25},
 		Callbacks: &snapCallbacks{Finish: in.ReturnURL, Unfinish: in.ReturnURL, Error: in.ReturnURL},
+	}
+	if len(g.enabledMethods) > 0 {
+		req.EnabledPayments = g.enabledMethods
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

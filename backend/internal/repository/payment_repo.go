@@ -113,6 +113,14 @@ func (r *PaymentRepository) SetIntentStatus(ctx context.Context, intentID, statu
 	return nil
 }
 
+// SetIntentMethod records the concrete channel used at the gateway
+// (e.g. Midtrans payment_type: gopay, qris, bank_transfer, kredivo).
+func (r *PaymentRepository) SetIntentMethod(ctx context.Context, intentID, method string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE payment_intents SET method = $2, updated_at = now() WHERE id = $1`, intentID, method)
+	return err
+}
+
 // Wallet fetches a wallet, creating it if absent.
 func (r *PaymentRepository) Wallet(ctx context.Context, userID string) (*domain.Wallet, error) {
 	var w domain.Wallet

@@ -228,6 +228,17 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 		return err
 	}
 
+	// Remember the concrete channel the buyer actually paid with
+	// (Midtrans reports it as payment_type: gopay, qris, kredivo, ...).
+	if gatewayName == "midtrans" {
+		if pt, ok := ev.Raw["payment_type"].(string); ok && pt != "" && pt != intent.Method {
+			if err := s.payments.SetIntentMethod(ctx, intent.ID, pt); err != nil {
+				return err
+			}
+			intent.Method = pt
+		}
+	}
+
 	switch ev.Type {
 	case "payment.paid":
 		// Never capture when the provider amount disagrees with the order.

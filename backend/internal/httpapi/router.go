@@ -84,13 +84,20 @@ func NewRouter(deps Dependencies) http.Handler {
 	orderSvc.SetStores(stores)
 	orderSvc.SetLoyalty(loyaltyRepo)
 	orderSvc.SetWishlist(wishlistRepo)
+	orderSvc.SetInsurancePct(cfg.Payments.ShippingInsurancePct)
 	// payment gateways: sandbox always available; Midtrans when keys configured.
 	gateways := []payments.Gateway{}
-	if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", ""); err == nil {
+	if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", "", nil); err == nil {
 		gateways = append(gateways, gw)
 	}
 	if cfg.Payments.MidtransServerKey != "" {
-		mt, err := payments.NewGateway("midtrans", "", cfg.Payments.MidtransServerKey, cfg.Payments.MidtransEnv)
+		methods := []string{}
+		for _, m := range strings.Split(cfg.Payments.EnabledMethods, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				methods = append(methods, m)
+			}
+		}
+		mt, err := payments.NewGateway("midtrans", "", cfg.Payments.MidtransServerKey, cfg.Payments.MidtransEnv, methods)
 		if err != nil {
 			logger.Error("payment gateway: midtrans disabled", "reason", err.Error())
 		} else {
@@ -280,6 +287,8 @@ func NewRouter(deps Dependencies) http.Handler {
 				Post("/quote", checkout.Quote)
 			r.With(rateLimiter.Limit(15, time.Minute, userKey), auditMw).
 				Post("/place", checkout.Place)
+			r.With(rateLimiter.Limit(15, time.Minute, userKey), auditMw).
+				Post("/buy-now", checkout.BuyNow)
 		})
 
 		r.Route("/orders", func(r chi.Router) {

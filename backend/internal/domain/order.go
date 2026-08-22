@@ -62,12 +62,13 @@ type Order struct {
 	OrderNumber     string         `json:"order_number"`
 	BuyerID         string         `json:"buyer_id"`
 	SellerID        string         `json:"seller_id"`
-	Status          string         `json:"status"`
-	Currency        string         `json:"currency"`
-	Subtotal        float64        `json:"subtotal"`
-	DiscountAmount  float64        `json:"discount_amount"`
-	ShippingFee     float64        `json:"shipping_fee"`
-	TotalAmount     float64        `json:"total_amount"`
+	Status           string         `json:"status"`
+	Currency         string         `json:"currency"`
+	Subtotal         float64        `json:"subtotal"`
+	DiscountAmount   float64        `json:"discount_amount"`
+	ShippingFee      float64        `json:"shipping_fee"`
+	InsuranceFee     float64        `json:"insurance_fee"`
+	TotalAmount      float64        `json:"total_amount"`
 	PaymentStatus   string         `json:"payment_status"`
 	CouponCode      string         `json:"coupon_code,omitempty"`
 	ShippingAddress map[string]any `json:"shipping_address"`

@@ -6,6 +6,8 @@ import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../
 import { ReturnModal } from './ReturnModal'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
 import { FileUpload } from '../components/FileUpload'
+import { PaymentCountdown, usePaymentDeadline } from '../components/PaymentCountdown'
+import { paymentMethodLabel } from '../lib/format'
 
 interface OrderEvent {
   id: number
@@ -53,6 +55,15 @@ export function OrderDetailPage() {
     queryKey: ['order-events', id],
     queryFn: async () => (await api.get<{ events: OrderEvent[] }>(`/orders/${id}/events`)).data.events,
   })
+
+  // Concrete payment channel used (gopay/qris/kredivo/...) once paid.
+  const { data: intent } = useQuery({
+    queryKey: ['order-intent', id],
+    queryFn: async () => (await api.get<{ intent: { method?: string } }>(`/payments/orders/${id}/intent`)).data.intent,
+    enabled: !!id,
+    retry: false,
+  })
+  const paidVia = data?.payment_status === 'paid' ? paymentMethodLabel(intent?.method) : ''
 
   const submitReview = useMutation({
     mutationFn: async (itemId: string) =>
@@ -119,11 +130,14 @@ export function OrderDetailPage() {
     },
   })
 
+  // Payment deadline ticker — must run before any early return.
+  const deadline = usePaymentDeadline(data?.placed_at)
+
   if (!data) return <div className="mx-auto max-w-4xl px-4 py-16 text-center text-gray-500">Memuat...</div>
 
   const addr = data.shipping_address
-
   const returnItem = returnFor ? data.items.find((i) => i.id === returnFor) : null
+  const payBlocked = deadline.expired
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6 space-y-5">
@@ -158,18 +172,34 @@ export function OrderDetailPage() {
 
       {data.status === 'pending' && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <p className="text-sm text-amber-800 mb-2">
-            Bayar via Midtrans (QRIS, e-wallet, VA, kartu) atau transfer di luar aplikasi lalu isi bukti
-            pembayaran. Batas waktu 30 menit setelah pesanan dibuat.
-          </p>
+          <div className="mb-2 space-y-1">
+            <p className="text-sm text-amber-800">
+              Bayar via Midtrans (QRIS, e-wallet, VA, kartu) atau transfer di luar aplikasi lalu isi bukti
+              pembayaran.
+            </p>
+            {!payDone && !deadline.expired && <PaymentCountdown placedAt={data.placed_at} />}
+          </div>
           {payDone ? (
             <p className="text-sm text-green-700 font-medium">Pembayaran tercatat! Penjual akan segera memproses pesanan. ✅</p>
+          ) : deadline.expired ? (
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-red-700">
+                Batas pembayaran lewat — pesanan akan dibatalkan otomatis dan stok dilepas.
+              </p>
+              <button
+                onClick={() => cancel.mutate()}
+                disabled={cancel.isPending}
+                className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-50"
+              >
+                Batalkan Sekarang
+              </button>
+            </div>
           ) : (
             <>
               {midtransEnabled() && (
                 <button
                   onClick={() => snapPay.mutate()}
-                  disabled={snapPay.isPending}
+                  disabled={snapPay.isPending || deadline.expiringSoon}
                   className="mb-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
                   {snapPay.isPending ? 'Membuka Midtrans...' : '⚡ Bayar Sekarang (Midtrans)'}
@@ -202,7 +232,7 @@ export function OrderDetailPage() {
             <div className="flex gap-2 mt-3">
               <button
                 onClick={() => pay.mutate()}
-                disabled={pay.isPending || !payForm.reference.trim() || !payForm.amount}
+                disabled={payBlocked || pay.isPending || !payForm.reference.trim() || !payForm.amount}
                 className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-50"
               >
                 {pay.isPending ? 'Mencatat...' : 'Saya Sudah Bayar'}
@@ -408,7 +438,8 @@ export function OrderDetailPage() {
       </div>
 
       <p className="text-xs text-gray-400 text-center">
-        Dibuat {formatDate(data.placed_at)} · Pembayaran: {data.payment_status} · Seller: {data.seller?.name}
+        Dibuat {formatDate(data.placed_at)} · Pembayaran: {data.payment_status}
+        {data.payment_status === 'paid' && paidVia ? ` via ${paidVia}` : ''} · Seller: {data.seller?.name}
         {data.external_payment_ref && ` · Ref: ${data.external_payment_ref}`}
       </p>
     </div>

@@ -36,7 +36,7 @@ func notificationJSON(t *testing.T, n snapNotification) []byte {
 }
 
 func TestVerifyWebhook(t *testing.T) {
-	g := NewMidtransGateway("SB-Mid-server-test", "sandbox")
+	g := NewMidtransGateway("SB-Mid-server-test", "sandbox", nil)
 	valid := snapNotification{
 		OrderID: "VC-20260101-0001", StatusCode: "200", GrossAmount: "150000.00",
 	}
@@ -83,7 +83,7 @@ func TestParseWebhookStatusMatrix(t *testing.T) {
 		{"partial_refund", "", "payment.refunded"},
 		{"something_new", "", "payment.pending"},
 	}
-	g := NewMidtransGateway("k", "sandbox")
+	g := NewMidtransGateway("k", "sandbox", nil)
 	for _, tc := range cases {
 		n := snapNotification{
 			OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "25000.00",
@@ -170,17 +170,17 @@ func TestCreatePayment(t *testing.T) {
 }
 
 func TestNewGatewayFactory(t *testing.T) {
-	if _, err := NewGateway("", "http://x", "", ""); err != nil {
+	if _, err := NewGateway("", "http://x", "", "", nil); err != nil {
 		t.Fatalf("default should be sandbox: %v", err)
 	}
-	if _, err := NewGateway("midtrans", "", "", "sandbox"); err == nil {
+	if _, err := NewGateway("midtrans", "", "", "sandbox", nil); err == nil {
 		t.Fatal("midtrans without server key must fail closed")
 	}
-	mt, err := NewGateway("midtrans", "", "SB-Mid-server-test", "sandbox")
+	mt, err := NewGateway("midtrans", "", "SB-Mid-server-test", "sandbox", nil)
 	if err != nil || mt.Name() != "midtrans" {
 		t.Fatalf("midtrans construction failed: %v", err)
 	}
-	if _, err := NewGateway("stripe", "http://x", "", ""); err == nil {
+	if _, err := NewGateway("stripe", "http://x", "", "", nil); err == nil {
 		t.Fatal("unknown gateway names must fail closed, not fall back to sandbox")
 	}
 }

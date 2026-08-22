@@ -6,16 +6,28 @@ import type { CartLine } from '../types'
 import { formatIDR } from '../lib/format'
 import { useSession } from '../stores/session'
 
+interface FreeShippingInfo {
+  seller_id: string
+  name: string
+  subtotal: number
+  threshold?: number | null
+}
+
 export function CartPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { user } = useSession()
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  const { data: lines } = useQuery({
+  const { data: cartData } = useQuery({
     queryKey: ['cart'],
-    queryFn: async () => (await api.get<{ lines: CartLine[] }>('/cart')).data.lines,
+    queryFn: async () => {
+      const res = (await api.get<{ lines: CartLine[]; free_shipping?: FreeShippingInfo[] }>('/cart')).data
+      return { lines: (res.lines ?? []) as CartLine[], freeShip: res.free_shipping ?? [] }
+    },
   })
+  const lines = cartData?.lines ?? []
+  const freeShip = cartData?.freeShip
 
   const update = useMutation({
     mutationFn: async ({ variantId, quantity }: { variantId: string; quantity: number }) =>
@@ -101,12 +113,27 @@ export function CartPage() {
 
         {[...sellers.entries()].map(([sellerId, group]) => {
           const groupTotal = group.items.reduce((s, l) => s + l.subtotal, 0)
+          const fs = freeShip?.find((f) => f.seller_id === sellerId)
+          const fsPct = fs?.threshold ? Math.min(100, Math.round((fs.subtotal / fs.threshold) * 100)) : 100
+          const fsRemaining = fs?.threshold ? Math.max(0, fs.threshold - fs.subtotal) : 0
           return (
             <div key={sellerId} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
               <div className="px-4 py-2.5 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 flex items-center justify-between">
                 <p className="text-sm font-semibold">🏪 {group.name}</p>
                 <p className="text-xs text-gray-500">Subtotal toko: <b>{formatIDR(groupTotal)}</b></p>
               </div>
+              {fs?.threshold ? (
+                <div className="px-4 py-2 bg-amber-50 dark:bg-amber-900/20">
+                  <div className="h-1.5 rounded-full bg-amber-200 dark:bg-amber-800 overflow-hidden">
+                    <div className={`h-full ${fsPct >= 100 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${fsPct}%` }} />
+                  </div>
+                  <p className="text-xs mt-1 text-amber-700 dark:text-amber-300">
+                    {fsRemaining > 0
+                      ? <>🚚 Tambah <b>{formatIDR(fsRemaining)}</b> lagi dari toko ini untuk <b>gratis ongkir</b>!</>
+                      : <>🎉 Selamat, pesanan dari toko ini <b>gratis ongkir</b>!</>}
+                  </p>
+                </div>
+              ) : null}
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
                 {group.items.map((l) => (
                   <div key={l.variant_id} className="p-4 flex gap-4 items-center">

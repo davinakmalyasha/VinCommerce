@@ -6,6 +6,7 @@ import { useSession } from '../stores/session'
 import { formatIDR } from '../lib/format'
 import type { Address } from '../types'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
+import { PaymentCountdown } from '../components/PaymentCountdown'
 
 interface Quote {
   subtotal: number
@@ -13,10 +14,13 @@ interface Quote {
   coupon_code?: string
   shipping: { code: string; name: string; fee: number; min_days: number; max_days: number }[]
   total: number
+  insurance_available?: boolean
+  insurance_selected?: boolean
+  insurance_fee?: number
 }
 
 interface PlacedOrder {
-  orders: { id: string; order_number: string; status: string; total_amount: number; seller_id: string }[]
+  orders: { id: string; order_number: string; status: string; total_amount: number; seller_id: string; placed_at?: string }[]
   grand_total: number
 }
 
@@ -48,6 +52,7 @@ export function CheckoutPage() {
   const [paidOrder, setPaidOrder] = useState<PlacedOrder | null>(null)
   const [saveAddress, setSaveAddress] = useState(false)
   const [notes, setNotes] = useState('')
+  const [insurance, setInsurance] = useState(false)
   const [idemKey] = useState(() => crypto.randomUUID())
 
   const { data: addresses } = useQuery({
@@ -76,12 +81,13 @@ export function CheckoutPage() {
   const quoteEnabled = !!user && !paidOrder
 
   const { data: quote } = useQuery({
-    queryKey: ['quote', coupon, shippingMethod],
+    queryKey: ['quote', coupon, shippingMethod, insurance],
     queryFn: async () =>
       (
         await api.post<Quote>('/checkout/quote', {
           coupon_code: coupon || undefined,
           shipping_method_code: shippingMethod,
+          insurance,
         })
       ).data,
     enabled: quoteEnabled,
@@ -99,6 +105,7 @@ export function CheckoutPage() {
             address_id: selectedAddressId || undefined,
             address: selectedAddressId ? undefined : form,
             notes: notes || undefined,
+            insurance,
           },
           { headers: { 'X-Idempotency-Key': idemKey } },
         )
@@ -255,6 +262,24 @@ export function CheckoutPage() {
               </label>
             ))}
           </div>
+          {quote?.insurance_available && (
+            <label className="flex items-center justify-between mt-3 p-3 rounded-xl border border-blue-200 bg-blue-50 cursor-pointer">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={insurance}
+                  onChange={(e) => setInsurance(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                <div>
+                  <p className="text-sm font-medium">🛡️ Asuransi Pengiriman</p>
+                  <p className="text-xs text-gray-500">
+                    Ganti rugi jika paket hilang/rusak ({formatIDR(quote.insurance_fee ?? 0)})
+                  </p>
+                </div>
+              </div>
+            </label>
+          )}
         </section>
 
         <section className="bg-white border border-gray-200 rounded-xl p-5">
@@ -344,7 +369,7 @@ export function CheckoutPage() {
   )
 }
 
-function PayCard({ order }: { order: { id: string; order_number: string; status: string; total_amount: number; seller_id: string } }) {
+function PayCard({ order }: { order: { id: string; order_number: string; status: string; total_amount: number; seller_id: string; placed_at?: string } }) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [done, setDone] = useState(false)
@@ -379,6 +404,11 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
         <p className="text-sm text-green-700">✅ Pembayaran tercatat. Penjual akan memproses pesananmu.</p>
       ) : (
         <>
+          {order.placed_at && (
+            <div className="mb-2">
+              <PaymentCountdown placedAt={order.placed_at} />
+            </div>
+          )}
           {midtransEnabled() && (
             <button
               onClick={() => snapPay.mutate()}

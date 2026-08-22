@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type OrderService struct {
 	notifications *NotificationService
 	mailer        *mail.Client
 	webURL        string
+	insurancePct  float64
 }
 
 // NewOrderService creates an OrderService.
@@ -211,6 +213,10 @@ func (s *OrderService) UpdateAddress(ctx context.Context, userID string, a *doma
 // ReservationHold is how long stock stays reserved for an unpaid order.
 const ReservationHold = 30 * time.Minute
 
+// SetInsurancePct enables the optional shipping-insurance upsell
+// (percentage of each seller bundle's subtotal). 0 disables it.
+func (s *OrderService) SetInsurancePct(pct float64) { s.insurancePct = pct }
+
 // --- Cart ---
 
 // CartFor resolves the correct cart for a user or guest session.
@@ -299,6 +305,50 @@ func (s *OrderService) MergeCart(ctx context.Context, userID, guestCartID string
 	return s.carts.Merge(ctx, guestCartID, userCart.ID)
 }
 
+// FreeShippingStatus describes one seller bundle's progress toward that
+// store's free-shipping threshold (cart upsell banner).
+type FreeShippingStatus struct {
+	SellerID  string   `json:"seller_id"`
+	Name      string   `json:"name"`
+	Subtotal  float64  `json:"subtotal"`
+	Threshold *float64 `json:"threshold,omitempty"`
+}
+
+// FreeShippingStatus computes per-seller progress toward free shipping.
+func (s *OrderService) FreeShippingStatus(ctx context.Context, userID, sessionKey string) ([]*FreeShippingStatus, error) {
+	cart, err := s.CartFor(ctx, userID, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	_, lines, err := s.carts.GetWithItems(ctx, cart.ID)
+	if err != nil {
+		return nil, err
+	}
+	bundles := map[string]float64{}
+	names := map[string]string{}
+	for _, l := range lines {
+		bundles[l.SellerID] += l.Subtotal
+		names[l.SellerID] = l.SellerName
+	}
+	ids := make([]string, 0, len(bundles))
+	for sid := range bundles {
+		ids = append(ids, sid)
+	}
+	sort.Strings(ids)
+
+	out := []*FreeShippingStatus{}
+	for _, sid := range ids {
+		th, err := s.stores.FreeShippingThreshold(ctx, sid)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &FreeShippingStatus{
+			SellerID: sid, Name: names[sid], Subtotal: bundles[sid], Threshold: th,
+		})
+	}
+	return out, nil
+}
+
 // --- Checkout ---
 
 // Quote computes the checkout breakdown without placing the order.
@@ -309,23 +359,28 @@ type Quote struct {
 	CouponCode     string             `json:"coupon_code,omitempty"`
 	Shipping       []*ShippingQuote   `json:"shipping"`
 	Total          float64            `json:"total"`
+
+	InsuranceAvailable bool    `json:"insurance_available"`
+	InsuranceSelected  bool    `json:"insurance_selected"`
+	InsuranceFee       float64 `json:"insurance_fee"`
 }
 
 // ShippingQuote is per-method fee for one seller bundle.
 type ShippingQuote struct {
-	MethodID string  `json:"method_id"`
-	Code     string  `json:"code"`
-	Name     string  `json:"name"`
-	BaseFee  float64 `json:"base_fee"`
-	PerKgFee float64 `json:"per_kg_fee"`
-	WeightKg int     `json:"weight_kg"`
-	Fee      float64 `json:"fee"`
-	MinDays  int     `json:"min_days"`
-	MaxDays  int     `json:"max_days"`
+	MethodID     string  `json:"method_id"`
+	Code         string  `json:"code"`
+	Name         string  `json:"name"`
+	BaseFee      float64 `json:"base_fee"`
+	PerKgFee     float64 `json:"per_kg_fee"`
+	WeightKg     int     `json:"weight_kg"`
+	Fee          float64 `json:"fee"`
+	InsuranceFee float64 `json:"insurance_fee"`
+	MinDays      int     `json:"min_days"`
+	MaxDays      int     `json:"max_days"`
 }
 
 // QuoteCheckout validates items, applies the coupon and computes shipping.
-func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, couponCode, shippingMethodCode string) (*Quote, error) {
+func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, couponCode, shippingMethodCode string, insurance bool) (*Quote, error) {
 	_, lines, err := s.carts.GetWithItems(ctx, cartID)
 	if err != nil {
 		return nil, err
@@ -398,6 +453,9 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 	}
 	sort.Strings(sellerIDs)
 
+	quote.InsuranceAvailable = s.insurancePct > 0
+	quote.InsuranceSelected = insurance && quote.InsuranceAvailable
+
 	for _, sid := range sellerIDs {
 		bundleSubtotal := 0.0
 		weightKg := 0
@@ -422,15 +480,21 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 				BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
 				WeightKg: weightKg, Fee: 0, MinDays: method.MinDays, MaxDays: method.MaxDays,
 			})
-			continue
+		} else {
+			fee := method.BaseFee + float64(weightKg)*method.PerKgFee
+			quote.Shipping = append(quote.Shipping, &ShippingQuote{
+				MethodID: method.ID, Code: method.Code, Name: method.Name,
+				BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
+				WeightKg: weightKg, Fee: fee, MinDays: method.MinDays, MaxDays: method.MaxDays,
+			})
+			total += fee
 		}
-		fee := method.BaseFee + float64(weightKg)*method.PerKgFee
-		quote.Shipping = append(quote.Shipping, &ShippingQuote{
-			MethodID: method.ID, Code: method.Code, Name: method.Name,
-			BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
-			WeightKg: weightKg, Fee: fee, MinDays: method.MinDays, MaxDays: method.MaxDays,
-		})
-		total += fee
+		if quote.InsuranceSelected {
+			sf := math.Round(bundleSubtotal*s.insurancePct) / 100
+			quote.Shipping[len(quote.Shipping)-1].InsuranceFee = sf
+			quote.InsuranceFee += sf
+			total += sf
+		}
 	}
 	quote.Total = total
 	return quote, nil
@@ -445,6 +509,7 @@ type PlaceOrderInput struct {
 	AddressesBySeller  map[string]*domain.Address
 	CouponCode         string
 	ShippingMethodCode string
+	Insurance          bool
 	Notes              string
 	IdempotencyKey     string
 }
@@ -473,6 +538,54 @@ type PlacedOrder struct {
 	GrandTotal float64         `json:"grand_total"`
 }
 
+// BuyNowInput places a single-variant order straight from a product page.
+type BuyNowInput struct {
+	UserID             string
+	VariantID          string
+	Quantity           int
+	AddressID          string
+	Address            *domain.Address
+	ShippingMethodCode string
+	Notes              string
+	IdempotencyKey     string
+}
+
+// BuyNow implements one-click checkout: an ephemeral per-user cart carries
+// the single line through the normal quote+place path, so flash-sale pricing,
+// stock validation, reservations and seller splitting are all reused
+// untouched — and the buyer's persistent cart is never modified.
+func (s *OrderService) BuyNow(ctx context.Context, in BuyNowInput) (*PlacedOrder, error) {
+	if in.Quantity < 1 {
+		return nil, domain.E(domain.KindInvalid, "BAD_QUANTITY", "quantity must be at least 1")
+	}
+	cart, err := s.carts.EnsureActiveBySession(ctx, "buynow-"+in.UserID)
+	if err != nil {
+		return nil, err
+	}
+	// reset the scratch cart to exactly this variant
+	if _, lines, lerr := s.carts.GetWithItems(ctx, cart.ID); lerr == nil && len(lines) > 0 {
+		ids := make([]string, 0, len(lines))
+		for _, l := range lines {
+			ids = append(ids, l.VariantID)
+		}
+		if err := s.carts.RemoveItems(ctx, cart.ID, ids); err != nil {
+			return nil, err
+		}
+	}
+	if _, _, err := s.AddToCart(ctx, cart.ID, in.VariantID, in.Quantity); err != nil {
+		return nil, err
+	}
+	return s.PlaceOrder(ctx, PlaceOrderInput{
+		UserID:             in.UserID,
+		CartID:             cart.ID,
+		AddressID:          in.AddressID,
+		Address:            in.Address,
+		ShippingMethodCode: in.ShippingMethodCode,
+		Notes:              in.Notes,
+		IdempotencyKey:     in.IdempotencyKey,
+	})
+}
+
 // PlaceOrder executes checkout atomically: reserves stock, splits by seller, persists.
 func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*PlacedOrder, error) {
 	address, err := s.ResolveAddress(ctx, in)
@@ -482,7 +595,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 	if in.CartID == "" {
 		return nil, domain.E(domain.KindInvalid, "CART_REQUIRED", "cart is required")
 	}
-	quote, err := s.QuoteCheckout(ctx, in.UserID, in.CartID, in.CouponCode, in.ShippingMethodCode)
+	quote, err := s.QuoteCheckout(ctx, in.UserID, in.CartID, in.CouponCode, in.ShippingMethodCode, in.Insurance)
 	if err != nil {
 		return nil, err
 	}
@@ -527,6 +640,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			discount = quote.DiscountAmount
 		}
 		shippingFee := quote.Shipping[shipIdx].Fee
+		insuranceFee := quote.Shipping[shipIdx].InsuranceFee
 		shipIdx++
 
 		order := &domain.Order{
@@ -539,7 +653,8 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			Subtotal:        subtotal,
 			DiscountAmount:  discount,
 			ShippingFee:     shippingFee,
-			TotalAmount:     subtotal - discount + shippingFee,
+			InsuranceFee:    insuranceFee,
+			TotalAmount:     subtotal - discount + shippingFee + insuranceFee,
 			PaymentStatus:   domain.PaymentUnpaid,
 			CouponCode:      quote.CouponCode,
 			ShippingAddress: addressMap(orderAddress(address, in.AddressesBySeller, sid)),

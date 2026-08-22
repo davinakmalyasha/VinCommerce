@@ -43,3 +43,44 @@ export const orderStatusColors: Record<string, string> = {
 export function slugify(s: string): string {
   return s.toLowerCase().replace(/[']/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
+
+// Concrete gateway channel labels (Midtrans payment_type values + internal methods).
+export const paymentMethodLabels: Record<string, string> = {
+  gopay: 'GoPay',
+  qris: 'QRIS',
+  shopeepay: 'ShopeePay',
+  dana: 'DANA',
+  astrapay: 'AstraPay',
+  bank_transfer: 'Transfer Bank (VA)',
+  bank_bca_va: 'VA BCA',
+  bank_bni_va: 'VA BNI',
+  bank_bri_va: 'VA BRI',
+  bank_mandiri_va: 'VA Mandiri',
+  permata_va: 'VA Permata',
+  bca_va: 'VA BCA',
+  bni_va: 'VA BNI',
+  bri_va: 'VA BRI',
+  credit_card: 'Kartu Kredit/Debit',
+  kredivo: 'Kredivo PayLater',
+  akulaku: 'Akulaku PayLater',
+  spaylater: 'ShopeePay Later',
+  indomaret: 'Indomaret',
+  alfamart: 'Alfamart',
+  // internal
+  wallet: 'Saldo Dompet',
+  cod: 'Bayar di Tempat (COD)',
+  midtrans_snap: 'Midtrans',
+  e_wallet: 'E-Wallet',
+}
+
+export function paymentMethodLabel(m?: string | null): string {
+  if (!m) return ''
+  return paymentMethodLabels[m] ?? m
+}
+
+// Must stay in sync with backend order_service.ReservationHold.
+export const RESERVATION_MINUTES = 30
+
+export function paymentDeadlineMs(placedAt: string): number {
+  return new Date(placedAt).getTime() + RESERVATION_MINUTES * 60_000
+}

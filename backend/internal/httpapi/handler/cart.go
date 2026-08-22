@@ -42,7 +42,8 @@ func (h *Cart) Get(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"cart": cart, "lines": lines})
+	freeShip, _ := h.svc.FreeShippingStatus(r.Context(), userID, sessionKey)
+	writeJSON(w, http.StatusOK, map[string]any{"cart": cart, "lines": lines, "free_shipping": freeShip})
 }
 
 type addItemRequest struct {
@@ -209,6 +210,69 @@ func NewCheckout(svc *service.OrderService, rdb *redis.Client) *Checkout {
 type quoteRequest struct {
 	CouponCode         string `json:"coupon_code,omitempty"`
 	ShippingMethodCode string `json:"shipping_method_code,omitempty"`
+	Insurance          bool   `json:"insurance,omitempty"`
+}
+
+type buyNowRequest struct {
+	VariantID          string `json:"variant_id"`
+	Quantity           int    `json:"quantity"`
+	ShippingMethodCode string `json:"shipping_method_code,omitempty"`
+	AddressID          string `json:"address_id,omitempty"`
+	Address            *struct {
+		Recipient    string `json:"recipient"`
+		Phone        string `json:"phone"`
+		AddressLine1 string `json:"address_line1"`
+		City         string `json:"city"`
+		Province     string `json:"province"`
+		PostalCode   string `json:"postal_code"`
+	} `json:"address,omitempty"`
+}
+
+// BuyNow handles POST /checkout/buy-now — one-click order from a product page.
+func (h *Checkout) BuyNow(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req buyNowRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if req.VariantID == "" {
+		writeErr(w, r, domain.E(domain.KindInvalid, "VARIANT_REQUIRED", "variant is required"))
+		return
+	}
+	idemKey := r.Header.Get("X-Idempotency-Key")
+	if idemKey != "" {
+		existing, err := h.rdb.Get(r.Context(), "idem:"+user.ID+":"+idemKey).Result()
+		if err == nil && existing != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"replayed": true, "order_ids": existing})
+			return
+		}
+	}
+	var address *domain.Address
+	if req.Address != nil {
+		address = &domain.Address{
+			Recipient: req.Address.Recipient, Phone: req.Address.Phone,
+			AddressLine1: req.Address.AddressLine1,
+			City: req.Address.City, Province: req.Address.Province,
+			PostalCode: req.Address.PostalCode, Country: "Indonesia",
+		}
+	}
+	placed, err := h.svc.BuyNow(r.Context(), service.BuyNowInput{
+		UserID:             user.ID,
+		VariantID:          req.VariantID,
+		Quantity:           req.Quantity,
+		AddressID:          req.AddressID,
+		Address:            address,
+		ShippingMethodCode: req.ShippingMethodCode,
+	})
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if idemKey != "" && len(placed.Orders) > 0 {
+		_ = h.rdb.Set(r.Context(), "idem:"+user.ID+":"+idemKey, placed.Orders[0].ID, time.Hour).Err()
+	}
+	writeJSON(w, http.StatusCreated, placed)
 }
 
 // Quote handles POST /checkout/quote.
@@ -224,7 +288,7 @@ func (h *Checkout) Quote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	quote, err := h.svc.QuoteCheckout(r.Context(), user.ID, cart.ID, req.CouponCode, req.ShippingMethodCode)
+	quote, err := h.svc.QuoteCheckout(r.Context(), user.ID, cart.ID, req.CouponCode, req.ShippingMethodCode, req.Insurance)
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -235,6 +299,7 @@ func (h *Checkout) Quote(w http.ResponseWriter, r *http.Request) {
 type placeOrderRequest struct {
 	CouponCode         string `json:"coupon_code,omitempty"`
 	ShippingMethodCode string `json:"shipping_method_code"`
+	Insurance          bool   `json:"insurance,omitempty"`
 	AddressID          string `json:"address_id,omitempty"`
 	Address            *struct {
 		Recipient    string `json:"recipient"`
@@ -324,6 +389,7 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 		AddressesBySeller:  bySeller,
 		CouponCode:         req.CouponCode,
 		ShippingMethodCode: req.ShippingMethodCode,
+		Insurance:          req.Insurance,
 		Notes:              req.Notes,
 		IdempotencyKey:     idemKey,
 	})

@@ -32,6 +32,12 @@ type PaymentConfig struct {
 	MidtransServerKey string `env:"MIDTRANS_SERVER_KEY" envDefault:""`
 	MidtransClientKey string `env:"MIDTRANS_CLIENT_KEY" envDefault:""`
 	MidtransEnv       string `env:"MIDTRANS_ENV" envDefault:"sandbox"` // sandbox | production
+	// Comma-separated allow-list of Midtrans payment channels
+	// (gopay,qris,bank_transfer,credit_card,kredivo,akulaku,...). Empty = all.
+	EnabledMethods string `env:"PAYMENT_ENABLED_METHODS" envDefault:""`
+	// Optional shipping insurance: percentage of bundle subtotal charged when
+	// the buyer opts in at checkout. 0 disables the feature.
+	ShippingInsurancePct float64 `env:"SHIPPING_INSURANCE_PCT" envDefault:"0.3"`
 }
 
 // OAuthConfig enables social login (Google).

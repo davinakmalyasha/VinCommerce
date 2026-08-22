@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Product } from '../types'
 import { formatIDR } from '../lib/format'
@@ -36,6 +36,7 @@ interface QA {
 
 export function ProductPage() {
   const { slug } = useParams()
+  const navigate = useNavigate()
   const { user } = useSession()
   const queryClient = useQueryClient()
   const { data: flashSale } = useActiveFlashSale()
@@ -208,6 +209,23 @@ export function ProductPage() {
       queryClient.invalidateQueries({ queryKey: ['cart'] })
       setTimeout(() => setNotice(''), 2500)
     },
+  })
+
+  const buyNow = useMutation({
+    mutationFn: async () => {
+      if (!variantId || !user) throw new Error('Pilih varian dulu')
+      return (
+        await api.post<{ orders: { id: string }[] }>(
+          '/checkout/buy-now',
+          { variant_id: variantId, quantity: qty },
+          { headers: { 'X-Idempotency-Key': `buynow-${variantId}-${Date.now()}` } },
+        )
+      ).data
+    },
+    onSuccess: (placed) => {
+      if (placed.orders?.length) navigate(`/orders/${placed.orders[0].id}`)
+    },
+    onError: (e: Error) => setNotice(e.message),
   })
 
   const addToWishlist = useMutation({
@@ -420,13 +438,25 @@ export function ProductPage() {
                 </Link>
               )
             ) : (
-              <button
-                onClick={() => addToCart.mutate()}
-                disabled={!selected}
-                className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-40"
-              >
-                + Keranjang
-              </button>
+              <>
+                <button
+                  onClick={() => addToCart.mutate()}
+                  disabled={!selected || addToCart.isPending}
+                  className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-40"
+                >
+                  + Keranjang
+                </button>
+                {user && (
+                  <button
+                    onClick={() => buyNow.mutate()}
+                    disabled={!selected || buyNow.isPending}
+                    className="flex-1 py-3 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-40"
+                    title="Langsung checkout tanpa masuk keranjang"
+                  >
+                    {buyNow.isPending ? 'Memproses...' : '⚡ Beli Sekarang'}
+                  </button>
+                )}
+              </>
             )}
             {user && (
               <button
@@ -434,7 +464,7 @@ export function ProductPage() {
                 className="px-4 py-3 rounded-xl border border-gray-300 hover:border-amber-400 hover:text-amber-600"
                 title="Simpan ke wishlist"
               >
-                â™¥
+                ♥
               </button>
             )}
           </div>

@@ -68,12 +68,12 @@ func (t *OrderTx) CreateOrder(ctx context.Context, o *domain.Order) error {
 	}
 	err = t.tx.QueryRow(ctx, `
 		INSERT INTO orders (id, order_number, buyer_id, seller_id, status, currency,
-		                    subtotal, discount_amount, shipping_fee, total_amount, payment_status,
+		                    subtotal, discount_amount, shipping_fee, insurance_fee, total_amount, payment_status,
 		                    coupon_code, shipping_address, shipping_method, notes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, NULLIF($14, ''), NULLIF($15, ''))
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULLIF($13, ''), $14, NULLIF($15, ''), NULLIF($16, ''))
 		RETURNING placed_at`,
 		o.ID, o.OrderNumber, o.BuyerID, o.SellerID, o.Status, o.Currency,
-		o.Subtotal, o.DiscountAmount, o.ShippingFee, o.TotalAmount, o.PaymentStatus,
+		o.Subtotal, o.DiscountAmount, o.ShippingFee, o.InsuranceFee, o.TotalAmount, o.PaymentStatus,
 		o.CouponCode, addr, o.ShippingMethod, o.Notes).Scan(&o.PlacedAt)
 	return err
 }
