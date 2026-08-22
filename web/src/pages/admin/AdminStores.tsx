@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { formatIDR, formatDate } from '../../lib/format'
@@ -212,6 +213,13 @@ export function AdminOverview() {
       ).data,
   })
 
+  const { data: counts } = useQuery({
+    queryKey: ['pending-counts'],
+    queryFn: async () =>
+      (await api.get<{ stores: number; kyc: number; reviews: number; returns: number; disputes: number; tickets: number }>('/admin/pending-counts')).data,
+    refetchInterval: 30_000,
+  })
+
   const cards = [
     { label: 'GMV (30 hari)', value: formatIDR(data?.summary.gmv ?? 0) },
     { label: 'Pesanan', value: String(data?.summary.order_count ?? 0) },
@@ -219,6 +227,15 @@ export function AdminOverview() {
     { label: 'Produk Aktif', value: String(data?.summary.product_count ?? 0) },
     { label: 'Toko Aktif', value: String(data?.summary.store_count ?? 0) },
     { label: 'Rata-rata Pesanan', value: formatIDR(data?.summary.avg_order ?? 0) },
+  ]
+
+  const queues = [
+    { to: '/admin/stores', label: 'Toko menunggu', count: counts?.stores, warn: (counts?.stores ?? 0) > 5 },
+    { to: '/admin/stores', label: 'KYC pending', count: counts?.kyc, warn: (counts?.kyc ?? 0) > 0 },
+    { to: '/admin/reviews', label: 'Ulasan dimoderasi', count: counts?.reviews, warn: (counts?.reviews ?? 0) > 10 },
+    { to: '/admin/returns', label: 'Retur diajukan', count: counts?.returns, warn: false },
+    { to: '/admin/disputes', label: 'Sengketa terbuka', count: counts?.disputes, warn: (counts?.disputes ?? 0) > 0 },
+    { to: '/admin/tickets', label: 'Tiket aktif', count: counts?.tickets, warn: false },
   ]
 
   return (
@@ -232,6 +249,32 @@ export function AdminOverview() {
           </div>
         ))}
       </div>
+
+      <div className="space-y-3">
+        <h2 className="font-bold text-sm text-gray-500 uppercase tracking-wide">Antrean Operasional</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {queues.map((q) => {
+            const n = q.count ?? 0
+            const loading = q.count === undefined
+            return (
+              <QueueTile key={q.label} to={q.to} label={q.label} count={n} loading={loading} warn={q.warn} />
+            )
+          })}
+        </div>
+      </div>
     </div>
+  )
+}
+
+function QueueTile({ to, label, count, loading, warn }: { to: string; label: string; count: number; loading: boolean; warn: boolean }) {
+  return (
+    <Link to={to} className={`block bg-white border rounded-xl p-4 transition-colors ${
+      warn && !loading ? 'border-red-300 bg-red-50' : 'border-gray-200 hover:border-amber-400'
+    }`}>
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className={`text-2xl font-extrabold mt-1 ${loading ? 'text-gray-300' : warn ? 'text-red-600' : 'text-gray-900'}`}>
+        {loading ? '…' : count}
+      </p>
+    </Link>
   )
 }

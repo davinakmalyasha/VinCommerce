@@ -48,6 +48,16 @@ func rangeFromQuery(r *http.Request) (time.Time, time.Time) {
 	return from, to
 }
 
+// PendingCounts handles GET /admin/pending-counts — ops dashboard queue tiles.
+func (h *Analytics) PendingCounts(w http.ResponseWriter, r *http.Request) {
+	counts, err := h.svc.PendingCounts(r.Context())
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, counts)
+}
+
 // Platform handles GET /admin/analytics.
 func (h *Analytics) Platform(w http.ResponseWriter, r *http.Request) {
 	from, to := rangeFromQuery(r)

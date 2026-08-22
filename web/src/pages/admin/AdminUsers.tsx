@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
+import { useSession } from '../../stores/session'
 import { formatDate } from '../../lib/format'
 
 interface AdminUser {
@@ -14,10 +17,20 @@ interface AdminUser {
 
 export function AdminUsers() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const startImpersonation = useSession((s) => s.startImpersonation)
+  const [q, setQ] = useState('')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
 
   const { data } = useQuery({
-    queryKey: ['admin-users'],
-    queryFn: async () => (await api.get<{ users: AdminUser[]; total: number }>('/admin/users')).data,
+    queryKey: ['admin-users', search, page],
+    queryFn: async () =>
+      (
+        await api.get<{ users: AdminUser[]; total: number }>('/admin/users', {
+          params: { q: search || undefined, page, page_size: 20 },
+        })
+      ).data,
   })
 
   const setStatus = useMutation({
@@ -31,12 +44,36 @@ export function AdminUsers() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-users'] }),
   })
 
+  const impersonate = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.post<{ access_token: string; user: AdminUser & Record<string, unknown> }>(`/admin/users/${id}/impersonate`)).data,
+    onSuccess: (res) => {
+      startImpersonation(res.access_token, res.user as never)
+      navigate('/')
+    },
+    onError: (e: Error) => alert(e.message),
+  })
+
+  const visible = (data?.users ?? []).filter((u) =>
+    search ? u.full_name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()) : true,
+  )
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / 20))
+
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-bold">Manajemen Pengguna ({data?.total ?? 0})</h1>
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">Manajemen Pengguna ({data?.total ?? 0})</h1>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && setSearch(q)}
+          placeholder="Cari nama / email..."
+          className="px-3 py-2 border rounded-lg text-sm outline-none w-56 dark:bg-gray-800"
+        />
+      </div>
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs text-gray-500">
+          <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs text-gray-500">
             <tr>
               <th className="px-4 py-3">Pengguna</th>
               <th className="px-4 py-3">Peran</th>
@@ -46,8 +83,8 @@ export function AdminUsers() {
               <th className="px-4 py-3">Aksi</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
-            {data?.users.map((u) => (
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+            {visible.map((u) => (
               <tr key={u.id}>
                 <td className="px-4 py-3">
                   <p className="font-medium">{u.full_name}</p>
@@ -73,7 +110,17 @@ export function AdminUsers() {
                     {u.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 flex gap-2">
+                <td className="px-4 py-3 flex flex-wrap gap-2">
+                  {!u.roles.includes('admin') && u.status === 'active' && (
+                    <button
+                      onClick={() => impersonate.mutate(u.id)}
+                      disabled={impersonate.isPending}
+                      className="text-xs text-indigo-600 hover:underline disabled:opacity-50"
+                      title="Masuk sebagai pengguna ini untuk support"
+                    >
+                      🎭 Login sebagai
+                    </button>
+                  )}
                   {!u.roles.includes('seller') && (
                     <button
                       onClick={() => grantSeller.mutate(u.id)}
@@ -84,7 +131,9 @@ export function AdminUsers() {
                   )}
                   {u.status === 'active' ? (
                     <button
-                      onClick={() => setStatus.mutate({ id: u.id, status: 'suspended' })}
+                      onClick={() => {
+                        if (confirm(`Suspensi akun ${u.email}?`)) setStatus.mutate({ id: u.id, status: 'suspended' })
+                      }}
                       className="text-xs text-orange-600 hover:underline"
                     >
                       Suspensi
@@ -103,6 +152,17 @@ export function AdminUsers() {
           </tbody>
         </table>
       </div>
+      {(data?.total ?? 0) > 20 && (
+        <div className="flex items-center justify-center gap-3">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
+            ← Sebelumnya
+          </button>
+          <span className="text-sm text-gray-500">Halaman {page} / {totalPages}</span>
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
+            Berikutnya →
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -22,6 +22,11 @@ func NewAnalyticsService(analytics *repository.AnalyticsRepository) *AnalyticsSe
 // SetOrders enables the seller order CSV export.
 func (s *AnalyticsService) SetOrders(o *repository.OrderRepository) { s.orders = o }
 
+// PendingCounts returns moderation-queue sizes for the ops dashboard.
+func (s *AnalyticsService) PendingCounts(ctx context.Context) (*repository.PendingCounts, error) {
+	return s.analytics.PendingCounts(ctx)
+}
+
 // SellerOrders lists the seller's orders for export.
 func (s *AnalyticsService) SellerOrders(ctx context.Context, sellerID string, limit int) ([]*domain.Order, error) {
 	if s.orders == nil {

@@ -17,6 +17,31 @@ func NewAnalyticsRepository(pool *db.Pool) *AnalyticsRepository {
 	return &AnalyticsRepository{pool: pool}
 }
 
+// PendingCounts aggregates moderation-queue sizes for the ops dashboard.
+type PendingCounts struct {
+	Stores   int64 `json:"stores"`
+	KYC      int64 `json:"kyc"`
+	Reviews  int64 `json:"reviews"`
+	Returns  int64 `json:"returns"`
+	Disputes int64 `json:"disputes"`
+	Tickets  int64 `json:"tickets"`
+}
+
+// PendingCounts returns one row of queue sizes (single round-trip).
+func (r *AnalyticsRepository) PendingCounts(ctx context.Context) (*PendingCounts, error) {
+	var c PendingCounts
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM stores WHERE status = 'pending'),
+			(SELECT COUNT(*) FROM seller_kyc WHERE status = 'pending'),
+			(SELECT COUNT(*) FROM product_reviews WHERE status = 'pending'),
+			(SELECT COUNT(*) FROM return_requests WHERE status = 'requested'),
+			(SELECT COUNT(*) FROM disputes WHERE status = 'open'),
+			(SELECT COUNT(*) FROM support_tickets WHERE status NOT IN ('resolved', 'closed'))`).
+		Scan(&c.Stores, &c.KYC, &c.Reviews, &c.Returns, &c.Disputes, &c.Tickets)
+	return &c, err
+}
+
 // SalesPoint is one day's aggregated sales.
 type SalesPoint struct {
 	Day        time.Time `json:"day"`

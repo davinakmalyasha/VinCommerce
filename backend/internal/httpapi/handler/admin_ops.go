@@ -6,21 +6,25 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/vincommerce/backend/internal/domain"
+	"github.com/vincommerce/backend/internal/httpapi/middleware"
 	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
 )
-
 // AdminOps exposes coupon, user and feature-flag management.
 type AdminOps struct {
 	svc   *service.SellerService
 	flags *repository.FeatureFlagRepository
 	rdb   *redis.Client
+	auth  *service.AuthService
 }
 
 // NewAdminOps creates an AdminOps handler.
 func NewAdminOps(svc *service.SellerService, flags *repository.FeatureFlagRepository, rdb *redis.Client) *AdminOps {
 	return &AdminOps{svc: svc, flags: flags, rdb: rdb}
 }
+
+// SetAuth enables impersonation support.
+func (h *AdminOps) SetAuth(a *service.AuthService) { h.auth = a }
 
 // --- users ---
 
@@ -59,6 +63,18 @@ func (h *AdminOps) GrantSeller(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"granted": true})
+}
+
+// Impersonate handles POST /admin/users/{id}/impersonate — mints a
+// short-lived access token for the target user (support tooling).
+func (h *AdminOps) Impersonate(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	target, token, err := h.auth.Impersonate(r.Context(), user.ID, chi.URLParam(r, "id"), clientIP(r), r.UserAgent())
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"access_token": token, "user": target})
 }
 
 // --- coupons ---

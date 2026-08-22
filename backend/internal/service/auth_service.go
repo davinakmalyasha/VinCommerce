@@ -210,6 +210,32 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*Tokens, error)
 	return s.issueTokens(ctx, user, in.DeviceName, in.IPAddress, in.UserAgent)
 }
 
+// Impersonate mints a short-lived access token for another user (admin
+// support tool). No refresh session is created: impersonation ends when the
+// in-memory token expires or is discarded.
+func (s *AuthService) Impersonate(ctx context.Context, adminID, targetUserID, ipAddress, userAgent string) (*domain.User, string, error) {
+	admin, err := s.users.ByID(ctx, adminID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !admin.HasRole(domain.RoleAdmin) {
+		return nil, "", domain.E(domain.KindForbidden, "FORBIDDEN", "admin role required")
+	}
+	target, err := s.users.ByID(ctx, targetUserID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !target.IsActive() {
+		return nil, "", domain.ErrUserDisabled
+	}
+	token, _, err := s.tokens.IssueAccess(target)
+	if err != nil {
+		return nil, "", domain.Wrap(domain.KindInternal, "TOKEN_GEN", "failed to mint token", err)
+	}
+	s.audit(ctx, adminID, "admin.impersonate", "user", targetUserID, ipAddress, userAgent, map[string]any{"target": target.Email})
+	return target, token, nil
+}
+
 // Refresh rotates a refresh token, revoking the family on reuse.
 func (s *AuthService) Refresh(ctx context.Context, refreshToken, ipAddress, userAgent string) (*Tokens, error) {
 	hash := s.tokens.HashRefresh(refreshToken)
