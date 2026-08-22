@@ -49,6 +49,8 @@ import { ComparePage } from './pages/ComparePage'
 import { FollowedStoresPage } from './pages/FollowedStoresPage'
 import { VerifyEmailPage } from './pages/VerifyEmailPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
+import { MyReturnsPage } from './pages/MyReturnsPage'
+import { WalletPage } from './pages/WalletPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
 export const router = createBrowserRouter([
@@ -70,6 +72,8 @@ export const router = createBrowserRouter([
       { path: 'reset-password', element: <ResetPasswordPage /> },
       { path: 'account', element: <AccountPage /> },
       { path: 'wishlist', element: <WishlistPage /> },
+      { path: 'wallet', element: <WalletPage /> },
+      { path: 'returns', element: <MyReturnsPage /> },
       { path: 'followed-stores', element: <FollowedStoresPage /> },
       { path: 'notifications', element: <NotificationsPage /> },
       { path: 'flash-sales', element: <FlashSalePage /> },

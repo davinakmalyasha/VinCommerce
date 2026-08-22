@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../lib/format'
 import { ReturnModal } from './ReturnModal'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
+import { FileUpload } from '../components/FileUpload'
 
 interface OrderEvent {
   id: number
@@ -38,6 +39,7 @@ export function OrderDetailPage() {
   const queryClient = useQueryClient()
   const [reviewFor, setReviewFor] = useState<string | null>(null)
   const [reviewForm, setReviewForm] = useState({ rating: 5, title: '', content: '' })
+  const [reviewImages, setReviewImages] = useState<string[]>([])
   const [returnFor, setReturnFor] = useState<string | null>(null)
   const [payForm, setPayForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [payDone, setPayDone] = useState(false)
@@ -59,10 +61,12 @@ export function OrderDetailPage() {
         rating: reviewForm.rating,
         title: reviewForm.title,
         content: reviewForm.content,
+        images: reviewImages.filter(Boolean),
       }),
     onSuccess: () => {
       setReviewFor(null)
       setReviewForm({ rating: 5, title: '', content: '' })
+      setReviewImages([])
     },
   })
 
@@ -331,6 +335,29 @@ export function OrderDetailPage() {
                       onChange={(e) => setReviewForm({ ...reviewForm, content: e.target.value })}
                       className="w-full px-3 py-2 border rounded-lg text-sm outline-none"
                     />
+                    {reviewImages.length < 3 && (
+                      <FileUpload
+                        value=""
+                        label="+ Foto produk"
+                        onChange={(url) => url && setReviewImages((imgs) => [...imgs, url])}
+                      />
+                    )}
+                    {reviewImages.length > 0 && (
+                      <div className="flex gap-2">
+                        {reviewImages.map((img, i) => (
+                          <div key={img} className="relative">
+                            <img src={img} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-200" />
+                            <button
+                              onClick={() => setReviewImages((imgs) => imgs.filter((_, j) => j !== i))}
+                              className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs"
+                              aria-label="Hapus foto"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex gap-2">
                       <button
                         onClick={() => submitReview.mutate(it.id)}

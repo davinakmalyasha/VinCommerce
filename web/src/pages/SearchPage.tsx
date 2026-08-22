@@ -26,6 +26,7 @@ export function SearchPage() {
   const priceMin = params.get('min_price') ?? ''
   const priceMax = params.get('max_price') ?? ''
   const brands = (params.get('brands') ?? '').split(',').filter(Boolean)
+  const minRating = params.get('rating') ?? ''
 
   const selectedAttrs = useMemo(() => {
     const out: Record<string, string> = {}
@@ -51,11 +52,12 @@ export function SearchPage() {
     if (priceMin) sp.set('min_price', priceMin)
     if (priceMax) sp.set('max_price', priceMax)
     if (brands.length) sp.set('brands', brands.join(','))
+    if (minRating) sp.set('rating', minRating)
     Object.entries(selectedAttrs).forEach(([k, v]) => sp.set(`attr_${k}`, v))
     sp.set('page', String(page))
     sp.set('page_size', String(PAGE_SIZE))
     return sp.toString()
-  }, [q, category, sort, priceMin, priceMax, brands, selectedAttrs, page])
+  }, [q, category, sort, priceMin, priceMax, brands, minRating, selectedAttrs, page])
 
   const { data, isLoading } = useQuery({
     queryKey: ['search', queryString],
@@ -104,7 +106,7 @@ export function SearchPage() {
     }
   }
 
-  const hasActiveFilter = priceMin || priceMax || brands.length > 0 || Object.keys(selectedAttrs).length > 0
+  const hasActiveFilter = priceMin || priceMax || brands.length > 0 || minRating || Object.keys(selectedAttrs).length > 0
 
   return (
     <>
@@ -134,6 +136,25 @@ export function SearchPage() {
                 </label>
               )
             })}
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
+          <h3 className="font-semibold text-sm mb-2">Rating</h3>
+          <div className="flex flex-wrap gap-1.5">
+            {[4, 3, 2].map((n) => (
+              <button
+                key={n}
+                onClick={() => setParam('rating', minRating === String(n) ? '' : String(n))}
+                className={`px-2.5 py-1 rounded-lg text-xs border ${
+                  minRating === String(n)
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'border-gray-200 hover:border-amber-400'
+                }`}
+              >
+                ★ {n}+ ke atas
+              </button>
+            ))}
           </div>
         </div>
 

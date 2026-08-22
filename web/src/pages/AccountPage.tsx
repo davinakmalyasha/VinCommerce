@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Navigate } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useSession } from '../stores/session'
 import type { Address } from '../types'
@@ -37,6 +37,23 @@ export function AccountPage() {
             </button>
           ))}
         </nav>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {[
+          { to: '/wallet', label: '💰 Dompet Saya' },
+          { to: '/returns', label: '↩️ Retur Saya' },
+          { to: '/vouchers', label: '🎟️ Voucher Saya' },
+          { to: '/notifications', label: '🔔 Notifikasi' },
+        ].map((l) => (
+          <Link
+            key={l.to}
+            to={l.to}
+            className="px-4 py-2 rounded-full bg-white border border-gray-200 text-sm hover:border-amber-400"
+          >
+            {l.label}
+          </Link>
+        ))}
       </div>
 
       {tab === 'profil' && <ProfileTab />}

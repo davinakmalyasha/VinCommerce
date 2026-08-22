@@ -17,6 +17,7 @@ interface Review {
   title: string
   content: string
   images?: string[]
+  helpful_count?: number
   created_at: string
 }
 
@@ -61,8 +62,36 @@ export function ProductPage() {
   const { data: reviews } = useQuery({
     queryKey: ['reviews', data?.id],
     queryFn: async () =>
-      (await api.get<{ reviews: Review[]; distribution: RatingCount[] }>(`/products/${data!.id}/reviews`)).data,
+      (await api.get<{ reviews: Review[]; distribution: RatingCount[]; total: number }>(`/products/${data!.id}/reviews`)).data,
     enabled: !!data,
+  })
+
+  // Review pagination ("muat lebih banyak") + helpful votes (local overlay).
+  const [moreReviews, setMoreReviews] = useState<Review[]>([])
+  const [nextReviewPage, setNextReviewPage] = useState(2)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [helpfulCounts, setHelpfulCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    setMoreReviews([])
+    setNextReviewPage(2)
+    setHelpfulCounts({})
+  }, [data?.id])
+  const allReviews = [...(reviews?.reviews ?? []), ...moreReviews]
+  const loadMoreReviews = async () => {
+    if (!data || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const res = await api.get<{ reviews: Review[] }>(`/products/${data.id}/reviews?page=${nextReviewPage}&page_size=10`)
+      setMoreReviews((prev) => [...prev, ...res.data.reviews])
+      setNextReviewPage((p) => p + 1)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+  const markHelpful = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.post<{ helpful: boolean; helpful_count: number }>(`/reviews/${id}/helpful`)).data,
+    onSuccess: (d, id) => setHelpfulCounts((m) => ({ ...m, [id]: d.helpful_count })),
   })
 
   const { data: qaList } = useQuery({
@@ -547,7 +576,7 @@ export function ProductPage() {
           </div>
         )}
         <div className="space-y-4">
-          {reviews?.reviews.map((r) => (
+          {allReviews.map((r) => (
             <div key={r.id} className="border-b border-gray-100 dark:border-gray-700 pb-4 last:border-0">
               <div className="flex items-center justify-between">
                 <p className="font-medium text-sm">{r.user_name}</p>
@@ -568,8 +597,26 @@ export function ProductPage() {
                   ))}
                 </div>
               )}
+              {user && (
+                <button
+                  onClick={() => markHelpful.mutate(r.id)}
+                  disabled={markHelpful.isPending}
+                  className="mt-2 text-xs text-gray-400 hover:text-amber-600"
+                >
+                  👍 Membantu ({helpfulCounts[r.id] ?? r.helpful_count ?? 0})
+                </button>
+              )}
             </div>
           ))}
+          {(reviews?.total ?? 0) > allReviews.length && (
+            <button
+              onClick={loadMoreReviews}
+              disabled={loadingMore}
+              className="w-full py-2.5 rounded-xl border text-sm hover:border-amber-400 disabled:opacity-50"
+            >
+              {loadingMore ? 'Memuat...' : `Muat ulasan lainnya (${(reviews?.total ?? 0) - allReviews.length} lagi)`}
+            </button>
+          )}
           {reviews?.reviews.length === 0 && <p className="text-sm text-gray-500">Belum ada ulasan.</p>}
         </div>
       </div>

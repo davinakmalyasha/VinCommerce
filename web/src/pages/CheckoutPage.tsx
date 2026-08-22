@@ -20,6 +20,15 @@ interface PlacedOrder {
   grand_total: number
 }
 
+interface VoucherLite {
+  id: string
+  code: string
+  type: 'percent' | 'fixed'
+  value: number
+  min_subtotal: number
+  store_name?: string
+}
+
 export function CheckoutPage() {
   const { user } = useSession()
   const navigate = useNavigate()
@@ -46,6 +55,23 @@ export function CheckoutPage() {
     queryFn: async () => (await api.get<{ addresses: Address[] }>('/account/addresses')).data.addresses,
     enabled: !!user,
   })
+
+  const { data: vouchers } = useQuery({
+    queryKey: ['vouchers'],
+    queryFn: async () => (await api.get<{ vouchers: VoucherLite[] }>('/vouchers')).data.vouchers,
+  })
+
+  // Best-coupon suggestion: estimate each voucher's discount against the current quote subtotal.
+  const applicableVouchers = (vouchers ?? []).filter((v) => !quote || quote.subtotal >= v.min_subtotal)
+  const bestVoucher = applicableVouchers.length
+    ? [...applicableVouchers].sort((a, b) => {
+        const est = (v: VoucherLite) =>
+          v.type === 'percent'
+            ? Math.round(((quote?.subtotal ?? 0) * v.value) / 100)
+            : v.value
+        return est(b) - est(a)
+      })[0]
+    : null
 
   const quoteEnabled = !!user && !paidOrder
 
@@ -258,6 +284,29 @@ export function CheckoutPage() {
             />
           </div>
           <p className="text-xs text-gray-400 mt-2">Demo kupon: WELCOME10 (10%, min Rp50.000) · FLAT50K (Rp50.000, min Rp200.000)</p>
+          {applicableVouchers.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-semibold text-gray-500">
+                Kupon tersedia untuk pesananmu{bestVoucher ? ` — terbaik: ${bestVoucher.code}` : ''}:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {applicableVouchers.map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => setCoupon(v.code)}
+                    className={`px-3 py-1.5 rounded-full border text-xs ${
+                      coupon === v.code ? 'border-amber-500 bg-amber-50 text-amber-700' : 'hover:border-amber-400'
+                    }`}
+                  >
+                    🎟️ <b>{v.code}</b> —{' '}
+                    {v.type === 'percent' ? `${v.value}% off` : `${formatIDR(v.value)} off`}
+                    {v.min_subtotal > 0 ? ` (min ${formatIDR(v.min_subtotal)})` : ''}
+                    {v.store_name ? ` · ${v.store_name}` : ''}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
 
