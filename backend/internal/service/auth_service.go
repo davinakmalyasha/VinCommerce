@@ -215,6 +215,15 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken, ipAddress, user
 	hash := s.tokens.HashRefresh(refreshToken)
 	sess, err := s.sessions.ByHash(ctx, hash)
 	if err != nil {
+		// Reuse detection: the presented hash is not an active token, but if it
+		// matches a token that was already rotated away, someone is replaying a
+		// stolen credential — kill the whole family.
+		if domain.Is(err, domain.KindUnauthenticated, "SESSION_REVOKED") || domain.Is(err, domain.KindUnauthenticated, "TOKEN_INVALID") {
+			if prev, perr := s.sessions.ActiveFamilyForPrevHash(ctx, hash); perr == nil {
+				_ = s.sessions.RevokeFamily(ctx, prev.FamilyID)
+				s.audit(ctx, prev.UserID, "auth.refresh_reuse_detected", "user", prev.UserID, ipAddress, userAgent, nil)
+			}
+		}
 		return nil, err
 	}
 

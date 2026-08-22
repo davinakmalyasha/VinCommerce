@@ -7,27 +7,38 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/httpapi/middleware"
+	"github.com/vincommerce/backend/internal/service"
 	"github.com/vincommerce/backend/internal/stream"
 )
 
 // Stream exposes realtime SSE endpoints.
 type Stream struct {
 	broker *stream.Broker
+	chats  *service.ChatService
 	logger *slog.Logger
 }
 
 // NewStream creates a Stream handler.
-func NewStream(broker *stream.Broker, logger *slog.Logger) *Stream {
-	return &Stream{broker: broker, logger: logger}
+func NewStream(broker *stream.Broker, chats *service.ChatService, logger *slog.Logger) *Stream {
+	return &Stream{broker: broker, chats: chats, logger: logger}
 }
 
-// Chat streams messages for a chat session via SSE.
+// Chat streams messages for a chat session via SSE (participants and staff only).
 func (h *Stream) Chat(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
 		http.Error(w, "session required", http.StatusBadRequest)
 		return
+	}
+	if h.chats != nil {
+		staff := user.HasRole(domain.RoleSupport) || user.HasRole(domain.RoleAdmin)
+		if _, err := h.chats.Session(r.Context(), sessionID, user.ID, staff); err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	flusher, ok := w.(http.Flusher)

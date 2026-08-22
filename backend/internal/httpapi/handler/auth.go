@@ -438,8 +438,11 @@ func (h *OAuth) Callback(w http.ResponseWriter, r *http.Request) {
 
 // --- shared request helpers ---
 
+// maxJSONBody bounds every JSON request body (DoS protection).
+const maxJSONBody = 1 << 20 // 1 MiB
+
 func decode(r *http.Request, v any) error {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxJSONBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err

@@ -34,6 +34,9 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Environment == "production" && (len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "dev-secret-change-me") {
+		return fmt.Errorf("refusing to start: JWT_SECRET must be a strong unique value (32+ chars) in production")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -172,7 +173,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	aiH := handler.NewAI(aiSvc)
 	marketH := handler.NewMarket(marketSvc)
 	engagement := handler.NewEngagement(engagementSvc)
-	streamH := handler.NewStream(broker, logger)
+	streamH := handler.NewStream(broker, chatSvc, logger)
 	analyticsH := handler.NewAnalytics(analyticsSvc)
 	support := handler.NewSupport(supportSvc)
 	notificationsH := handler.NewNotifications(notificationSvc)
@@ -306,12 +307,14 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport), auditMw).
 					Post("/orders/{orderId}/refund", paymentsH.Refund)
 			})
-			// dev-only sandbox drivers (order owner or staff)
-			r.Group(func(r chi.Router) {
-				r.Use(authMw)
-				r.Post("/sandbox/orders/{orderId}/approve", paymentsH.SandboxApprove)
-				r.Post("/sandbox/orders/{orderId}/fail", paymentsH.SandboxFail)
-			})
+			// dev-only sandbox drivers (order owner or staff) — never in production.
+			if cfg.Environment == "" || cfg.Environment == "development" {
+				r.Group(func(r chi.Router) {
+					r.Use(authMw)
+					r.Post("/sandbox/orders/{orderId}/approve", paymentsH.SandboxApprove)
+					r.Post("/sandbox/orders/{orderId}/fail", paymentsH.SandboxFail)
+				})
+			}
 		})
 
 		r.Route("/wallet", func(r chi.Router) {
@@ -498,8 +501,17 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 	})
 
-	// static media
-	r.Handle("/uploads/*", http.StripPrefix("/uploads/", http.FileServer(http.Dir(filepath.Join(cfg.App.UploadDir)))))
+	// static media: nosniff + no directory listing (uploads are immutable raster images)
+	uploads := http.FileServer(http.Dir(filepath.Join(cfg.App.UploadDir)))
+	r.Handle("/uploads/*", http.StripPrefix("/uploads/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasSuffix(req.URL.Path, "/") {
+			http.NotFound(w, req)
+			return
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "public, max-age=604800")
+		uploads.ServeHTTP(w, req)
+	})))
 
 	// SEO
 	seo := handler.NewSEO(products, categories, cache.NewStore(deps.Redis.Client), cfg.App.WebURL)
@@ -511,8 +523,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Handle("/docs/*", SwaggerUIHandler())
 	r.Handle("/docs/openapi.json", OpenAPIHandler(cfg.App.BaseURL+"/api/v1"))
 
-	// observability
-	r.Handle("/metrics", metricsReg.Handler())
+	// observability: /metrics is admin-only (scrape via internal network with a token)
+	r.Group(func(r chi.Router) {
+		r.Use(authMw, mw.RequireRoles(domain.RoleAdmin))
+		r.Get("/metrics", metricsReg.Handler().ServeHTTP)
+	})
 
 	return r
 }

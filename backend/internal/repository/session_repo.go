@@ -78,13 +78,39 @@ func (r *SessionRepository) ByID(ctx context.Context, sessionID string) (*domain
 }
 
 // Rotate replaces a session's refresh hash with a new one (rotation).
+// The superseded hash is retained for reuse detection.
 func (r *SessionRepository) Rotate(ctx context.Context, sessionID, oldHash, newHash string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE refresh_sessions
-		SET refresh_hash = $2, last_used_at = now()
+		SET refresh_hash = $2, prev_hash = $3, last_used_at = now()
 		WHERE id = $1 AND refresh_hash = $3`,
 		sessionID, newHash, oldHash)
 	return err
+}
+
+// ActiveFamilyForPrevHash finds the live session whose previous token hash
+// matches — i.e. the caller replayed a token that was already rotated away,
+// which indicates theft or duplication.
+func (r *SessionRepository) ActiveFamilyForPrevHash(ctx context.Context, hash string) (*domain.RefreshSession, error) {
+	var s domain.RefreshSession
+	var ip *string
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, user_id, family_id, COALESCE(device_name,''), ip_address::text, COALESCE(user_agent,''),
+		       expires_at, revoked_at, last_used_at, created_at
+		FROM refresh_sessions
+		WHERE prev_hash = $1 AND revoked_at IS NULL AND expires_at > now()`,
+		hash).Scan(&s.ID, &s.UserID, &s.FamilyID, &s.DeviceName, &ip, &s.UserAgent,
+		&s.ExpiresAt, &s.RevokedAt, &s.LastUsedAt, &s.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if ip != nil {
+		s.IPAddress = *ip
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 // Revoke marks a session revoked.

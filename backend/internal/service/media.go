@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,18 +10,17 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/vincommerce/backend/internal/domain"
 )
 
-// Allowed image types (magic bytes -> extension).
+// Allowed raster image types (magic bytes -> extension).
+// SVG is deliberately rejected: it can carry active content and would be a
+// stored-XSS vector when served same-origin.
 var imageSignatures = map[string][]string{
-	"image/jpeg":    {"\xff\xd8\xff"},
-	"image/png":     {"\x89PNG\r\n\x1a\n"},
-	"image/webp":    {"RIFF", "WEBP"},
-	"image/gif":     {"GIF87a", "GIF89a"},
-	"image/svg+xml": {"<svg"},
+	"image/jpeg": {"\xff\xd8\xff"},
+	"image/png":  {"\x89PNG\r\n\x1a\n"},
+	"image/gif":  {"GIF87a", "GIF89a"},
 }
 
 // MediaService stores uploaded files on disk.
@@ -49,9 +49,9 @@ func (s *MediaService) Save(file multipart.File, header *multipart.FileHeader) (
 	}
 	head = head[:n]
 
-	contentType := detectContentType(head, header.Filename)
+	contentType := detectContentType(head)
 	if contentType == "" {
-		return "", domain.E(domain.KindInvalid, "UNSUPPORTED_TYPE", "only jpeg, png, webp, gif and svg images are allowed")
+		return "", domain.E(domain.KindInvalid, "UNSUPPORTED_TYPE", "only jpeg, png, webp and gif images are allowed")
 	}
 
 	ext := extensionFor(contentType)
@@ -76,16 +76,18 @@ func (s *MediaService) Save(file multipart.File, header *multipart.FileHeader) (
 	return s.baseURL + "/uploads/" + name, nil
 }
 
-func detectContentType(head []byte, filename string) string {
+func detectContentType(head []byte) string {
 	for ct, sigs := range imageSignatures {
 		for _, sig := range sigs {
-			if len(head) >= len(sig) && strings.HasPrefix(string(head), sig) {
+			if bytes.HasPrefix(head, []byte(sig)) {
 				return ct
 			}
 		}
 	}
-	if strings.HasSuffix(strings.ToLower(filename), ".svg") {
-		return "image/svg+xml"
+	// WebP: "RIFF" at offset 0 and "WEBP" at offset 8 (RIFF alone also matches
+	// WAV/AVI, so both markers must be present).
+	if len(head) >= 12 && string(head[0:4]) == "RIFF" && string(head[8:12]) == "WEBP" {
+		return "image/webp"
 	}
 	return ""
 }
@@ -100,8 +102,6 @@ func extensionFor(contentType string) string {
 		return ".webp"
 	case "image/gif":
 		return ".gif"
-	case "image/svg+xml":
-		return ".svg"
 	}
 	return ".bin"
 }
