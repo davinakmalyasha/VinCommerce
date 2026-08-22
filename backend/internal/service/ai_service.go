@@ -105,7 +105,7 @@ func (s *AIService) TitleSuggestions(ctx context.Context, name string) ([]string
 			lines := strings.Split(ans.Answer, "\n")
 			out := make([]string, 0, 3)
 			for _, l := range lines {
-				l = strings.TrimSpace(strings.TrimLeft(l, "-â€¢0123456789. "))
+				l = strings.TrimSpace(strings.TrimLeft(l, "-•·0123456789. "))
 				if l != "" {
 					out = append(out, l)
 				}
@@ -118,7 +118,7 @@ func (s *AIService) TitleSuggestions(ctx context.Context, name string) ([]string
 	base := strings.TrimSpace(name)
 	return []string{
 		base,
-		base + " â€” Kualitas Premium",
+		base + " — Kualitas Premium",
 		base + " | Harga Terbaik",
 	}, nil
 }

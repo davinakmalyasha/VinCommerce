@@ -9,7 +9,7 @@ VinCommerce/
 ├── backend/   Go 1.26 — API server + background worker
 ├── web/       React 19 + Vite — storefront, seller center, admin console
 ├── infra/     local tooling (scripts, compose)
-└── docs/      this documentation, OpenAPI spec
+└── docs/      this documentation (OpenAPI is served live at /docs)
 ```
 
 ## 2. Backend design (clean architecture)
@@ -30,10 +30,11 @@ Layers, dependency direction inward (`handler -> service -> repository`):
 - **Cache & queues**: Redis 8. asynq workers handle email, payouts, timeouts.
 - **Logging**: `log/slog` JSON structured, request IDs propagated.
 - **Errors**: typed `domain.Error` with stable codes mapped to HTTP statuses.
-- **Idempotency**: `X-Idempotency-Key` header enforced on payment/order writes.
-- **Events**: transactional **outbox** table + dispatcher -> Redis (asynq), giving at-least-once semantics.
-- **Security**: Argon2id password hashing, JWT access + rotating refresh tokens, RBAC, per-route rate limits, audit log.
-- **Observability**: /health/live, /health/ready, Prometheus metrics, OpenTelemetry tracing (enabled by config).
+- **Idempotency**: `X-Idempotency-Key` header enforced on payment/order writes; gateway intents replay their stored checkout token instead of erroring.
+- **Events**: in-process publishers -> Redis pub/sub (SSE). At-least-once semantics for worker jobs via asynq retries.
+- **Security**: Argon2id password hashing, JWT access + rotating refresh tokens with reuse detection (family revocation), RBAC, per-route rate limits, feature flags, audit log middleware on privileged routes, request-body caps.
+- **Payments**: adapter pattern (`payments.Gateway`) — sandbox simulator + Midtrans Snap with SHA512-signed webhooks; escrow ledger splits commission at release.
+- **Observability**: /health/live, /health/ready (admin-authenticated Prometheus `/metrics`).
 
 ## 3. Domain model (core entities)
 
@@ -60,36 +61,40 @@ pending -> paid(escrow held) -> packed -> shipped -> delivered -> completed
 
 Payment lifecycle: `initiated -> authorized -> captured (escrow) -> released_to_seller | refunded`
 
-## 4. API surface (`/api/v1`, OpenAPI in docs/)
+## 4. API surface (`/api/v1`)
+
+Interactive OpenAPI/Swagger UI is served by the API at `/docs`. Groups:
 
 - `auth/*` — register, login, refresh, 2FA, sessions
 - `catalog/*` — categories, products, variants, search, reviews
 - `cart/*`, `checkout/*` — cart, coupons, shipping, place order
 - `orders/*` — buyer orders, tracking, cancellation
-- `payments/*` — intents, webhooks, wallets, refunds
-- `seller/*` — store, products, sales, payout
-- `admin/*` — moderation, disputes, users, analytics
+- `payments/*` — intents (sandbox / Midtrans Snap), webhooks, wallets, refunds
+- `seller/*` — store, KYC, products, orders, returns, coupons, analytics
+- `admin/*` — moderation, disputes, users, commission, analytics
 - `account/*` — profile, addresses, wishlist
 
 ## 5. Frontend design
 
-- Vite + React 19 + TS, Tailwind 4, shadcn/ui components.
-- TanStack Query server state; Zustand client state (cart, session).
+- Vite + React 19 + TS, Tailwind 4 (hand-built components).
+- TanStack Query server state; Zustand client state (session, theme).
+- Access token memory-only; httpOnly refresh cookie with single-flight silent refresh.
 - Three shells behind one router: storefront `/`, seller center `/seller`, admin `/admin`.
-- Real-time order status via SSE (`/api/v1/stream/orders`).
+- Real-time order status via SSE (`/api/v1/stream/orders`) with live query invalidation.
 
 ## 6. Observability & operations
 
-- Prometheus `/metrics`; dashboards in docs/grafana.
-- Audit log table for privileged actions.
-- Feature flags via `feature_flags` table + Redis cache (TTL).
+- Prometheus `/metrics` (admin-authenticated); Go runtime + process collectors.
+- Audit log table for privileged actions (admin routes, checkout place, refunds).
+- Feature flags via `feature_flags` table gating flash-sales/referrals/AI endpoints.
+- Docker images ship HEALTHCHECKs; compose wires service healthchecks.
 
 ## 7. Testing strategy
 
-- Unit: domain + services (mock repositories via interfaces).
-- Integration: real Postgres+Redis on CI (compose services), transactional test harness.
-- API contract: httptest against router.
-- E2E: Playwright against running stack.
+- Unit: token/crypto + commission math + Midtrans adapter (signature table, status matrix, request shape via httptest).
+- CI smoke: migrate + seed + readiness probe against real Postgres+Redis services; `go test -race`.
+- Web: typechecked build (`tsc -b`) + oxlint in CI.
+- E2E: Playwright suite (~21 tests) against the running stack.
 
 ## 8. Deployment shape (production sketch)
 

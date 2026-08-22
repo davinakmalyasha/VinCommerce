@@ -46,7 +46,7 @@ jobs:
         run: go build ./...
 
       - name: Unit tests
-        run: go test ./internal/... -count=1
+        run: go test ./internal/... -count=1 -race
 
       - name: Migrate + seed smoke test
         env:
@@ -74,6 +74,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: Lint
+        run: npx oxlint --config .oxlintrc.json src
       - run: npm run build
 
   e2e:

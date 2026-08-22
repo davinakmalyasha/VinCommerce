@@ -118,7 +118,7 @@ export function CheckoutPage() {
     onError: (e: Error) => setError(e.message),
   })
 
-  const useAddress = (a: Address) => {
+  const applyAddress = (a: Address) => {
     setSelectedAddressId(a.id)
     setForm({
       recipient: a.recipient,
@@ -171,7 +171,7 @@ export function CheckoutPage() {
               {addresses.map((a) => (
                 <button
                   key={a.id}
-                  onClick={() => useAddress(a)}
+                  onClick={() => applyAddress(a)}
                   className="px-3 py-2 rounded-lg border text-xs hover:border-amber-400"
                 >
                   {a.label}: {a.recipient}, {a.city}

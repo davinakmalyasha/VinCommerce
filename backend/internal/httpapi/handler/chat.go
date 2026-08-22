@@ -129,7 +129,7 @@ func (h *Chat) Claim(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"claimed": true})
 }
 
-// OpenSellerChat handles POST /chat/orders/{orderId} â€” buyer-seller chat.
+// OpenSellerChat handles POST /chat/orders/{orderId} — buyer-seller chat.
 func (h *Chat) OpenSellerChat(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
 	sess, err := h.svc.OpenSellerChat(r.Context(), chi.URLParam(r, "orderId"), user.ID)
@@ -140,7 +140,7 @@ func (h *Chat) OpenSellerChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"session": sess})
 }
 
-// SellerChatForOrder handles GET /chat/orders/{orderId} â€” existing session lookup.
+// SellerChatForOrder handles GET /chat/orders/{orderId} — existing session lookup.
 func (h *Chat) SellerChatForOrder(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
 	sess, err := h.svc.SessionForOrder(r.Context(), chi.URLParam(r, "orderId"), user.ID)
@@ -161,7 +161,7 @@ func NewAI(svc *service.AIService) *AI {
 	return &AI{svc: svc}
 }
 
-// Ask handles POST /ai/ask â€” order-aware for authenticated users.
+// Ask handles POST /ai/ask — order-aware for authenticated users.
 func (h *AI) Ask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Question string `json:"question"`
@@ -256,3 +256,4 @@ func (h *AI) Suggest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, res)
 }
+

@@ -86,7 +86,7 @@ export function ChatWidget() {
         className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-amber-500 text-white shadow-lg hover:bg-amber-600 flex items-center justify-center text-2xl"
         title="Bantuan"
       >
-        {open ? 'âœ•' : 'ðŸ’¬'}
+        {open ? '✕' : '💬'}
       </button>
 
       {open && (
@@ -95,7 +95,7 @@ export function ChatWidget() {
             <div>
               <p className="font-bold text-sm">Bantuan VinCommerce</p>
               <p className="text-xs text-amber-100">
-                {aiMode ? 'Asisten AI Â· coba tanya apa saja' : 'Chat dengan agen'}
+                {aiMode ? 'Asisten AI · coba tanya apa saja' : 'Chat dengan agen'}
               </p>
             </div>
             <div className="flex items-center gap-2 text-xs">
@@ -103,7 +103,7 @@ export function ChatWidget() {
                 onClick={() => setAiMode(true)}
                 className={`px-2 py-1 rounded-lg ${aiMode ? 'bg-white text-amber-600' : 'hover:bg-amber-600'}`}
               >
-                ðŸ¤– AI
+                🤖 AI
               </button>
               <button
                 onClick={() => {
@@ -115,7 +115,7 @@ export function ChatWidget() {
                 }}
                 className={`px-2 py-1 rounded-lg ${!aiMode ? 'bg-white text-amber-600' : 'hover:bg-amber-600'}`}
               >
-                ðŸ‘¤ Agen
+                👤 Agen
               </button>
             </div>
           </div>
@@ -151,13 +151,13 @@ export function ChatWidget() {
             {askAi.data && (
               <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm">
                 <p className="text-xs text-gray-400 mb-1">
-                  ðŸ¤– {askAi.data.mode === 'llm' ? 'AI (LLM)' : 'AI'} {askAi.data.sources?.length ? `Â· ${askAi.data.sources.length} sumber` : ''}
+                  🤖 {askAi.data.mode === 'llm' ? 'AI (LLM)' : 'AI'} {askAi.data.sources?.length ? `· ${askAi.data.sources.length} sumber` : ''}
                 </p>
                 <p className="whitespace-pre-line">{askAi.data.answer}</p>
                 {askAi.data.sources && askAi.data.sources.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {askAi.data.sources.map((s, i) => (
-                      <p key={i} className="text-xs text-amber-600">ðŸ“„ {s.title}</p>
+                      <p key={i} className="text-xs text-amber-600">📄 {s.title}</p>
                     ))}
                   </div>
                 )}
@@ -165,7 +165,7 @@ export function ChatWidget() {
                   onClick={() => openSession.mutate()}
                   className="mt-2 text-xs text-amber-600 hover:underline"
                 >
-                  Masih butuh bantuan? Chat dengan agen â†’
+                  Masih butuh bantuan? Chat dengan agen →
                 </button>
               </div>
             )}

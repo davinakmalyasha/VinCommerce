@@ -97,7 +97,7 @@ export function AdminAudit() {
             {data?.map((e) => (
               <tr key={e.id}>
                 <td className="px-4 py-3 text-xs text-gray-400">{e.created_at.slice(0, 19).replace('T', ' ')}</td>
-                <td className="px-4 py-3">{e.actor_name || 'â€”'}</td>
+                <td className="px-4 py-3">{e.actor_name || '—'}</td>
                 <td className="px-4 py-3 font-mono text-xs">{e.action}</td>
                 <td className="px-4 py-3 text-xs">{e.entity_type} {e.entity_id && `#${e.entity_id.slice(0, 8)}`}</td>
                 <td className="px-4 py-3 text-xs text-gray-400">{e.ip_address}</td>

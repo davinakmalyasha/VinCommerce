@@ -178,10 +178,7 @@ export function ProductPage() {
 
   useEffect(() => {
     if (!data) return
-    if (!variantId && data.variants?.length) {
-      setVariantId(data.variants[0].id)
-    }
-    // analytics view beacon
+    // analytics view beacon (default variant selection is handled at render)
     api.post(`/products/${data.id}/view`).catch(() => {})
     const item = {
       id: data.id,

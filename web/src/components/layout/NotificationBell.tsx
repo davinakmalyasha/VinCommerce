@@ -111,7 +111,7 @@ export function NotificationBell() {
         className="px-3 py-2 rounded-lg hover:bg-amber-600 relative text-white"
         title="Notifikasi"
       >
-        ðŸ””
+        🔔
         {badge > 0 && (
           <span className="absolute top-0 right-0 bg-red-600 text-white text-xs rounded-full min-w-5 h-5 flex items-center justify-center px-1">
             {badge}

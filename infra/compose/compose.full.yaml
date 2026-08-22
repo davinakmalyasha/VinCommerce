@@ -41,6 +41,11 @@ services:
       APP_BASE_URL: http://localhost:8080
       WEB_URL: http://localhost:5173
       CORS_ALLOW_ORIGINS: http://localhost:5173,http://localhost
+      # Override with a strong value outside local development!
+      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-please-change-me-32chars}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:-}
+      MIDTRANS_ENV: ${MIDTRANS_ENV:-sandbox}
     ports: ["8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
