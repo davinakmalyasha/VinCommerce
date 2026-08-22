@@ -17,6 +17,8 @@ interface Quote {
   insurance_available?: boolean
   insurance_selected?: boolean
   insurance_fee?: number
+  points_discount?: number
+  points_redeemed?: number
 }
 
 interface PlacedOrder {
@@ -53,6 +55,7 @@ export function CheckoutPage() {
   const [saveAddress, setSaveAddress] = useState(false)
   const [notes, setNotes] = useState('')
   const [insurance, setInsurance] = useState(false)
+  const [pointsInput, setPointsInput] = useState('')
   const [idemKey] = useState(() => crypto.randomUUID())
 
   const { data: addresses } = useQuery({
@@ -64,6 +67,11 @@ export function CheckoutPage() {
   const { data: vouchers } = useQuery({
     queryKey: ['vouchers'],
     queryFn: async () => (await api.get<{ vouchers: VoucherLite[] }>('/vouchers')).data.vouchers,
+  })
+
+  const { data: loyaltyBalance } = useQuery({
+    queryKey: ['loyalty'],
+    queryFn: async () => (await api.get<{ balance: number }>('/loyalty')).data.balance,
   })
 
   // Best-coupon suggestion: estimate each voucher's discount against the current quote subtotal.
@@ -81,13 +89,14 @@ export function CheckoutPage() {
   const quoteEnabled = !!user && !paidOrder
 
   const { data: quote } = useQuery({
-    queryKey: ['quote', coupon, shippingMethod, insurance],
+    queryKey: ['quote', coupon, shippingMethod, insurance, pointsInput],
     queryFn: async () =>
       (
         await api.post<Quote>('/checkout/quote', {
           coupon_code: coupon || undefined,
           shipping_method_code: shippingMethod,
           insurance,
+          points_to_redeem: pointsInput || undefined,
         })
       ).data,
     enabled: quoteEnabled,
@@ -106,6 +115,7 @@ export function CheckoutPage() {
             address: selectedAddressId ? undefined : form,
             notes: notes || undefined,
             insurance,
+            points_to_redeem: Number(pointsInput) > 0 ? Number(pointsInput) : undefined,
           },
           { headers: { 'X-Idempotency-Key': idemKey } },
         )
@@ -347,6 +357,12 @@ export function CheckoutPage() {
             <span>−{formatIDR(quote.discount_amount)}</span>
           </div>
         )}
+        {quote && (quote.points_discount ?? 0) > 0 && (
+          <div className="flex justify-between text-sm text-green-600">
+            <span>Poin ({formatIDR(quote.points_redeemed ?? 0)} pts)</span>
+            <span>−{formatIDR(quote.points_discount!)}</span>
+          </div>
+        )}
         <div className="flex justify-between text-sm">
           <span className="text-gray-500">Ongkir</span>
           <span>{formatIDR((quote?.shipping ?? []).reduce((s, m) => s + m.fee, 0))}</span>
@@ -356,6 +372,34 @@ export function CheckoutPage() {
           <span>Total</span>
           <span className="text-amber-600">{formatIDR(quote?.total ?? 0)}</span>
         </div>
+        {quote?.insurance_available && (
+          <label className="flex items-center justify-between text-xs bg-blue-50 dark:bg-blue-900/20 rounded-lg p-2.5 cursor-pointer">
+            <span className="flex items-center gap-2">
+              <input type="checkbox" checked={insurance} onChange={(e) => setInsurance(e.target.checked)} className="accent-blue-600" />
+              🛡️ Asuransi pengiriman
+            </span>
+            <b>+{formatIDR(quote.insurance_fee ?? 0)}</b>
+          </label>
+        )}
+        {(loyaltyBalance ?? 0) >= 100 && (
+          <label className="block text-xs space-y-1">
+            <span className="flex items-center justify-between">
+              <span className="text-gray-500">Tukar poin (1 pt = Rp100)</span>
+              <button onClick={() => setPointsInput(String(loyaltyBalance))} className="text-amber-600 hover:underline">
+                Pakai semua ({loyaltyBalance})
+              </button>
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={loyaltyBalance ?? 0}
+              value={pointsInput}
+              onChange={(e) => setPointsInput(e.target.value)}
+              placeholder="Jumlah poin"
+              className="w-full px-3 py-2 border rounded-lg outline-none focus:border-amber-400"
+            />
+          </label>
+        )}
         {error && <p className="text-sm text-red-600">{error}</p>}
         <button
           onClick={() => placeOrder.mutate()}

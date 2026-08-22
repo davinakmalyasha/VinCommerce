@@ -70,6 +70,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	marketRepo := repository.NewQARepository(deps.Pool)
 	loyaltyRepo := repository.NewLoyaltyRepository(deps.Pool)
 	disputeRepo := repository.NewDisputeRepository(deps.Pool)
+	gameRepo := repository.NewGamificationRepository(deps.Pool)
 
 	// services
 	password := service.NewPassword(
@@ -121,6 +122,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	marketSvc := service.NewMarketService(marketRepo)
 	marketSvc.SetNotificationService(notificationSvc)
 	marketSvc.SetLoyalty(loyaltyRepo, disputeRepo)
+	marketSvc.SetGamification(gameRepo)
 	marketSvc.SetUsers(users)
 	marketSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
 	supportSvc.SetUsers(users)
@@ -440,10 +442,16 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(authMw).Post("/back-in-stock", marketH.WatchRestock)
 		r.With(authMw).Get("/back-in-stock", marketH.BackInStock)
 		r.With(authMw).Delete("/back-in-stock/{id}", marketH.CancelBackInStock)
+		r.With(authMw).Post("/engagement/checkin", marketH.CheckIn)
+		r.With(authMw).Get("/engagement/checkin/status", marketH.CheckInStatus)
 		r.With(authMw).Get("/loyalty", marketH.Loyalty)
 		r.With(authMw).Get("/referral/code", marketH.Referral)
 		r.With(authMw, flagMw("referrals")).Post("/referral/redeem", marketH.RedeemReferral)
 		r.Get("/vouchers", adminOps.Vouchers)
+		r.With(authMw).Get("/vouchers/claims", marketH.MyClaims)
+		r.With(authMw).Post("/vouchers/claim", marketH.ClaimVoucher)
+		r.With(flagMw("games"), authMw).Post("/games/spin", marketH.Spin)
+		r.With(flagMw("games"), authMw).Get("/games/status", marketH.SpinStatus)
 		r.With(authMw).Post("/disputes", marketH.OpenDispute)
 		r.With(authMw).Get("/stream/orders", streamH.Orders)
 

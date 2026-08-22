@@ -211,6 +211,7 @@ type quoteRequest struct {
 	CouponCode         string `json:"coupon_code,omitempty"`
 	ShippingMethodCode string `json:"shipping_method_code,omitempty"`
 	Insurance          bool   `json:"insurance,omitempty"`
+	PointsToRedeem     int    `json:"points_to_redeem,omitempty"`
 }
 
 type buyNowRequest struct {
@@ -288,7 +289,7 @@ func (h *Checkout) Quote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	quote, err := h.svc.QuoteCheckout(r.Context(), user.ID, cart.ID, req.CouponCode, req.ShippingMethodCode, req.Insurance)
+	quote, err := h.svc.QuoteCheckout(r.Context(), user.ID, cart.ID, req.CouponCode, req.ShippingMethodCode, req.Insurance, req.PointsToRedeem)
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -300,6 +301,7 @@ type placeOrderRequest struct {
 	CouponCode         string `json:"coupon_code,omitempty"`
 	ShippingMethodCode string `json:"shipping_method_code"`
 	Insurance          bool   `json:"insurance,omitempty"`
+	PointsToRedeem     int    `json:"points_to_redeem,omitempty"`
 	AddressID          string `json:"address_id,omitempty"`
 	Address            *struct {
 		Recipient    string `json:"recipient"`
@@ -390,6 +392,7 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 		CouponCode:         req.CouponCode,
 		ShippingMethodCode: req.ShippingMethodCode,
 		Insurance:          req.Insurance,
+		PointsToRedeem:     req.PointsToRedeem,
 		Notes:              req.Notes,
 		IdempotencyKey:     idemKey,
 	})

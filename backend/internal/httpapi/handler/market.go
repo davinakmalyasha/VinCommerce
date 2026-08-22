@@ -257,6 +257,83 @@ func (h *Market) Loyalty(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"balance": balance, "ledger": ledger})
 }
 
+// --- gamification ---
+
+type claimVoucherRequest struct {
+	Code string `json:"code"`
+}
+
+// ClaimVoucher handles POST /vouchers/claim.
+func (h *Market) ClaimVoucher(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req claimVoucherRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	coupon, err := h.svc.ClaimVoucher(r.Context(), user.ID, req.Code)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"coupon": coupon})
+}
+
+// MyClaims handles GET /vouchers/claims.
+func (h *Market) MyClaims(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	claims, err := h.svc.MyClaims(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"claims": claims})
+}
+
+// CheckIn handles POST /engagement/checkin.
+func (h *Market) CheckIn(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	res, err := h.svc.DailyCheckIn(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// CheckInStatus handles GET /engagement/checkin/status.
+func (h *Market) CheckInStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	status, err := h.svc.CheckInStatus(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// Spin handles POST /games/spin.
+func (h *Market) Spin(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	res, err := h.svc.SpinWheel(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// SpinStatus handles GET /games/status.
+func (h *Market) SpinStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	status, err := h.svc.WheelStatus(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 // Referral handles GET /referral/code.
 func (h *Market) Referral(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())

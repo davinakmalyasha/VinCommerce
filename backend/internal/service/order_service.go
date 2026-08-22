@@ -363,7 +363,14 @@ type Quote struct {
 	InsuranceAvailable bool    `json:"insurance_available"`
 	InsuranceSelected  bool    `json:"insurance_selected"`
 	InsuranceFee       float64 `json:"insurance_fee"`
+	PointsDiscount     float64 `json:"points_discount,omitempty"`
+	PointsRedeemed     int     `json:"points_redeemed,omitempty"`
+
+	discountBySeller map[string]float64
 }
+
+// DiscountFor returns the discount allocated to one seller bundle.
+func (q *Quote) DiscountFor(sid string) float64 { return q.discountBySeller[sid] }
 
 // ShippingQuote is per-method fee for one seller bundle.
 type ShippingQuote struct {
@@ -379,8 +386,11 @@ type ShippingQuote struct {
 	MaxDays      int     `json:"max_days"`
 }
 
+// LoyaltyPointValueIDR is the rupiah value of one loyalty point at checkout.
+const LoyaltyPointValueIDR = 100
+
 // QuoteCheckout validates items, applies the coupon and computes shipping.
-func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, couponCode, shippingMethodCode string, insurance bool) (*Quote, error) {
+func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, couponCode, shippingMethodCode string, insurance bool, pointsToRedeem int) (*Quote, error) {
 	_, lines, err := s.carts.GetWithItems(ctx, cartID)
 	if err != nil {
 		return nil, err
@@ -408,7 +418,7 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		subtotal += l.Subtotal
 	}
 
-	quote := &Quote{Lines: lines, Subtotal: subtotal}
+	quote := &Quote{Lines: lines, Subtotal: subtotal, discountBySeller: map[string]float64{}}
 
 	// coupon: platform coupons apply globally; store coupons only to their seller's bundle
 	var coupon *domain.Coupon
@@ -422,6 +432,26 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		if coupon.SellerID == nil {
 			quote.DiscountAmount = couponDiscount(coupon, subtotal)
 		}
+	}
+
+	// loyalty points redemption: LoyaltyPointValueIDR per point, capped so the
+	// merchandising total never goes negative.
+	if pointsToRedeem > 0 && s.loyalty != nil {
+		balance, err := s.loyalty.Balance(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if pointsToRedeem > balance {
+			return nil, domain.E(domain.KindConflict, "INSUFFICIENT_POINTS", "poin tidak cukup")
+		}
+		maxDiscount := subtotal - quote.DiscountAmount
+		d := float64(pointsToRedeem) * LoyaltyPointValueIDR
+		if d > maxDiscount {
+			d = maxDiscount
+			pointsToRedeem = int(math.Ceil(d / LoyaltyPointValueIDR))
+		}
+		quote.PointsRedeemed = pointsToRedeem
+		quote.PointsDiscount = d
 	}
 
 	// shipping: bundle lines by seller, quote per seller with the chosen method
@@ -446,12 +476,51 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		return nil, domain.E(domain.KindInvalid, "SHIPPING_METHOD", "unknown shipping method")
 	}
 
-	total := subtotal - quote.DiscountAmount
+	total := subtotal - quote.DiscountAmount - quote.PointsDiscount
 	sellerIDs := make([]string, 0, len(sellerBundles))
 	for sid := range sellerBundles {
 		sellerIDs = append(sellerIDs, sid)
 	}
 	sort.Strings(sellerIDs)
+
+	// Allocate platform-level discounts (global coupon + points) across seller
+	// bundles proportionally to their subtotal share, so each sub-order carries
+	// its fair share instead of duplicating the full discount.
+	bundleSubtotals := map[string]float64{}
+	for _, sid := range sellerIDs {
+		s2 := 0.0
+		for _, l := range sellerBundles[sid] {
+			s2 += l.Subtotal
+		}
+		bundleSubtotals[sid] = s2
+	}
+	allocateGlobal := func(amount float64) {
+		if amount <= 0 || len(sellerIDs) == 0 {
+			return
+		}
+		var sumAll float64
+		for _, sid := range sellerIDs {
+			sumAll += bundleSubtotals[sid]
+		}
+		if sumAll <= 0 {
+			return
+		}
+		assigned := 0.0
+		for i, sid := range sellerIDs {
+			var share float64
+			if i == len(sellerIDs)-1 {
+				share = amount - assigned // remainder lands on the last bundle
+			} else {
+				share = math.Round(amount*bundleSubtotals[sid]/sumAll*100) / 100
+				assigned += share
+			}
+			quote.discountBySeller[sid] += share
+		}
+	}
+	if coupon != nil && coupon.SellerID == nil {
+		allocateGlobal(quote.DiscountAmount)
+	}
+	allocateGlobal(quote.PointsDiscount)
 
 	quote.InsuranceAvailable = s.insurancePct > 0
 	quote.InsuranceSelected = insurance && quote.InsuranceAvailable
@@ -468,6 +537,7 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 			d := couponDiscount(coupon, bundleSubtotal)
 			quote.DiscountAmount += d
 			total -= d
+			quote.discountBySeller[sid] += d
 		}
 		// free shipping threshold
 		freeThreshold, err := s.stores.FreeShippingThreshold(ctx, sid)
@@ -510,6 +580,7 @@ type PlaceOrderInput struct {
 	CouponCode         string
 	ShippingMethodCode string
 	Insurance          bool
+	PointsToRedeem     int
 	Notes              string
 	IdempotencyKey     string
 }
@@ -595,7 +666,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 	if in.CartID == "" {
 		return nil, domain.E(domain.KindInvalid, "CART_REQUIRED", "cart is required")
 	}
-	quote, err := s.QuoteCheckout(ctx, in.UserID, in.CartID, in.CouponCode, in.ShippingMethodCode, in.Insurance)
+	quote, err := s.QuoteCheckout(ctx, in.UserID, in.CartID, in.CouponCode, in.ShippingMethodCode, in.Insurance, in.PointsToRedeem)
 	if err != nil {
 		return nil, err
 	}
@@ -635,10 +706,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			weightKg += (l.WeightGrams * l.Quantity) / 1000
 		}
 
-		discount := 0.0
-		if quote.CouponCode != "" {
-			discount = quote.DiscountAmount
-		}
+		discount := quote.DiscountFor(sid)
 		shippingFee := quote.Shipping[shipIdx].Fee
 		insuranceFee := quote.Shipping[shipIdx].InsuranceFee
 		shipIdx++
@@ -716,6 +784,19 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+
+	// Debit redeemed points after the order commits (atomic guarded spend).
+	if quote.PointsRedeemed > 0 && s.loyalty != nil {
+		refID := ""
+		if len(placed.Orders) > 0 {
+			refID = placed.Orders[0].ID
+		}
+		if err := s.loyalty.Spend(ctx, in.UserID, quote.PointsRedeemed, "redemption", refID); err != nil {
+			// The discount was already granted; keep the order and log the miss.
+			fmt.Println("loyalty redemption debit failed:", err)
+		}
+	}
+
 	for _, o := range placed.Orders {
 		s.emailFor(ctx, o.ID, "order_confirmed", "Pesanan dikonfirmasi — VinCommerce",
 			map[string]any{"Total": fmt.Sprintf("Rp %.0f", o.TotalAmount)})

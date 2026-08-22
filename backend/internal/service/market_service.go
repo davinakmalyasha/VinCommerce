@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ type MarketService struct {
 	notifs   *NotificationService
 	loyalty  *repository.LoyaltyRepository
 	disputes *repository.DisputeRepository
+	game     *repository.GamificationRepository
 	users    *repository.UserRepository
 	mailer   *mail.Client
 	webURL   string
@@ -26,6 +28,122 @@ type MarketService struct {
 // NewMarketService creates a MarketService.
 func NewMarketService(market *repository.QARepository) *MarketService {
 	return &MarketService{market: market}
+}
+
+// SetGamification enables voucher claims, check-ins and the wheel.
+func (s *MarketService) SetGamification(g *repository.GamificationRepository) { s.game = g }
+
+// --- gamification ---
+
+// ClaimVoucher attaches an active coupon to the user's account by code.
+func (s *MarketService) ClaimVoucher(ctx context.Context, userID, code string) (*domain.Coupon, error) {
+	if s.game == nil {
+		return nil, domain.E(domain.KindInternal, "UNAVAILABLE", "voucher claims unavailable")
+	}
+	return s.game.ClaimCoupon(ctx, userID, code)
+}
+
+// MyClaims lists the user's claimed coupons.
+func (s *MarketService) MyClaims(ctx context.Context, userID string) ([]*repository.ClaimedCoupon, error) {
+	if s.game == nil {
+		return nil, domain.E(domain.KindInternal, "UNAVAILABLE", "voucher claims unavailable")
+	}
+	return s.game.ListClaims(ctx, userID)
+}
+
+// CheckInResult is the outcome of a daily check-in.
+type CheckInResult struct {
+	Streak        int `json:"streak"`
+	PointsAwarded int `json:"points_awarded"`
+}
+
+// PointsPerCheckIn scales with the streak, capped at a 7-day cycle.
+func PointsPerCheckIn(streak int) int { return 10 * min(streak, 7) }
+
+// DailyCheckIn records attendance and awards streak-scaled points.
+func (s *MarketService) DailyCheckIn(ctx context.Context, userID string) (*CheckInResult, error) {
+	if s.game == nil || s.loyalty == nil {
+		return nil, domain.E(domain.KindInternal, "UNAVAILABLE", "check-in unavailable")
+	}
+	streak, err := s.game.CheckIn(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	awarded := PointsPerCheckIn(streak)
+	if err := s.loyalty.Add(ctx, userID, awarded, "checkin", time.Now().UTC().Format("2006-01-02")); err != nil {
+		return nil, err
+	}
+	return &CheckInResult{Streak: streak, PointsAwarded: awarded}, nil
+}
+
+// CheckInStatus reports today's state + this month's calendar.
+func (s *MarketService) CheckInStatus(ctx context.Context, userID string) (*repository.CheckInStatus, error) {
+	if s.game == nil {
+		return nil, domain.E(domain.KindInternal, "UNAVAILABLE", "check-in unavailable")
+	}
+	return s.game.CheckInStatus(ctx, userID)
+}
+
+// SpinResult is what the wheel landed on.
+type SpinResult struct {
+	Type   string `json:"type"` // coupon | points
+	Label  string `json:"label"`
+	Coupon *domain.Coupon `json:"coupon,omitempty"`
+	Points int    `json:"points,omitempty"`
+}
+
+// SpinWheel plays the daily free game: either a prize coupon (auto-claimed)
+// or a points drop. One spin per calendar day.
+func (s *MarketService) SpinWheel(ctx context.Context, userID string) (*SpinResult, error) {
+	if s.game == nil || s.loyalty == nil {
+		return nil, domain.E(domain.KindInternal, "UNAVAILABLE", "game unavailable")
+	}
+	ok, err := s.game.CanSpin(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, domain.E(domain.KindConflict, "SPIN_USED", "spin gratis hari ini sudah dipakai — kembali besok!")
+	}
+	coupon, cerr := s.game.RandomPrizeCoupon(ctx)
+	if cerr == nil {
+		if err := s.game.GrantPrizeCoupon(ctx, userID, coupon.ID); err != nil {
+			return nil, err
+		}
+		if err := s.game.RecordSpin(ctx, userID, "coupon", coupon.ID, 0); err != nil {
+			return nil, err
+		}
+		label := "Kupon " + coupon.Code
+		switch coupon.Type {
+		case "percent":
+			label = fmt.Sprintf("%v%% off — %s", trimFloat(coupon.Value), coupon.Code)
+		case "fixed":
+			label = fmt.Sprintf("Rp %.0f off — %s", coupon.Value, coupon.Code)
+		}
+		return &SpinResult{Type: "coupon", Label: label, Coupon: coupon}, nil
+	}
+	points := 20 + rand.Intn(81) // 20–100 points drop
+	if err := s.loyalty.Add(ctx, userID, points, "wheel_prize", ""); err != nil {
+		return nil, err
+	}
+	if err := s.game.RecordSpin(ctx, userID, "points", "", points); err != nil {
+		return nil, err
+	}
+	return &SpinResult{Type: "points", Label: fmt.Sprintf("+%d Poin", points), Points: points}, nil
+}
+
+// WheelStatus reports spin availability.
+func (s *MarketService) WheelStatus(ctx context.Context, userID string) (map[string]bool, error) {
+	ok, err := s.game.CanSpin(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]bool{"can_spin": ok}, nil
+}
+
+func trimFloat(v float64) string {
+	s := fmt.Sprintf("%.0f", v)
+	return strings.TrimRight(strings.TrimRight(s, "0"), ".")
 }
 
 // SetNotificationService enables price-drop alerts.

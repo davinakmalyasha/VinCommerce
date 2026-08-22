@@ -63,9 +63,41 @@ func run(logger *slog.Logger) error {
 	seeded += s.seedBrandsAndProducts()
 	seeded += s.seedHelpContent()
 	seeded += s.seedFlags()
+	seeded += s.seedCoupons()
 
 	logger.Info("seed complete", "items", seeded)
 	return nil
+}
+
+// seedCoupons creates the demo coupons advertised in the README plus
+// spin-the-wheel prize coupons.
+func (s *seeder) seedCoupons() int {
+	md := 15000.0
+	coupons := []struct {
+		code        string
+		typ         string
+		value       float64
+		minSubtotal float64
+		maxDiscount *float64
+		prize       bool
+	}{
+		{"WELCOME10", "percent", 10, 50000, nil, false},
+		{"FLAT50K", "fixed", 50000, 200000, nil, false},
+		{"GRATIS15", "percent", 5, 100000, &md, false},
+		{"LUCKY20K", "fixed", 20000, 75000, nil, true},
+		{"SPIN10", "percent", 8, 0, nil, true},
+	}
+	for _, c := range coupons {
+		if _, err := s.products.Pool().Exec(s.ctx, `
+			INSERT INTO coupons (code, type, value, min_subtotal, max_discount, per_user_limit, is_active, is_prize)
+			VALUES ($1, $2, $3, $4, $5, 1, TRUE, $6)
+			ON CONFLICT (code) DO UPDATE SET is_active = TRUE, is_prize = EXCLUDED.is_prize`,
+			c.code, c.typ, c.value, c.minSubtotal, c.maxDiscount, c.prize); err != nil {
+			fmt.Println("seed coupon:", err)
+			continue
+		}
+	}
+	return len(coupons)
 }
 
 // seedFlags ensures feature flags exist (enabled) so the flag-gated routes work out of the box.

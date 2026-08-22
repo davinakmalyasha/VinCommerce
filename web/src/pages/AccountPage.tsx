@@ -4,11 +4,12 @@ import { Link, Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useSession } from '../stores/session'
 import type { Address } from '../types'
+import { BonusCenter } from './BonusCenter'
 import { FileUpload } from '../components/FileUpload'
 
 export function AccountPage() {
   const { user } = useSession()
-  const [tab, setTab] = useState<'profil' | 'keamanan' | 'alamat' | 'pantauan' | 'undang'>('profil')
+  const [tab, setTab] = useState<'profil' | 'keamanan' | 'alamat' | 'pantauan' | 'undang' | 'bonus'>('profil')
 
   if (!user) return <Navigate to="/login" replace />
 
@@ -27,13 +28,13 @@ export function AccountPage() {
           </div>
         </div>
         <nav className="flex gap-1 text-sm">
-          {(['profil', 'keamanan', 'alamat', 'pantauan', 'undang'] as const).map((t) => (
+          {(['profil', 'keamanan', 'alamat', 'pantauan', 'undang', 'bonus'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               className={`px-4 py-2 rounded-lg capitalize ${tab === t ? 'bg-amber-500 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
             >
-              {t === 'pantauan' ? 'Pantauan' : t === 'undang' ? 'Poin & Undang' : t}
+              {t === 'pantauan' ? 'Pantauan' : t === 'undang' ? 'Poin & Undang' : t === 'bonus' ? '🎁 Bonus' : t}
             </button>
           ))}
         </nav>
@@ -61,6 +62,7 @@ export function AccountPage() {
       {tab === 'alamat' && <AddressesTab />}
       {tab === 'pantauan' && <WatchesTab />}
       {tab === 'undang' && <ReferralTab />}
+      {tab === 'bonus' && <BonusCenter />}
     </div>
   )
 }

@@ -35,6 +35,26 @@ func (r *LoyaltyRepository) Add(ctx context.Context, userID string, change int, 
 	return err
 }
 
+// Spend atomically debits points only when the balance covers it.
+// Returns ErrInsufficientPoints-style conflict when it does not.
+func (r *LoyaltyRepository) Spend(ctx context.Context, userID string, points int, reason, refID string) error {
+	if points <= 0 {
+		return domain.E(domain.KindInvalid, "BAD_POINTS", "points must be positive")
+	}
+	tag, err := r.pool.Exec(ctx, `
+		INSERT INTO loyalty_ledger (user_id, change, reason, ref_id)
+		SELECT $1, $2, $3, NULLIF($4, '')
+		WHERE (SELECT COALESCE(SUM(change), 0)::int FROM loyalty_ledger WHERE user_id = $1) >= $2`,
+		userID, -points, reason, refID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "INSUFFICIENT_POINTS", "not enough loyalty points")
+	}
+	return nil
+}
+
 // Ledger lists the user's point history.
 func (r *LoyaltyRepository) Ledger(ctx context.Context, userID string, limit int) ([]*domain.LoyaltyEntry, error) {
 	if limit < 1 || limit > 100 {
