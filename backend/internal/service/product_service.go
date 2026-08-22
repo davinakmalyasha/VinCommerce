@@ -186,6 +186,11 @@ func (s *ProductService) ReplyToReview(ctx context.Context, reviewID, userID, co
 	return s.reviews.Reply(ctx, reviewID, userID, strings.TrimSpace(content))
 }
 
+// SellerReviews lists approved reviews across the seller's products.
+func (s *ProductService) SellerReviews(ctx context.Context, sellerID string, limit int) ([]*repository.SellerReview, error) {
+	return s.reviews.ListBySeller(ctx, sellerID, limit)
+}
+
 // ReviewOrderItemInput for reviewing a purchased item.
 type ReviewOrderItemInput struct {
 	OrderID string

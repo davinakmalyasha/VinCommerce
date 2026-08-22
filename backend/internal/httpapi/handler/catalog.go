@@ -198,6 +198,36 @@ func (h *Product) Related(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"products": items})
 }
 
+// SellerReviews handles GET /seller/reviews — the seller's reviews inbox.
+func (h *Product) SellerReviews(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	reviews, err := h.svc.SellerReviews(r.Context(), user.ID, 50)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reviews": reviews})
+}
+
+type replyReviewRequest struct {
+	Content string `json:"content"`
+}
+
+// ReplyReview handles POST /seller/reviews/{id}/reply.
+func (h *Product) ReplyReview(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req replyReviewRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.ReplyToReview(r.Context(), chi.URLParam(r, "id"), user.ID, req.Content); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"replied": true})
+}
+
 // Reviews handles GET /products/{id}/reviews.
 func (h *Product) Reviews(w http.ResponseWriter, r *http.Request) {
 	page := intQuery(r.URL.Query().Get("page"), 1)

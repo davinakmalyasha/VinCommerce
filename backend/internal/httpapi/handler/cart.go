@@ -545,6 +545,21 @@ func (h *Orders) Invoice(w http.ResponseWriter, r *http.Request) {
 	renderInvoice(w, o)
 }
 
+// PackingSlip handles GET /orders/{id}/packing-slip — seller picking sheet.
+func (h *Orders) PackingSlip(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if o.SellerID != user.ID && !user.HasRole(domain.RoleAdmin) {
+		writeErr(w, r, domain.E(domain.KindForbidden, "NOT_OWNED", "only the order's seller can print this"))
+		return
+	}
+	renderPackingSlip(w, o)
+}
+
 // Addresses exposes the address book.
 type Addresses struct {
 	svc *service.OrderService

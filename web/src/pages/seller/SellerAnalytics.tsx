@@ -12,8 +12,10 @@ import {
 } from '../../components/AnalyticsPanels'
 
 export function SellerAnalytics() {
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
   const { data } = useQuery({
-    queryKey: ['seller-analytics'],
+    queryKey: ['seller-analytics', from, to],
     queryFn: async () =>
       (
         await api.get<{
@@ -23,7 +25,7 @@ export function SellerAnalytics() {
           funnel: FunnelStep[]
           category_sales: CategorySales[]
           buyer_cohorts: BuyerCohort[]
-        }>('/seller/analytics')
+        }>('/seller/analytics', { params: { from: from || undefined, to: to || undefined } })
       ).data,
   })
 
@@ -43,9 +45,17 @@ export function SellerAnalytics() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Analitik Penjualan</h1>
-        <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
-          {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
-        </button>
+        <div className="flex items-center gap-2">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="px-2 py-1.5 border rounded-lg text-xs" />
+          <span className="text-xs text-gray-400">s/d</span>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="px-2 py-1.5 border rounded-lg text-xs" />
+          {(from || to) && (
+            <button onClick={() => { setFrom(''); setTo('') }} className="text-xs text-red-500 hover:underline">Reset</button>
+          )}
+          <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
+            {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4">

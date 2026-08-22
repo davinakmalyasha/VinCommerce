@@ -257,6 +257,50 @@ func (r *ReviewRepository) Pending(ctx context.Context, limit int) ([]*domain.Pr
 	return reviews, rows.Err()
 }
 
+// SellerReview is an approved review on one of the seller's products.
+type SellerReview struct {
+	domain.ProductReview
+	ProductName string `json:"product_name"`
+	Reply       string `json:"reply,omitempty"`
+}
+
+// ListBySeller lists approved reviews across a seller's products (reviews inbox).
+func (r *ReviewRepository) ListBySeller(ctx context.Context, sellerID string, limit int) ([]*SellerReview, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
+		       r.images, r.status, r.helpful_count, r.created_at,
+		       u.full_name, p.name,
+		       COALESCE(rr.content,'')
+		FROM product_reviews r
+		JOIN products p ON p.id = r.product_id
+		JOIN users u ON u.id = r.user_id
+		LEFT JOIN review_replies rr ON rr.review_id = r.id
+		WHERE p.seller_id = $1 AND r.status = 'approved'
+		ORDER BY r.created_at DESC
+		LIMIT $2`, sellerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	reviews := []*SellerReview{}
+	for rows.Next() {
+		var sr SellerReview
+		var images []byte
+		err := rows.Scan(&sr.ID, &sr.ProductID, &sr.UserID, &sr.OrderItemID, &sr.Rating, &sr.Title,
+			&sr.Content, &images, &sr.Status, &sr.HelpfulCount, &sr.CreatedAt,
+			&sr.UserName, &sr.ProductName, &sr.Reply)
+		if err != nil {
+			return nil, err
+		}
+		if len(images) > 0 {
+			_ = json.Unmarshal(images, &sr.Images)
+		}
+		reviews = append(reviews, &sr)
+	}
+	return reviews, rows.Err()
+}
+
 type reviewRow interface {
 	Scan(dest ...any) error
 }

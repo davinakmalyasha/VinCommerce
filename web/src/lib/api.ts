@@ -88,6 +88,15 @@ export async function downloadFile(url: string, filename: string) {
   URL.revokeObjectURL(blobUrl)
 }
 
+// Opens an authenticated HTML document (invoice, packing slip) in a new tab.
+export async function openDocument(url: string) {
+  const res = await api.get(url, { responseType: 'blob', timeout: 30_000 })
+  const blobUrl = URL.createObjectURL(
+    new Blob([res.data as Blob], { type: 'text/html' }),
+  )
+  window.open(blobUrl, '_blank')
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError<{ error: { code?: string; message?: string; details?: unknown } }>) => {

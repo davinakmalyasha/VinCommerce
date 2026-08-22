@@ -59,6 +59,36 @@ func f2(v float64) string {
 	return fmt.Sprintf("%.0f", v)
 }
 
+// renderPackingSlip serves a dense, price-free picking/packing sheet.
+func renderPackingSlip(w http.ResponseWriter, o *domain.Order) {
+	var rows string
+	for _, it := range o.Items {
+		rows += fmt.Sprintf(`<tr>
+			<td style="font-family:monospace;font-size:15px">%s</td>
+			<td>%s<br><span style="color:#6b7280;font-size:12px">%s</span></td>
+			<td style="font-size:20px;font-weight:800;text-align:center">%d</td>
+			<td></td>
+		</tr>`,
+			htmlEsc(it.SKU), htmlEsc(it.ProductName), htmlEsc(it.VariantName), it.Quantity)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, packingSlipHTML,
+		o.OrderNumber, // title
+		o.OrderNumber, // header
+		o.PlacedAt.Format("02 Jan 2006 15:04"),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["recipient"])),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["phone"])),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["address_line1"])),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["city"])),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["province"])),
+		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["postal_code"])),
+		htmlEsc(o.Notes),
+		rows,
+		htmlEsc(o.ShippingMethod), htmlEsc(o.Carrier),
+	)
+}
+
 var _ = domain.OrderCompleted
 
 const invoiceHTML = `<!DOCTYPE html>
@@ -110,5 +140,46 @@ const invoiceHTML = `<!DOCTYPE html>
 
 <div class="meta">Kurir: %s · Nomor resi: %s (%s)</div>
 <div class="foot">VinCommerce — platform marketplace dengan pembayaran escrow. Invoice ini sah tanpa tanda tangan.</div>
+</body>
+</html>`
+
+const packingSlipHTML = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"><title>Packing Slip %s</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 20px; color: #111; }
+  .head { border-bottom: 3px solid #4f46e5; padding-bottom: 10px; }
+  .brand { font-size: 20px; font-weight: 800; color: #4f46e5; }
+  .meta { color: #6b7280; font-size: 13px; }
+  table { width: 100%%; border-collapse: collapse; margin: 18px 0; }
+  th { text-align: left; padding: 8px; border-bottom: 2px solid #e5e7eb; color: #6b7280; font-size: 12px; text-transform: uppercase; }
+  td { padding: 10px 8px; border-bottom: 1px dashed #d1d5db; vertical-align: top; }
+  .addr { font-size: 15px; line-height: 1.55; background: #f9fafb; padding: 14px; border-radius: 8px; }
+  .notes { margin-top: 12px; font-size: 13px; color: #b45309; }
+  .print-btn { position: fixed; top: 16px; right: 16px; padding: 10px 20px; background: #111; color: #fff; border: 0; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  @media print { .print-btn { display: none; } }
+</style>
+</head>
+<body>
+<button class="print-btn" onclick="window.print()">Cetak</button>
+<div class="head">
+  <div class="brand">PACKING SLIP</div>
+  <div class="meta">%s · %s</div>
+</div>
+
+<h3 style="margin-bottom:8px">Kirim ke:</h3>
+<div class="addr">
+  <b style="font-size:17px">%s</b> · %s<br>
+  %s<br>%s, %s %s
+</div>
+%s
+
+<table>
+  <tr><th>SKU</th><th>Produk / Varian</th><th style="text-align:center">Qty</th><th style="text-align:center">✓</th></tr>
+  %s
+</table>
+
+<div class="meta">Metode: %s · Kurir: %s</div>
 </body>
 </html>`

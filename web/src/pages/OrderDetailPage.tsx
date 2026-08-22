@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, openDocument } from '../lib/api'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../lib/format'
 import { ReturnModal } from './ReturnModal'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
@@ -289,9 +289,9 @@ export function OrderDetailPage() {
       <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold text-sm">Item ({data.items.length})</h2>
-          <a href={`/api/v1/orders/${id}/invoice`} target="_blank" rel="noreferrer" className="text-xs text-amber-600 hover:underline">
+          <button onClick={() => openDocument(`/orders/${id}/invoice`)} className="text-xs text-amber-600 hover:underline">
             🧾 Unduh Invoice
-          </a>
+          </button>
         </div>
         {data.items.map((it) => (
           <div key={it.id}>

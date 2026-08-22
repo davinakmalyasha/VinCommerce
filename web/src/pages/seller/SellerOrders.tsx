@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, downloadFile } from '../../lib/api'
+import { api, downloadFile, openDocument } from '../../lib/api'
 import type { Order } from '../../types'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../../lib/format'
 
@@ -120,6 +120,15 @@ export function SellerOrders() {
                 {o.shipping_method} · {o.payment_status} · <span className="font-bold text-gray-900">{formatIDR(o.total_amount)}</span>
               </p>
               <div className="flex gap-2">
+                {(o.status === 'paid' || o.status === 'packed') && (
+                  <button
+                    onClick={() => openDocument(`/orders/${o.id}/packing-slip`)}
+                    className="text-xs text-indigo-600 hover:underline"
+                    title="Cetak slip pengemasan"
+                  >
+                    🧾 Slip
+                  </button>
+                )}
                 {o.status === 'paid' && (
                   <button
                     onClick={() => transition.mutate({ id: o.id, to: 'packed' })}
