@@ -149,6 +149,10 @@ export interface Store {
   follower_count?: number
   is_following?: boolean
   is_verified?: boolean
+  online?: boolean
+  response_rate_pct?: number | null
+  avg_reply_minutes?: number | null
+  is_power_seller?: boolean
   joined_at: string
 }
 

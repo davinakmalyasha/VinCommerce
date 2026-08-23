@@ -9,6 +9,7 @@ interface ReturnItem {
   order_id: string
   item_name?: string
   amount?: number
+  issue_type?: string
   reason: string
   description: string
   status: string
@@ -79,7 +80,13 @@ export function MyReturnsPage() {
                 {returnStatusLabels[r.status] ?? r.status}
               </span>
             </div>
-            <p className="text-sm"><span className="text-gray-400">Alasan:</span> {r.reason}{r.description ? ` — ${r.description}` : ''}</p>
+            <p className="text-sm">
+              <span className="text-gray-400">Jenis:</span>{' '}
+              {r.issue_type === 'item_not_received' ? '📦 Barang tidak sampai' : '↩️ Retur barang'}
+              {' · '}
+              <span className="text-gray-400">{r.reason}</span>
+              {r.description ? ` — ${r.description}` : ''}
+            </p>
             {r.seller_note && <p className="text-sm"><span className="text-gray-400">Catatan penjual:</span> {r.seller_note}</p>}
             {r.admin_note && <p className="text-sm"><span className="text-gray-400">Keputusan admin:</span> {r.admin_note}</p>}
             {r.amount ? <p className="text-sm font-bold text-amber-600">{formatIDR(r.amount)}</p> : null}

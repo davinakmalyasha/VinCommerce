@@ -387,6 +387,56 @@ type StoreKYC struct {
 	StoreName string `json:"store_name"`
 }
 
+// PresenceStats are chat responsiveness signals for one store.
+type PresenceStats struct {
+	ResponseRatePct *int `json:"response_rate_pct,omitempty"`
+	AvgReplyMinutes *int `json:"avg_reply_minutes,omitempty"`
+}
+
+// PresenceByStore loads computed chat stats (nil columns when insufficient data).
+func (r *StoreRepository) PresenceByStore(ctx context.Context, storeID string) (*PresenceStats, error) {
+	var p PresenceStats
+	err := r.pool.QueryRow(ctx,
+		`SELECT response_rate_pct, avg_reply_minutes FROM stores WHERE id = $1`, storeID).
+		Scan(&p.ResponseRatePct, &p.AvgReplyMinutes)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// UpdatePresenceStats recomputes per-store chat responsiveness over the last
+// 30 days of seller-type sessions (nightly job).
+func (r *StoreRepository) UpdatePresenceStats(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `
+WITH asked AS (
+    SELECT cs.id AS session_id, o.seller_id,
+           (SELECT MIN(m.created_at) FROM chat_messages m
+            WHERE m.session_id = cs.id AND m.sender_role = 'customer') AS asked_at
+    FROM chat_sessions cs
+    JOIN orders o ON o.id = cs.order_id
+    WHERE cs.type = 'seller' AND cs.created_at > now() - interval '30 days'
+),
+base AS (
+    SELECT a.seller_id AS store_id, a.asked_at,
+           (SELECT MIN(m.created_at) FROM chat_messages m
+            WHERE m.session_id = a.session_id AND m.sender_role <> 'customer'
+              AND m.created_at >= a.asked_at) AS replied_at
+    FROM asked a
+    WHERE a.asked_at IS NOT NULL
+),
+agg AS (
+    SELECT store_id,
+           ROUND(100.0 * COUNT(replied_at) / GREATEST(COUNT(*), 1))::int AS rate,
+           AVG(EXTRACT(EPOCH FROM (replied_at - asked_at)) / 60)::int AS avg_minutes
+    FROM base
+    GROUP BY store_id
+)
+UPDATE stores st SET response_rate_pct = a.rate, avg_reply_minutes = a.avg_minutes
+FROM agg a WHERE st.id = a.store_id`)
+	return err
+}
+
 // PendingKYC lists KYC submissions awaiting review.
 func (r *StoreRepository) PendingKYC(ctx context.Context) ([]*StoreKYC, error) {
 	rows, err := r.pool.Query(ctx, `
@@ -420,11 +470,14 @@ func (r *StoreRepository) CreateReturn(ctx context.Context, req *domain.ReturnRe
 	if req.EvidenceURLs == nil {
 		req.EvidenceURLs = []string{}
 	}
+	if req.IssueType == "" {
+		req.IssueType = "return"
+	}
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO return_requests (id, order_id, order_item_id, buyer_id, seller_id, reason, description, evidence_urls)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO return_requests (id, order_id, order_item_id, buyer_id, seller_id, issue_type, reason, description, evidence_urls)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING requested_at`,
-		req.ID, req.OrderID, req.OrderItemID, req.BuyerID, req.SellerID, req.Reason, req.Description, req.EvidenceURLs).
+		req.ID, req.OrderID, req.OrderItemID, req.BuyerID, req.SellerID, req.IssueType, req.Reason, req.Description, req.EvidenceURLs).
 		Scan(&req.RequestedAt)
 	return err
 }

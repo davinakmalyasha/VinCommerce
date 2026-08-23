@@ -39,6 +39,12 @@ type Store struct {
 
 	IsFollowing bool `json:"is_following,omitempty"`
 	IsVerified  bool `json:"is_verified,omitempty"`
+
+	// Presence & responsiveness signals (public store views).
+	Online          bool `json:"online,omitempty"`
+	ResponseRatePct *int `json:"response_rate_pct,omitempty"`
+	AvgReplyMinutes *int `json:"avg_reply_minutes,omitempty"`
+	IsPowerSeller   bool `json:"is_power_seller,omitempty"`
 }
 
 // SellerKYC is the identity verification record.
@@ -63,6 +69,7 @@ type ReturnRequest struct {
 	OrderItemID  string     `json:"order_item_id"`
 	BuyerID      string     `json:"buyer_id"`
 	SellerID     string     `json:"seller_id"`
+	IssueType    string     `json:"issue_type,omitempty"` // return | item_not_received
 	Reason       string     `json:"reason"`
 	Description  string     `json:"description"`
 	EvidenceURLs []string   `json:"evidence_urls"`

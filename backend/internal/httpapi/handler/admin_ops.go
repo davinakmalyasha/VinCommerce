@@ -195,6 +195,31 @@ func (h *AdminOps) Shipping(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"methods": items})
 }
 
+// PublicShipping handles GET /shipping/methods — active options for ETA display.
+func (h *AdminOps) PublicShipping(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.ListShippingMethods(r.Context())
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	type opt struct {
+		Code    string  `json:"code"`
+		Name    string  `json:"name"`
+		BaseFee float64 `json:"base_fee"`
+		PerKgFee float64 `json:"per_kg_fee"`
+		MinDays int     `json:"min_days"`
+		MaxDays int     `json:"max_days"`
+	}
+	out := make([]opt, 0, len(items))
+	for _, m := range items {
+		if !m.IsActive {
+			continue
+		}
+		out = append(out, opt{Code: m.Code, Name: m.Name, BaseFee: m.BaseFee, PerKgFee: m.PerKgFee, MinDays: m.MinDays, MaxDays: m.MaxDays})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"methods": out})
+}
+
 type shippingCreateRequest struct {
 	Code     string  `json:"code"`
 	Name     string  `json:"name"`

@@ -232,7 +232,7 @@ func (h *Product) ReplyReview(w http.ResponseWriter, r *http.Request) {
 func (h *Product) Reviews(w http.ResponseWriter, r *http.Request) {
 	page := intQuery(r.URL.Query().Get("page"), 1)
 	pageSize := intQuery(r.URL.Query().Get("page_size"), 10)
-	reviews, total, err := h.svc.ReviewsByProduct(r.Context(), chi.URLParam(r, "id"), page, pageSize)
+	reviews, total, err := h.svc.ReviewsByProduct(r.Context(), chi.URLParam(r, "id"), page, pageSize, r.URL.Query().Get("sort"))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -241,6 +241,16 @@ func (h *Product) Reviews(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reviews": reviews, "total": total, "page": page, "page_size": pageSize, "distribution": distribution,
 	})
+}
+
+// CustomerPhotos handles GET /products/{id}/photos — buyer photo gallery.
+func (h *Product) CustomerPhotos(w http.ResponseWriter, r *http.Request) {
+	photos, err := h.svc.CustomerPhotos(r.Context(), chi.URLParam(r, "id"), intQuery(r.URL.Query().Get("limit"), 30))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"photos": photos})
 }
 
 // CreateReview handles POST /products/{id}/reviews (buyer).

@@ -109,6 +109,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	paymentSvc := service.NewPaymentService(paymentRepo, orders, gateways, cfg.Payments.Gateway, cfg.App.BaseURL)
 	sellerSvc := service.NewSellerService(stores, users, products, orders, paymentRepo)
 	sellerSvc.SetSessions(sessions)
+	sellerSvc.SetReturnAutoApprove(cfg.Payments.ReturnAutoApproveMax)
+	sellerSvc.SetPresenceCache(cache.NewStore(deps.Redis.Client))
 	engagementSvc := service.NewEngagementService(wishlistRepo, products)
 	engagementSvc.SetCache(cache.NewStore(deps.Redis.Client))
 	analyticsSvc := service.NewAnalyticsService(analyticsRepo)
@@ -235,6 +237,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/{slug}", product.BySlug)
 			r.Get("/{id}/related", product.Related)
 			r.Get("/{id}/reviews", product.Reviews)
+			r.Get("/{id}/photos", product.CustomerPhotos)
 			r.With(authMw).Post("/{id}/reviews", product.CreateReview)
 			r.With(authMw).Post("/reviews/{id}/helpful", product.ToggleReviewHelpful)
 			r.With(optionalAuthMw, rateLimiter.Limit(60, time.Minute, userKey)).
@@ -426,6 +429,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 
 		r.With(flagMw("flash_sales")).Get("/flash-sales/active", engagement.FlashSale)
+		r.Get("/shipping/methods", adminOps.PublicShipping)
 		r.Get("/recommendations", engagement.Recommended)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
 		r.With(authMw).Post("/stores/{id}/follow", seller.FollowStore)

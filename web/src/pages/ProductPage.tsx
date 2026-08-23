@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Product } from '../types'
-import { formatIDR } from '../lib/format'
+import { formatIDR, etaLabel } from '../lib/format'
 import { Rating } from '../components/Rating'
 import { ProductCard } from '../components/ProductCard'
 import { Seo } from '../components/Seo'
@@ -18,7 +18,15 @@ interface Review {
   content: string
   images?: string[]
   helpful_count?: number
+  is_verified_purchase?: boolean
   created_at: string
+}
+
+interface CustomerPhoto {
+  url: string
+  rating: number
+  user_name: string
+  review_id: string
 }
 
 interface RatingCount {
@@ -60,12 +68,31 @@ export function ProductPage() {
     enabled: !!data,
   })
 
+  const [reviewSort, setReviewSort] = useState('helpful')
   const { data: reviews } = useQuery({
-    queryKey: ['reviews', data?.id],
+    queryKey: ['reviews', data?.id, reviewSort],
     queryFn: async () =>
-      (await api.get<{ reviews: Review[]; distribution: RatingCount[]; total: number }>(`/products/${data!.id}/reviews`)).data,
+      (
+        await api.get<{ reviews: Review[]; distribution: RatingCount[]; total: number }>(
+          `/products/${data!.id}/reviews?sort=${reviewSort}`,
+        )
+      ).data,
     enabled: !!data,
   })
+
+  const { data: photos } = useQuery({
+    queryKey: ['customer-photos', data?.id],
+    queryFn: async () => (await api.get<{ photos: CustomerPhoto[] }>(`/products/${data!.id}/photos`)).data.photos,
+    enabled: !!data,
+  })
+
+  const { data: shippingMethods } = useQuery({
+    queryKey: ['shipping-methods'],
+    queryFn: async () =>
+      (await api.get<{ methods: { code: string; name: string; min_days: number; max_days: number }[] }>('/shipping/methods')).data.methods,
+    staleTime: 5 * 60_000,
+  })
+  const defaultMethod = (shippingMethods ?? [])[0]
 
   // Review pagination ("muat lebih banyak") + helpful votes (local overlay).
   const [moreReviews, setMoreReviews] = useState<Review[]>([])
@@ -76,13 +103,15 @@ export function ProductPage() {
     setMoreReviews([])
     setNextReviewPage(2)
     setHelpfulCounts({})
-  }, [data?.id])
+  }, [data?.id, reviewSort])
   const allReviews = [...(reviews?.reviews ?? []), ...moreReviews]
   const loadMoreReviews = async () => {
     if (!data || loadingMore) return
     setLoadingMore(true)
     try {
-      const res = await api.get<{ reviews: Review[] }>(`/products/${data.id}/reviews?page=${nextReviewPage}&page_size=10`)
+      const res = await api.get<{ reviews: Review[] }>(
+        `/products/${data.id}/reviews?page=${nextReviewPage}&page_size=10&sort=${reviewSort}`,
+      )
       setMoreReviews((prev) => [...prev, ...res.data.reviews])
       setNextReviewPage((p) => p + 1)
     } finally {
@@ -395,6 +424,11 @@ export function ProductPage() {
               <p className="text-xs text-gray-500 mt-2">
                 Stok: {selected?.stock ?? 0} unit
               </p>
+              {selected && selected.stock > 0 && (
+                <p className="text-xs text-teal-600 mt-1">
+                  🚚 Estimasi tiba <b>{etaLabel(defaultMethod?.min_days ?? 3, defaultMethod?.max_days ?? 7)}</b> ({defaultMethod?.name ?? 'Reguler'})
+                </p>
+              )}
             </div>
           )}
 
@@ -574,8 +608,43 @@ export function ProductPage() {
         </div>
       )}
 
+      {photos && photos.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-6">
+          <h2 className="font-bold mb-3">Foto Pembeli ({photos.length})</h2>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {photos.map((p, i) => (
+              <button
+                key={p.review_id + i}
+                onClick={() => {
+                  setActiveImage(0)
+                  setZoomOpen(true)
+                }}
+                className="relative w-20 h-20 shrink-0 rounded-lg overflow-hidden group"
+                title={`${'★'.repeat(p.rating)} oleh ${p.user_name}`}
+              >
+                <img src={p.url} alt={`Foto pembeli ${i + 1}`} loading="lazy" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-6">
-        <h2 className="font-bold mb-4">Ulasan ({reviews?.reviews.length ?? 0})</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-bold">Ulasan ({reviews?.total ?? 0})</h2>
+          <select
+            value={reviewSort}
+            onChange={(e) => setReviewSort(e.target.value)}
+            className="px-3 py-1.5 border rounded-lg text-xs outline-none dark:bg-gray-800"
+            aria-label="Urutkan ulasan"
+          >
+            <option value="helpful">Paling Membantu</option>
+            <option value="recent">Terbaru</option>
+            <option value="rating_desc">Bintang Tertinggi</option>
+            <option value="rating_asc">Bintang Terendah</option>
+            <option value="with_images">Dengan Foto</option>
+          </select>
+        </div>
         {reviews?.distribution && reviews.distribution.length > 0 && (
           <div className="flex items-center gap-6 mb-6">
             <div className="text-center">
@@ -606,7 +675,14 @@ export function ProductPage() {
           {allReviews.map((r) => (
             <div key={r.id} className="border-b border-gray-100 dark:border-gray-700 pb-4 last:border-0">
               <div className="flex items-center justify-between">
-                <p className="font-medium text-sm">{r.user_name}</p>
+                <p className="font-medium text-sm">
+                  {r.user_name}
+                  {r.is_verified_purchase && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-semibold">
+                      ✓ Pembeli Terverifikasi
+                    </span>
+                  )}
+                </p>
                 <Rating value={r.rating} size="text-xs" />
               </div>
               {r.title && <p className="text-sm mt-1">{r.title}</p>}

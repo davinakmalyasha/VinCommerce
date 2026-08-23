@@ -122,8 +122,9 @@ type ProductReview struct {
 	HelpfulCount int       `json:"helpful_count"`
 	CreatedAt    time.Time `json:"created_at"`
 
-	UserName    string `json:"user_name,omitempty"`
-	VariantName string `json:"variant_name,omitempty"`
+	UserName          string `json:"user_name,omitempty"`
+	VariantName       string `json:"variant_name,omitempty"`
+	IsVerifiedPurchase bool  `json:"is_verified_purchase,omitempty"`
 }
 
 // RatingCount is one star bucket of the rating histogram.

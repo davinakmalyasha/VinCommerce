@@ -84,3 +84,14 @@ export const RESERVATION_MINUTES = 30
 export function paymentDeadlineMs(placedAt: string): number {
   return new Date(placedAt).getTime() + RESERVATION_MINUTES * 60_000
 }
+
+const etaFmt = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short' })
+
+// "Estimasi tiba 12–16 Agu" from a min/max day range starting today.
+export function etaLabel(minDays: number, maxDays: number): string {
+  const from = new Date()
+  from.setDate(from.getDate() + (minDays || 3))
+  const to = new Date()
+  to.setDate(to.getDate() + (maxDays || 7))
+  return `${etaFmt.format(from)} – ${etaFmt.format(to)}`
+}

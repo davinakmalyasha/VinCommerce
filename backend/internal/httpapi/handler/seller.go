@@ -116,6 +116,7 @@ func (h *Seller) KYC(w http.ResponseWriter, r *http.Request) {
 // Dashboard handles GET /seller/dashboard.
 func (h *Seller) Dashboard(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
+	h.svc.Heartbeat(r.Context(), user.ID)
 	stats, err := h.svc.Dashboard(r.Context(), user.ID)
 	if err != nil {
 		writeErr(w, r, err)
@@ -479,6 +480,7 @@ func (h *BuyerReturns) Request(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OrderID      string   `json:"order_id"`
 		OrderItemID  string   `json:"order_item_id"`
+		IssueType    string   `json:"issue_type,omitempty"` // return | item_not_received
 		Reason       string   `json:"reason"`
 		Description  string   `json:"description"`
 		EvidenceURLs []string `json:"evidence_urls"`
@@ -489,6 +491,7 @@ func (h *BuyerReturns) Request(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := h.svc.RequestReturn(r.Context(), service.CreateReturnInput{
 		OrderID: req.OrderID, OrderItemID: req.OrderItemID, BuyerID: user.ID,
+		IssueType: req.IssueType,
 		Reason: req.Reason, Description: req.Description, EvidenceURLs: req.EvidenceURLs,
 	})
 	if err != nil {

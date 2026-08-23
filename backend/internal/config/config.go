@@ -38,6 +38,9 @@ type PaymentConfig struct {
 	// Optional shipping insurance: percentage of bundle subtotal charged when
 	// the buyer opts in at checkout. 0 disables the feature.
 	ShippingInsurancePct float64 `env:"SHIPPING_INSURANCE_PCT" envDefault:"0.3"`
+	// Auto-approve return claims whose item value is at or below this amount.
+	// 0 disables instant approval.
+	ReturnAutoApproveMax float64 `env:"RETURN_AUTO_APPROVE_MAX" envDefault:"50000"`
 }
 
 // OAuthConfig enables social login (Google).

@@ -14,13 +14,14 @@ export function ReturnModal({
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState({ reason: 'defective', description: '' })
+  const [form, setForm] = useState({ issueType: 'return', reason: 'defective', description: '' })
 
   const submit = useMutation({
     mutationFn: async () =>
       api.post('/returns', {
         order_id: orderId,
         order_item_id: itemId,
+        issue_type: form.issueType,
         reason: form.reason,
         description: form.description,
       }),
@@ -34,19 +35,29 @@ export function ReturnModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-xl p-6 w-full max-w-md m-4">
-        <h2 className="font-bold text-lg mb-1">Ajukan Retur</h2>
+        <h2 className="font-bold text-lg mb-1">Ajukan Retur / Komplain</h2>
         <p className="text-sm text-gray-500 mb-4">{itemName}</p>
         <div className="space-y-3">
           <select
-            value={form.reason}
-            onChange={(e) => setForm({ ...form, reason: e.target.value })}
+            value={form.issueType}
+            onChange={(e) => setForm({ ...form, issueType: e.target.value })}
             className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800"
           >
-            <option value="defective">Barang rusak/cacat</option>
-            <option value="wrong_item">Barang tidak sesuai</option>
-            <option value="not_as_described">Tidak sesuai deskripsi</option>
-            <option value="other">Lainnya</option>
+            <option value="return">↩️ Retur barang</option>
+            <option value="item_not_received">📦 Barang tidak sampai</option>
           </select>
+          {form.issueType === 'return' && (
+            <select
+              value={form.reason}
+              onChange={(e) => setForm({ ...form, reason: e.target.value })}
+              className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800"
+            >
+              <option value="defective">Barang rusak/cacat</option>
+              <option value="wrong_item">Barang tidak sesuai</option>
+              <option value="not_as_described">Tidak sesuai deskripsi</option>
+              <option value="other">Lainnya</option>
+            </select>
+          )}
           <textarea
             rows={4}
             placeholder="Jelaskan masalahnya..."

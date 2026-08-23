@@ -104,8 +104,13 @@ func (s *ProductService) Related(ctx context.Context, productID string, limit in
 }
 
 // ReviewsByProduct lists approved reviews.
-func (s *ProductService) ReviewsByProduct(ctx context.Context, productID string, page, pageSize int) ([]*domain.ProductReview, int64, error) {
-	return s.reviews.ListByProduct(ctx, productID, page, pageSize)
+func (s *ProductService) ReviewsByProduct(ctx context.Context, productID string, page, pageSize int, sort string) ([]*domain.ProductReview, int64, error) {
+	return s.reviews.ListByProduct(ctx, productID, page, pageSize, sort)
+}
+
+// CustomerPhotos flattens approved review images into a PDP gallery strip.
+func (s *ProductService) CustomerPhotos(ctx context.Context, productID string, limit int) ([]*repository.CustomerPhoto, error) {
+	return s.reviews.CustomerPhotos(ctx, productID, limit)
 }
 
 // RatingDistribution returns the star histogram for a product.
@@ -131,6 +136,21 @@ func (s *ProductService) CreateReview(ctx context.Context, in CreateReviewInput)
 	}
 	if strings.TrimSpace(in.Content) == "" && strings.TrimSpace(in.Title) == "" {
 		return nil, domain.E(domain.KindInvalid, "EMPTY_REVIEW", "review text is required")
+	}
+	// Integrity: a claimed order item must belong to the caller AND to this
+	// product, otherwise anyone could forge "verified purchase" badges.
+	if in.OrderItemID != nil && *in.OrderItemID != "" {
+		item, err := s.orders.ItemByID(ctx, *in.OrderItemID)
+		if err != nil {
+			return nil, domain.E(domain.KindInvalid, "BAD_ORDER_ITEM", "order item not found")
+		}
+		order, err := s.orders.ByID(ctx, item.OrderID)
+		if err != nil || order.BuyerID != in.UserID {
+			return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "order item does not belong to user")
+		}
+		if item.ProductID != in.ProductID {
+			return nil, domain.E(domain.KindInvalid, "PRODUCT_MISMATCH", "order item is for a different product")
+		}
 	}
 	rev := &domain.ProductReview{
 		ID:          uuid.NewString(),

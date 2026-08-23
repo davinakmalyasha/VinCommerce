@@ -19,6 +19,7 @@ const (
 	TaskCartRecovery        = "cart:recover"
 	TaskSellerDigest        = "seller:daily_digest"
 	TaskLowStock            = "stock:low"
+	TaskSellerPresence      = "seller:presence_stats"
 )
 
 // Server wires asynq workers and schedules recurring jobs.
@@ -57,6 +58,7 @@ func NewServer(redisAddr string, orders *service.OrderService, market *service.M
 	mux.HandleFunc(TaskCartRecovery, cartRecoveryHandler(orders, logger))
 	mux.HandleFunc(TaskSellerDigest, sellerDigestHandler(seller, logger))
 	mux.HandleFunc(TaskLowStock, lowStockHandler(seller, logger))
+	mux.HandleFunc(TaskSellerPresence, sellerPresenceHandler(seller, logger))
 
 	// Sweep unpaid orders every 5 minutes; auto-complete delivered orders daily; price alerts hourly.
 	if _, err := sched.Register("@every 5m", asynq.NewTask(TaskCancelExpiredOrders, nil, asynq.Queue("low"))); err != nil {
@@ -78,6 +80,9 @@ func NewServer(redisAddr string, orders *service.OrderService, market *service.M
 		return nil, fmt.Errorf("register scheduler: %w", err)
 	}
 	if _, err := sched.Register("@every 30m", asynq.NewTask(TaskLowStock, nil, asynq.Queue("low"))); err != nil {
+		return nil, fmt.Errorf("register scheduler: %w", err)
+	}
+	if _, err := sched.Register("@daily", asynq.NewTask(TaskSellerPresence, nil, asynq.Queue("low"))); err != nil {
 		return nil, fmt.Errorf("register scheduler: %w", err)
 	}
 
@@ -190,6 +195,16 @@ func lowStockHandler(seller *service.SellerService, logger *slog.Logger) func(co
 		if notified > 0 {
 			logger.Info("low-stock alerts sent", "count", notified)
 		}
+		return nil
+	}
+}
+
+func sellerPresenceHandler(seller *service.SellerService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		if err := seller.UpdatePresenceStats(ctx); err != nil {
+			return err
+		}
+		logger.Info("seller presence stats recomputed")
 		return nil
 	}
 }

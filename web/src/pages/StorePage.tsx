@@ -53,8 +53,13 @@ export function StorePage() {
           </div>
         )}
         <div className="flex-1">
-          <h1 className="text-2xl font-extrabold flex items-center gap-2">
-            {store.name}
+          <h1 className="text-2xl font-extrabold flex items-center gap-2 flex-wrap">
+            <span className="flex items-center gap-2">
+              {store.online && (
+                <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" title="Penjual sedang online" />
+              )}
+              {store.name}
+            </span>
             {store.is_verified && (
               <span
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-400 text-gray-900 text-xs font-bold"
@@ -63,8 +68,21 @@ export function StorePage() {
                 ✓ Toko Resmi
               </span>
             )}
+            {store.is_power_seller && (
+              <span className="px-2 py-0.5 rounded-lg bg-purple-500 text-white text-xs font-bold" title="Skor respons & rating tinggi">
+                ⭐ Power Seller
+              </span>
+            )}
           </h1>
           <p className="text-sm text-gray-300 mt-1 line-clamp-2">{store.description || 'Toko resmi di VinCommerce.'}</p>
+          {(store.response_rate_pct != null || store.online) && (
+            <p className="text-xs text-gray-300 mt-1.5">
+              {store.online ? '🟢 Online' : ''}
+              {store.response_rate_pct != null && (
+                <> · Membalas ±{store.avg_reply_minutes ?? 60} mnt · {store.response_rate_pct}% pesan dibalas</>
+              )}
+            </p>
+          )}
           <div className="flex gap-6 mt-3 text-sm text-gray-300">
             <span>★ {store.rating} ({store.rating_count})</span>
             <span>{data.products.length} produk</span>

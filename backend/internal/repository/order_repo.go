@@ -90,6 +90,21 @@ func (t *OrderTx) CreateItem(ctx context.Context, it *domain.OrderItem) error {
 		Scan(&it.CreatedAt)
 }
 
+// ItemByID loads one order item (ownership checks happen at the service layer).
+func (r *OrderRepository) ItemByID(ctx context.Context, itemID string) (*domain.OrderItem, error) {
+	var it domain.OrderItem
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, order_id, product_id, variant_id FROM order_items WHERE id = $1`, itemID).
+		Scan(&it.ID, &it.OrderID, &it.ProductID, &it.VariantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
 // AddEvent records a state transition.
 func (t *OrderTx) AddEvent(ctx context.Context, e *domain.OrderEvent) error {
 	_, err := t.tx.Exec(ctx, `

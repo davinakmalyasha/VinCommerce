@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/repository"
@@ -25,6 +26,40 @@ type SellerService struct {
 	mailer   *mail.Client
 	webURL   string
 	notifs   *NotificationService
+
+	returnAutoApproveMax float64
+	presence             *cache.Store
+}
+
+// SetReturnAutoApprove enables instant approval for claims at or below the
+// given item value (0 disables).
+func (s *SellerService) SetReturnAutoApprove(max float64) { s.returnAutoApproveMax = max }
+
+// SetPresenceCache enables the seller online heartbeat.
+func (s *SellerService) SetPresenceCache(c *cache.Store) { s.presence = c }
+
+const presenceTTL = 5 * time.Minute
+
+// Heartbeat marks the seller active (drives the public "online" dot).
+func (s *SellerService) Heartbeat(ctx context.Context, sellerID string) {
+	if s.presence != nil {
+		_ = s.presence.Set(ctx, "seller_online:"+sellerID, true, presenceTTL)
+	}
+}
+
+// IsOnline reports whether the seller heartbeat is fresh.
+func (s *SellerService) IsOnline(ctx context.Context, sellerID string) bool {
+	if s.presence == nil {
+		return false
+	}
+	var v bool
+	ok, _ := s.presence.Get(ctx, "seller_online:"+sellerID, &v)
+	return ok && v
+}
+
+// UpdatePresenceStats recomputes chat responsiveness for all stores (nightly).
+func (s *SellerService) UpdatePresenceStats(ctx context.Context) error {
+	return s.stores.UpdatePresenceStats(ctx)
 }
 
 // NewSellerService wires seller capabilities.
@@ -325,6 +360,15 @@ func (s *SellerService) PublicStore(ctx context.Context, slug, userID string) (*
 	}
 	if kyc, err := s.stores.KYCByStore(ctx, store.ID); err == nil && kyc.Status == "approved" {
 		store.IsVerified = true
+	}
+	// presence signals
+	store.Online = s.IsOnline(ctx, store.ID)
+	if p, err := s.stores.PresenceByStore(ctx, store.ID); err == nil {
+		store.ResponseRatePct = p.ResponseRatePct
+		store.AvgReplyMinutes = p.AvgReplyMinutes
+		if p.ResponseRatePct != nil && *p.ResponseRatePct >= 90 && store.Rating >= 4.5 {
+			store.IsPowerSeller = true
+		}
 	}
 	products, _, err := s.products.ListBySeller(ctx, store.OwnerID, 1, 24)
 	if err != nil {
@@ -662,6 +706,7 @@ type CreateReturnInput struct {
 	OrderID      string
 	OrderItemID  string
 	BuyerID      string
+	IssueType    string // return | item_not_received (empty = return)
 	Reason       string
 	Description  string
 	EvidenceURLs []string
@@ -693,16 +738,23 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "item does not belong to this order")
 	}
 
+	status := domain.ReturnRequested
+	// Auto-approve low-value claims (platform policy) to cut response latency.
+	if s.returnAutoApproveMax > 0 && item.Total <= s.returnAutoApproveMax {
+		status = domain.ReturnApproved
+	}
+
 	req := &domain.ReturnRequest{
 		ID:           uuid.NewString(),
 		OrderID:      in.OrderID,
 		OrderItemID:  in.OrderItemID,
 		BuyerID:      in.BuyerID,
 		SellerID:     item.SellerID,
+		IssueType:    in.IssueType,
 		Reason:       in.Reason,
 		Description:  strings.TrimSpace(in.Description),
 		EvidenceURLs: in.EvidenceURLs,
-		Status:       domain.ReturnRequested,
+		Status:       status,
 	}
 	switch in.Reason {
 	case "wrong_item", "defective", "not_as_described", "other":

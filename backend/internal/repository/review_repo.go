@@ -83,12 +83,25 @@ func (r *ReviewRepository) RatingDistribution(ctx context.Context, productID str
 }
 
 // ListByProduct returns approved reviews for a product.
-func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, page, pageSize int) ([]*domain.ProductReview, int64, error) {
+// reviewSortWhitelist maps the public sort param onto safe ORDER BY clauses.
+var reviewSortWhitelist = map[string]string{
+	"recent":      "r.created_at DESC",
+	"helpful":     "r.helpful_count DESC, r.created_at DESC",
+	"rating_desc": "r.rating DESC, r.created_at DESC",
+	"rating_asc":  "r.rating ASC, r.created_at DESC",
+	"with_images": "(jsonb_array_length(COALESCE(r.images, '[]'::jsonb)) > 0) DESC, r.created_at DESC",
+}
+
+func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, page, pageSize int, sort string) ([]*domain.ProductReview, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 50 {
 		pageSize = 10
+	}
+	order, ok := reviewSortWhitelist[sort]
+	if !ok {
+		order = reviewSortWhitelist["helpful"]
 	}
 
 	var total int64
@@ -101,11 +114,12 @@ func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, 
 	rows, err := r.pool.Query(ctx, `
 		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
 		       r.images, r.status, r.helpful_count, r.created_at,
-		       u.full_name
+		       u.full_name,
+		       (r.order_item_id IS NOT NULL)
 		FROM product_reviews r
 		JOIN users u ON u.id = r.user_id
 		WHERE r.product_id = $1 AND r.status = 'approved'
-		ORDER BY r.helpful_count DESC, r.created_at DESC
+		ORDER BY `+order+`
 		LIMIT $2 OFFSET $3`, productID, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
@@ -114,11 +128,19 @@ func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, 
 
 	reviews := []*domain.ProductReview{}
 	for rows.Next() {
-		rev, err := scanReview(rows)
-		if err != nil {
+		var rev domain.ProductReview
+		var images []byte
+		if err := rows.Scan(&rev.ID, &rev.ProductID, &rev.UserID, &rev.OrderItemID, &rev.Rating,
+			&rev.Title, &rev.Content, &images, &rev.Status, &rev.HelpfulCount, &rev.CreatedAt,
+			&rev.UserName, &rev.IsVerifiedPurchase); err != nil {
 			return nil, 0, err
 		}
-		reviews = append(reviews, rev)
+		if len(images) > 0 {
+			if err := json.Unmarshal(images, &rev.Images); err != nil {
+				return nil, 0, err
+			}
+		}
+		reviews = append(reviews, &rev)
 	}
 	return reviews, total, rows.Err()
 }
@@ -299,6 +321,45 @@ func (r *ReviewRepository) ListBySeller(ctx context.Context, sellerID string, li
 		reviews = append(reviews, &sr)
 	}
 	return reviews, rows.Err()
+}
+
+// CustomerPhoto is one buyer photo lifted from an approved review.
+type CustomerPhoto struct {
+	URL      string `json:"url"`
+	Rating   int    `json:"rating"`
+	UserName string `json:"user_name"`
+	ReviewID string `json:"review_id"`
+}
+
+// CustomerPhotos flattens review images for a product's photo strip.
+func (r *ReviewRepository) CustomerPhotos(ctx context.Context, productID string, limit int) ([]*CustomerPhoto, error) {
+	if limit < 1 || limit > 60 {
+		limit = 30
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT img.value ->> 0 AS url, r.rating, u.full_name, r.id
+		FROM product_reviews r
+		JOIN users u ON u.id = r.user_id
+		CROSS JOIN LATERAL jsonb_array_elements(r.images) AS img(value)
+		WHERE r.product_id = $1 AND r.status = 'approved'
+		ORDER BY r.created_at DESC
+		LIMIT $2`, productID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*CustomerPhoto{}
+	for rows.Next() {
+		var p CustomerPhoto
+		if err := rows.Scan(&p.URL, &p.Rating, &p.UserName, &p.ReviewID); err != nil {
+			return nil, err
+		}
+		if p.URL != "" {
+			out = append(out, &p)
+		}
+	}
+	return out, rows.Err()
 }
 
 type reviewRow interface {
