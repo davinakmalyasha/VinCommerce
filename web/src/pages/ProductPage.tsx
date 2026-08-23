@@ -6,6 +6,7 @@ import type { Product } from '../types'
 import { formatIDR, etaLabel } from '../lib/format'
 import { Rating } from '../components/Rating'
 import { ProductCard } from '../components/ProductCard'
+import { ShareButton } from '../components/ShareButton'
 import { Seo } from '../components/Seo'
 import { useSession } from '../stores/session'
 import { useActiveFlashSale } from '../lib/flashSale'
@@ -292,6 +293,7 @@ export function ProductPage() {
         title={`${product.name} — VinCommerce`}
         description={product.description?.slice(0, 160)}
         path={`/product/${product.slug}`}
+        image={gallery[0]}
       />
       {zoomOpen && image && (
         <div
@@ -368,6 +370,14 @@ export function ProductPage() {
               <Link to={`/search?category=${product.category?.name ?? ''}`} className="text-xs text-gray-500 mt-1 inline-block">
                 Dijual oleh <span className="text-amber-600">{product.seller.name}</span>
               </Link>
+            )}
+            {product.seller && (
+              <div className="mt-2">
+                <ShareButton
+                  title={product.name}
+                  className="px-3 py-1.5 rounded-full border border-gray-300 text-xs hover:border-amber-400 hover:text-amber-600"
+                />
+              </div>
             )}
           </div>
 

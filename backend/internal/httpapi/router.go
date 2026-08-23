@@ -113,6 +113,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	sellerSvc.SetPresenceCache(cache.NewStore(deps.Redis.Client))
 	engagementSvc := service.NewEngagementService(wishlistRepo, products)
 	engagementSvc.SetCache(cache.NewStore(deps.Redis.Client))
+	engagementSvc.SetStores(stores)
 	analyticsSvc := service.NewAnalyticsService(analyticsRepo)
 	analyticsSvc.SetOrders(orders)
 	supportSvc := service.NewSupportService(supportRepo, orders)
@@ -429,6 +430,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 
 		r.With(flagMw("flash_sales")).Get("/flash-sales/active", engagement.FlashSale)
+		r.With(optionalAuthMw, rateLimiter.Limit(60, time.Minute, userKey)).
+			Get("/feed", engagement.Feed)
 		r.Get("/shipping/methods", adminOps.PublicShipping)
 		r.Get("/recommendations", engagement.Recommended)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
@@ -488,6 +491,8 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/", notificationsH.List)
 			r.Get("/unread-count", notificationsH.Unread)
 			r.Post("/read", notificationsH.MarkRead)
+			r.Get("/preferences", notificationsH.Preferences)
+			r.Put("/preferences", notificationsH.SetPreference)
 		})
 
 		r.Route("/media", func(r chi.Router) {

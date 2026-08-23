@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { useSession } from '../stores/session'
 import type { Address } from '../types'
 import { BonusCenter } from './BonusCenter'
+import { NotificationPrefsCard } from '../components/NotificationPrefsCard'
 import { FileUpload } from '../components/FileUpload'
 
 export function AccountPage() {
@@ -56,6 +57,8 @@ export function AccountPage() {
           </Link>
         ))}
       </div>
+
+      <NotificationPrefsCard />
 
       {tab === 'profil' && <ProfileTab />}
       {tab === 'keamanan' && <SecurityTab />}

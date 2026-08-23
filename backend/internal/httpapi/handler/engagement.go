@@ -73,3 +73,19 @@ func (h *Engagement) Recommended(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"products": items})
 }
+
+// Feed handles GET /feed — mixed discovery stream.
+func (h *Engagement) Feed(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var userID string
+	if user != nil {
+		userID = user.ID
+	}
+	items, err := h.svc.Feed(r.Context(), userID,
+		intQuery(r.URL.Query().Get("page"), 1), intQuery(r.URL.Query().Get("limit"), 12))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}

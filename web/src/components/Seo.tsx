@@ -4,6 +4,7 @@ interface SeoProps {
   title: string
   description?: string
   path?: string
+  image?: string
 }
 
 function setMeta(attr: 'name' | 'property', key: string, content: string) {
@@ -16,14 +17,31 @@ function setMeta(attr: 'name' | 'property', key: string, content: string) {
   el.setAttribute('content', content)
 }
 
-export function Seo({ title, description, path }: SeoProps) {
+function setLink(rel: string, href: string) {
+  let el = document.head.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`)
+  if (!el) {
+    el = document.createElement('link')
+    el.setAttribute('rel', rel)
+    document.head.appendChild(el)
+  }
+  el.setAttribute('href', href)
+}
+
+export function Seo({ title, description, path, image }: SeoProps) {
   useEffect(() => {
     document.title = title
     if (description) setMeta('name', 'description', description)
+    const url = window.location.origin + (path ?? window.location.pathname)
     setMeta('property', 'og:title', title)
     if (description) setMeta('property', 'og:description', description)
-    if (path) setMeta('property', 'og:url', window.location.origin + path)
-  }, [title, description, path])
+    setMeta('property', 'og:url', url)
+    if (image) {
+      setMeta('property', 'og:image', image)
+      setMeta('name', 'twitter:card', 'summary_large_image')
+      setMeta('name', 'twitter:image', image)
+    }
+    setLink('canonical', url)
+  }, [title, description, path, image])
 
   return null
 }
@@ -40,5 +58,5 @@ export const DEFAULT_TITLES: Record<string, string> = {
   '/help': 'Pusat Bantuan — VinCommerce',
   '/faq': 'FAQ — VinCommerce',
   '/flash-sales': 'Flash Sale — VinCommerce',
-  '/vouchers': 'Kupon Saya — VinCommerce',
+  '/vouchers': 'Kupon & Voucher — VinCommerce',
 }

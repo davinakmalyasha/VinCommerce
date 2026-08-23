@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/vincommerce/backend/internal/db"
 	"github.com/vincommerce/backend/internal/domain"
@@ -18,6 +19,79 @@ func NewNotificationRepository(pool *db.Pool) *NotificationRepository {
 	return &NotificationRepository{pool: pool}
 }
 
+// NotificationPref is a per-category delivery preference.
+type NotificationPref struct {
+	Category string `json:"category"`
+	InApp    bool   `json:"in_app"`
+	Email    bool   `json:"email"`
+}
+
+var prefCategories = []string{
+	"order", "payment", "price_alert", "back_in_stock", "store_new_product", "low_stock", "marketing",
+}
+
+// Preferences lists the user's prefs, materializing defaults for unset categories.
+func (r *NotificationRepository) Preferences(ctx context.Context, userID string) ([]*NotificationPref, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT category, in_app, email FROM notification_prefs WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	set := map[string]*NotificationPref{}
+	for rows.Next() {
+		var p NotificationPref
+		if err := rows.Scan(&p.Category, &p.InApp, &p.Email); err != nil {
+			return nil, err
+		}
+		set[p.Category] = &p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*NotificationPref, 0, len(prefCategories))
+	for _, cat := range prefCategories {
+		if p, ok := set[cat]; ok {
+			out = append(out, p)
+		} else {
+			out = append(out, &NotificationPref{Category: cat, InApp: true, Email: false})
+		}
+	}
+	return out, nil
+}
+
+// SetPreference upserts one category preference.
+func (r *NotificationRepository) SetPreference(ctx context.Context, userID, category string, inApp, email bool) error {
+	valid := false
+	for _, c := range prefCategories {
+		if c == category {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return domain.E(domain.KindInvalid, "BAD_CATEGORY", "unknown notification category")
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO notification_prefs (user_id, category, in_app, email) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (user_id, category) DO UPDATE SET in_app = EXCLUDED.in_app, email = EXCLUDED.email`,
+		userID, category, inApp, email)
+	return err
+}
+
+// InAppEnabled reports whether a category is allowed in-app (default true).
+func (r *NotificationRepository) InAppEnabled(ctx context.Context, userID, category string) bool {
+	var on bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT in_app FROM notification_prefs WHERE user_id = $1 AND category = $2`,
+		userID, category).Scan(&on)
+	if err != nil {
+		return true // default allow when unset or on error
+	}
+	return on
+}
+
 // Create stores a notification for a user.
 func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notification) error {
 	_, err := r.pool.Exec(ctx, `
@@ -28,14 +102,21 @@ func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notificat
 }
 
 // List returns the user's recent notifications.
-func (r *NotificationRepository) List(ctx context.Context, userID string, limit int) ([]*domain.Notification, error) {
+func (r *NotificationRepository) List(ctx context.Context, userID string, limit int, ntype string) ([]*domain.Notification, error) {
 	if limit < 1 || limit > 50 {
 		limit = 20
 	}
+	where := `WHERE user_id = $1`
+	args := []any{userID}
+	if ntype != "" {
+		args = append(args, ntype)
+		where += fmt.Sprintf(` AND type = $%d`, len(args))
+	}
+	args = append(args, limit)
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, user_id, type, title, body, data, read_at, created_at
-		FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
-		userID, limit)
+		FROM notifications `+where+` ORDER BY created_at DESC LIMIT $`+itoa(len(args)),
+		args...)
 	if err != nil {
 		return nil, err
 	}

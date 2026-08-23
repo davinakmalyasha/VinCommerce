@@ -269,12 +269,60 @@ func NewNotifications(svc *service.NotificationService) *Notifications {
 // List handles GET /notifications.
 func (h *Notifications) List(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
-	items, err := h.svc.List(r.Context(), user.ID, intQuery(r.URL.Query().Get("limit"), 20))
+	items, err := h.svc.List(r.Context(), user.ID, intQuery(r.URL.Query().Get("limit"), 20), r.URL.Query().Get("type"))
 	if err != nil {
 		writeErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"notifications": items})
+}
+
+// Preferences handles GET /notifications/preferences.
+func (h *Notifications) Preferences(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	prefs, err := h.svc.Preferences(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preferences": prefs})
+}
+
+// SetPreference handles PUT /notifications/preferences {category,in_app,email}.
+func (h *Notifications) SetPreference(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		Category string `json:"category"`
+		InApp    *bool  `json:"in_app"`
+		Email    *bool  `json:"email"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	prefs, err := h.svc.Preferences(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	var inApp, email = true, false
+	for _, p := range prefs {
+		if p.Category == req.Category {
+			inApp, email = p.InApp, p.Email
+			break
+		}
+	}
+	if req.InApp != nil {
+		inApp = *req.InApp
+	}
+	if req.Email != nil {
+		email = *req.Email
+	}
+	if err := h.svc.SetPreference(r.Context(), user.ID, req.Category, inApp, email); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
 }
 
 // Unread handles GET /notifications/unread-count.

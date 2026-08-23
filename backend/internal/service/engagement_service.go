@@ -14,12 +14,110 @@ import (
 type EngagementService struct {
 	wishlist *repository.WishlistRepository
 	products *repository.ProductRepository
+	stores   *repository.StoreRepository
 	cache    *cache.Store
 }
 
 // NewEngagementService creates an EngagementService.
 func NewEngagementService(wishlist *repository.WishlistRepository, products *repository.ProductRepository) *EngagementService {
 	return &EngagementService{wishlist: wishlist, products: products}
+}
+
+// SetStores enables followed-store buckets in the feed.
+func (s *EngagementService) SetStores(st *repository.StoreRepository) { s.stores = st }
+
+// FeedItem pairs a product with the feed bucket it came from.
+type FeedItem struct {
+	Bucket    string          `json:"bucket"` // flash_deal | followed | bestseller
+	Product   *domain.Product `json:"product"`
+	SalePrice *float64        `json:"sale_price,omitempty"`
+}
+
+// Feed mixes flash deals, followed-store drops and bestsellers into one
+// interleaved discovery stream. `page` slices deeper into each bucket.
+func (s *EngagementService) Feed(ctx context.Context, userID string, page, limit int) ([]*FeedItem, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 30 {
+		limit = 12
+	}
+	per := limit // take `limit` candidates from each bucket, then interleave
+
+	buckets := [][]*FeedItem{}
+
+	// flash deals
+	if sale, err := s.wishlist.ActiveFlashSale(ctx); err == nil {
+		if items, err := s.wishlist.FlashSaleItems(ctx, sale.ID); err == nil && len(items) > 0 {
+			b := make([]*FeedItem, 0, len(items))
+			for _, it := range items {
+				sp := it.SalePrice
+				b = append(b, &FeedItem{
+					Bucket: "flash_deal",
+					Product: &domain.Product{
+						ID: it.ProductID, Name: it.ProductName, Slug: it.ProductSlug,
+					},
+					SalePrice: &sp,
+				})
+			}
+			buckets = append(buckets, b)
+		}
+	}
+
+	// new from followed stores (logged-in only)
+	if userID != "" && s.stores != nil {
+		if items, err := s.stores.RecentProductsFromFollowed(ctx, userID, per*page); err == nil {
+			b := make([]*FeedItem, 0, len(items))
+			for _, p := range items {
+				b = append(b, &FeedItem{Bucket: "followed", Product: p})
+			}
+			buckets = append(buckets, b)
+		}
+	}
+
+	// bestsellers
+	if items, err := s.products.Bestsellers(ctx, per*page); err == nil {
+		b := make([]*FeedItem, 0, len(items))
+		for _, p := range items {
+			b = append(b, &FeedItem{Bucket: "bestseller", Product: p})
+		}
+		buckets = append(buckets, b)
+	}
+
+	// round-robin interleave with dedupe into a stable stream, then slice.
+	total := per * page
+	full := make([]*FeedItem, 0, total)
+	seen := map[string]bool{}
+	for i := 0; len(full) < total; i++ {
+		emitted := false
+		for _, b := range buckets {
+			if i >= len(b) {
+				continue
+			}
+			item := b[i]
+			if item.Product != nil && seen[item.Product.ID] {
+				continue
+			}
+			if item.Product != nil {
+				seen[item.Product.ID] = true
+			}
+			full = append(full, item)
+			emitted = true
+			if len(full) >= total {
+				break
+			}
+		}
+		if !emitted {
+			break // every bucket exhausted
+		}
+	}
+
+	start := (page - 1) * limit
+	if start >= len(full) {
+		return []*FeedItem{}, nil
+	}
+	end := min(start+limit, len(full))
+	return full[start:end], nil
 }
 
 // SetCache enables hot-path caching (5 min TTL).

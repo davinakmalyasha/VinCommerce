@@ -51,6 +51,8 @@ import { VerifyEmailPage } from './pages/VerifyEmailPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
 import { MyReturnsPage } from './pages/MyReturnsPage'
 import { WalletPage } from './pages/WalletPage'
+import { DiscoverFeedPage } from './pages/DiscoverFeedPage'
+import { InviteLandingPage } from './pages/InviteLandingPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
 export const router = createBrowserRouter([
@@ -59,6 +61,7 @@ export const router = createBrowserRouter([
     element: <RootLayout />,
     children: [
       { index: true, element: <HomePage /> },
+      { path: 'discover', element: <DiscoverFeedPage /> },
       { path: 'search', element: <SearchPage /> },
       { path: 'product/:slug', element: <ProductPage /> },
       { path: 'store/:slug', element: <StorePage /> },
@@ -70,6 +73,7 @@ export const router = createBrowserRouter([
       { path: 'register', element: <RegisterPage /> },
       { path: 'verify-email', element: <VerifyEmailPage /> },
       { path: 'reset-password', element: <ResetPasswordPage /> },
+      { path: 'invite/:code', element: <InviteLandingPage /> },
       { path: 'account', element: <AccountPage /> },
       { path: 'wishlist', element: <WishlistPage /> },
       { path: 'wallet', element: <WalletPage /> },
