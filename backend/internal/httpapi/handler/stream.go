@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/httpapi/middleware"
 	"github.com/vincommerce/backend/internal/service"
@@ -17,12 +18,65 @@ import (
 type Stream struct {
 	broker *stream.Broker
 	chats  *service.ChatService
+	live   *service.LiveService
 	logger *slog.Logger
 }
 
 // NewStream creates a Stream handler.
 func NewStream(broker *stream.Broker, chats *service.ChatService, logger *slog.Logger) *Stream {
 	return &Stream{broker: broker, chats: chats, logger: logger}
+}
+
+// SetLive enables livestream SSE.
+func (h *Stream) SetLive(live *service.LiveService) { h.live = live }
+
+// Live streams pinned-product updates and viewer chat for one session.
+func (h *Stream) Live(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "id")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	if h.live != nil {
+		h.live.ViewerJoin(r.Context(), sessionID)
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ctx := r.Context()
+	ch, closeFn, err := h.broker.SubscribeChannel(ctx, "live:"+sessionID)
+	if err != nil {
+		http.Error(w, "stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer closeFn()
+
+	fmt.Fprintf(w, "event: connected\ndata: {}\n\n")
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case payload, ok := <-ch:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", payload)
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Chat streams messages for a chat session via SSE (participants and staff only).

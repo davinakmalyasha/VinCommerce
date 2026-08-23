@@ -57,6 +57,7 @@ export function SellerLayout() {
     { to: '/seller/wallet', label: 'Dompet' },
     { to: '/seller/analytics', label: 'Analitik' },
     { to: '/seller/coupons', label: 'Kupon Toko' },
+{ to: '/seller/live', label: '📺 Live Studio' },
     { to: '/seller/settings', label: 'Pengaturan' },
   ]
 

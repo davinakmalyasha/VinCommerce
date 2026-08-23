@@ -686,6 +686,19 @@ func (r *ProductRepository) ResolveReport(ctx context.Context, reportID, note st
 	return nil
 }
 
+// VariantSeller returns the owning seller of a variant (ownership checks).
+func (r *ProductRepository) VariantSeller(ctx context.Context, variantID string) (string, error) {
+	var sellerID string
+	err := r.pool.QueryRow(ctx, `
+		SELECT p.seller_id FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		WHERE v.id = $1`, variantID).Scan(&sellerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.E(domain.KindNotFound, "VARIANT_NOT_FOUND", "variant not found")
+	}
+	return sellerID, err
+}
+
 // Bestsellers returns top-selling products (recommendation baseline).
 func (r *ProductRepository) Bestsellers(ctx context.Context, limit int) ([]*domain.Product, error) {
 	rows, err := r.pool.Query(ctx, `

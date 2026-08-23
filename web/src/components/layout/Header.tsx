@@ -196,6 +196,9 @@ export function Header() {
             )}
           </form>
           <nav className="flex items-center gap-2 text-sm text-white shrink-0">
+            <Link to="/live" className="px-3 py-2 rounded-lg hover:bg-amber-600 hidden md:flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> Live
+            </Link>
             <Link to="/discover" className="px-3 py-2 rounded-lg hover:bg-amber-600 hidden md:block">
               Temukan
             </Link>

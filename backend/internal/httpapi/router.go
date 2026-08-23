@@ -71,6 +71,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	loyaltyRepo := repository.NewLoyaltyRepository(deps.Pool)
 	disputeRepo := repository.NewDisputeRepository(deps.Pool)
 	gameRepo := repository.NewGamificationRepository(deps.Pool)
+	liveRepo := repository.NewLiveRepository(deps.Pool)
 
 	// services
 	password := service.NewPassword(
@@ -126,6 +127,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	marketSvc.SetNotificationService(notificationSvc)
 	marketSvc.SetLoyalty(loyaltyRepo, disputeRepo)
 	marketSvc.SetGamification(gameRepo)
+
+	liveSvc := service.NewLiveService(liveRepo, products)
+	liveSvc.SetBroker(broker)
 	marketSvc.SetUsers(users)
 	marketSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
 	supportSvc.SetUsers(users)
@@ -187,6 +191,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	marketH := handler.NewMarket(marketSvc)
 	engagement := handler.NewEngagement(engagementSvc)
 	streamH := handler.NewStream(broker, chatSvc, logger)
+	streamH.SetLive(liveSvc)
+	liveH := handler.NewLive(liveSvc)
 	analyticsH := handler.NewAnalytics(analyticsSvc)
 	support := handler.NewSupport(supportSvc)
 	notificationsH := handler.NewNotifications(notificationSvc)
@@ -371,6 +377,12 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/orders", ordersH.SellerList)
 			r.Post("/returns/{id}/decide", seller.DecideReturn)
 			r.Post("/orders/{id}/transition", seller.FulfillOrder)
+			r.Get("/live", liveH.MySessions)
+			r.Post("/live", liveH.Create)
+			r.Post("/live/{id}/transition", liveH.Transition)
+			r.Put("/live/{id}/products", liveH.Attach)
+			r.Get("/live/{id}/catalog", liveH.Catalog)
+			r.Post("/live/{id}/pin", liveH.Pin)
 		})
 
 		r.Route("/returns", func(r chi.Router) {
@@ -435,6 +447,13 @@ func NewRouter(deps Dependencies) http.Handler {
 			Get("/feed", engagement.Feed)
 		r.Get("/shipping/methods", adminOps.PublicShipping)
 		r.Get("/recommendations", engagement.Recommended)
+
+		// livestream commerce
+		r.With(flagMw("live_commerce")).Get("/live", liveH.List)
+		r.With(flagMw("live_commerce")).Get("/live/{id}", liveH.Detail)
+		r.With(flagMw("live_commerce")).Get("/live/{id}/pinned", liveH.Pinned)
+		r.With(flagMw("live_commerce"), authMw).Post("/live/{id}/chat", liveH.ChatPost)
+		r.With(authMw, flagMw("live_commerce")).Get("/stream/live/{id}", streamH.Live)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
 		r.With(authMw).Post("/stores/{id}/follow", seller.FollowStore)
 		r.With(authMw).Delete("/stores/{id}/follow", seller.UnfollowStore)

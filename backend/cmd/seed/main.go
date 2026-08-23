@@ -242,6 +242,8 @@ func (s *seeder) seedFlags() int {
 		{"referrals", "Referral program"},
 		{"loyalty_points", "Loyalty points earn & ledger"},
 		{"ai_assistant", "AI assistant widget"},
+		{"games", "Check-in streaks & spin-the-wheel"},
+		{"live_commerce", "Livestream selling"},
 	}
 	for _, f := range flags {
 		if _, err := s.products.Pool().Exec(s.ctx, `

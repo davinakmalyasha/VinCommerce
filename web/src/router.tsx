@@ -26,6 +26,7 @@ const SellerWallet = lazyOf(() => import('./pages/seller/SellerWallet'), 'Seller
 const SellerAnalytics = lazyOf(() => import('./pages/seller/SellerAnalytics'), 'SellerAnalytics')
 const SellerSettings = lazyOf(() => import('./pages/seller/SellerSettings'), 'SellerSettings')
 const SellerCoupons = lazyOf(() => import('./pages/seller/SellerCoupons'), 'SellerCoupons')
+const SellerLiveStudio = lazyOf(() => import('./pages/seller/SellerLiveStudio'), 'SellerLiveStudio')
 
 const AdminLayout = lazyOf(() => import('./pages/admin/AdminLayout'), 'AdminLayout')
 const AdminStores = lazyOf(() => import('./pages/admin/AdminStores'), 'AdminStores')
@@ -127,6 +128,7 @@ export const router = createBrowserRouter([
           { path: 'wallet', element: <SellerWallet /> },
           { path: 'analytics', element: <SellerAnalytics /> },
           { path: 'coupons', element: <SellerCoupons /> },
+          { path: 'live', element: <SellerLiveStudio /> },
           { path: 'settings', element: <SellerSettings /> },
         ],
       },
