@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -64,9 +65,143 @@ func run(logger *slog.Logger) error {
 	seeded += s.seedHelpContent()
 	seeded += s.seedFlags()
 	seeded += s.seedCoupons()
+	seeded += s.seedDemoOrders()
 
 	logger.Info("seed complete", "items", seeded)
 	return nil
+}
+
+// seedDemoOrders creates a realistic 30-day order history so platform and
+// seller analytics render populated charts out of the box.
+func (s *seeder) seedDemoOrders() int {
+	var buyerID string
+	if err := s.products.Pool().QueryRow(s.ctx,
+		`SELECT id FROM users WHERE email = 'buyer.sample@vincommerce.com'`).Scan(&buyerID); err != nil {
+		fmt.Println("seed demo orders: no demo buyer:", err)
+		return 0
+	}
+
+	type vp struct {
+		id, productName, vname, sku, sellerID string
+		price                                 float64
+	}
+	rows, err := s.products.Pool().Query(s.ctx, `
+		SELECT v.id, p.name, v.name, v.sku, v.price, p.seller_id
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		WHERE p.status = 'active'
+		ORDER BY p.sold_count DESC
+		LIMIT 24`)
+	if err != nil {
+		fmt.Println("seed demo orders: variant pool:", err)
+		return 0
+	}
+	defer rows.Close()
+	pool := []vp{}
+	for rows.Next() {
+		var v vp
+		if err := rows.Scan(&v.id, &v.productName, &v.vname, &v.sku, &v.price, &v.sellerID); err != nil {
+			continue
+		}
+		pool = append(pool, v)
+	}
+	if len(pool) == 0 {
+		return 0
+	}
+
+	type plan struct {
+		status string
+		pay    string
+	}
+	plans := []plan{
+		{"completed", "paid"}, {"completed", "paid"}, {"completed", "paid"},
+		{"delivered", "paid"}, {"delivered", "paid"}, {"shipped", "paid"},
+		{"packed", "paid"}, {"paid", "paid"}, {"cancelled", "refunded"},
+	}
+
+	addr := map[string]any{
+		"recipient": "Sample Buyer", "phone": "081200000006",
+		"address_line1": "Jl. Mawar No. 12", "city": "Jakarta Selatan",
+		"province": "DKI Jakarta", "postal_code": "12440",
+	}
+	addrJSON, _ := json.Marshal(addr)
+
+	created := 0
+	now := time.Now().UTC()
+	for i := 0; i < 42; i++ {
+		p := plans[i%len(plans)]
+		daysAgo := 29 - (i % 30)
+		placed := now.AddDate(0, 0, -daysAgo).Add(time.Duration(i%20) * time.Hour)
+
+		v1 := pool[(i*7)%len(pool)]
+		qty1 := 1 + i%2
+		subtotal := v1.price * float64(qty1)
+		shipping := 12000.0
+		total := subtotal + shipping
+
+		var seq int64
+		if err := s.products.Pool().QueryRow(s.ctx, `SELECT nextval('order_number_seq')`).Scan(&seq); err != nil {
+			continue
+		}
+		orderNumber := fmt.Sprintf("VC-%s-%04d", placed.Format("20060102"), seq)
+
+		var paidAt, shippedAt, deliveredAt, completedAt, cancelledAt any
+		switch p.status {
+		case "paid":
+			paidAt = placed.Add(30 * time.Minute)
+		case "packed", "shipped", "delivered", "completed":
+			paidAt = placed.Add(25 * time.Minute)
+			shippedAt = placed.Add(24 * time.Hour)
+			deliveredAt = placed.Add(72 * time.Hour)
+			completedAt = placed.Add(5 * 24 * time.Hour)
+		case "cancelled":
+			cancelledAt = placed.Add(45 * time.Minute)
+		}
+
+		var orderID string
+		err := s.products.Pool().QueryRow(s.ctx, `
+			INSERT INTO orders (id, order_number, buyer_id, seller_id, status, currency,
+			                    subtotal, discount_amount, shipping_fee, total_amount, payment_status,
+			                    shipping_address, shipping_method, notes, placed_at,
+			                    paid_at, shipped_at, delivered_at, completed_at, cancelled_at,
+			                    created_at, updated_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, 'IDR',
+			        $5, 0, $6, $7, $8,
+			        $9, 'Regular (Standard)', NULL, $10,
+			        $11, $12, $13, $14, $15,
+			        $10, now())
+			RETURNING id`,
+			orderNumber, buyerID, v1.sellerID, p.status, subtotal, shipping, total, p.pay,
+			addrJSON, placed, paidAt, shippedAt, deliveredAt, completedAt, cancelledAt).
+			Scan(&orderID)
+		if err != nil {
+			continue
+		}
+
+		if _, err := s.products.Pool().Exec(s.ctx, `
+			INSERT INTO order_items (id, order_id, product_id, variant_id, seller_id, product_name,
+			                         variant_name, sku, unit_price, quantity, weight_grams, total, image_url, status)
+			SELECT gen_random_uuid(), $1, v.product_id, v.id, v.seller_id, $2, $3, v.sku, v.price, $4,
+			       COALESCE(v.weight_grams, 500), v.price*$4, COALESCE(v.image_url,''), $5
+			FROM product_variants v WHERE v.id = $6`,
+			orderID, v1.productName, v1.vname, qty1, itemStatus(p.status, placed), v1.id); err != nil {
+			continue
+		}
+		created++
+	}
+	return created
+}
+
+// itemStatus mirrors the parent order status onto items.
+func itemStatus(order string, placed time.Time) string {
+	switch order {
+	case "completed":
+		return "completed"
+	case "cancelled":
+		return "cancelled"
+	default:
+		return order
+	}
 }
 
 // seedCoupons creates the demo coupons advertised in the README plus

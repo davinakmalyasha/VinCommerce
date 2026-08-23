@@ -43,6 +43,10 @@ interface QA {
   ask_user_name: string
 }
 
+function JsonLd({ data }: { data: Record<string, unknown> }) {
+  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />
+}
+
 export function ProductPage() {
   const { slug } = useParams()
   const navigate = useNavigate()
@@ -294,6 +298,33 @@ export function ProductPage() {
         description={product.description?.slice(0, 160)}
         path={`/product/${product.slug}`}
         image={gallery[0]}
+      />
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@type': 'Product',
+          name: product.name,
+          description: product.description?.slice(0, 300),
+          image: gallery,
+          brand: product.brand ? { '@type': 'Brand', name: product.brand.name } : undefined,
+          sku: selected?.sku,
+          offers: {
+            '@type': 'Offer',
+            url: window.location.href,
+            priceCurrency: 'IDR',
+            price: Math.round(salePrice),
+            availability: (selected?.stock ?? 0) > 0 ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+            itemCondition: 'https://schema.org/NewCondition',
+          },
+          aggregateRating:
+            product.rating_count > 0
+              ? {
+                  '@type': 'AggregateRating',
+                  ratingValue: product.avg_rating,
+                  reviewCount: product.rating_count,
+                }
+              : undefined,
+        }}
       />
       {zoomOpen && image && (
         <div

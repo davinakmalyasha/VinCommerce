@@ -209,6 +209,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	}))
 	r.Use(mw.RequestID)
 	r.Use(mw.Logging(logger))
+	r.Use(metricsReg.Middleware)
 
 	authMw := mw.Authenticate(tokens)
 	optionalAuthMw := mw.AuthenticateOptional(tokens)
