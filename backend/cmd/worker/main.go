@@ -58,7 +58,8 @@ func run(logger *slog.Logger) error {
 	sellerSvc.SetMailer(mail.NewClient(mail.Config{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, From: cfg.SMTP.From, Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, UseTLS: false}), cfg.App.WebURL)
 	sellerSvc.SetNotificationService(service.NewNotificationService(notifRepo))
 
-	srv, err := worker.NewServer(cfg.Redis.Addr, orderSvc, marketSvc, sellerSvc, logger)
+	sessions := repository.NewSessionRepository(pool)
+	srv, err := worker.NewServerWithSessions(cfg.Redis.Addr, orderSvc, marketSvc, sellerSvc, sessions, logger)
 	if err != nil {
 		return err
 	}

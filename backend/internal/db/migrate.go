@@ -23,7 +23,7 @@ func Migrate(ctx context.Context, cfg config.DatabaseConfig) error {
 	}
 	defer sqlDB.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
 	defer cancel()
 
 	goose.SetBaseFS(migrationsFS)

@@ -25,6 +25,12 @@ func Connect(ctx context.Context, cfg config.DatabaseConfig) (*Pool, error) {
 	poolCfg.MaxConnIdleTime = cfg.MaxIdle
 	poolCfg.MaxConnLifetime = cfg.MaxLife
 
+	// Server-side guards so a runaway query or stuck transaction can never
+	// pin a pooled connection indefinitely and starve checkout traffic.
+	poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = "30s"
+	poolCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "30s"
+	poolCfg.ConnConfig.RuntimeParams["lock_timeout"] = "10s"
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 

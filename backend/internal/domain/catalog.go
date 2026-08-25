@@ -122,9 +122,9 @@ type ProductReview struct {
 	HelpfulCount int       `json:"helpful_count"`
 	CreatedAt    time.Time `json:"created_at"`
 
-	UserName          string `json:"user_name,omitempty"`
-	VariantName       string `json:"variant_name,omitempty"`
-	IsVerifiedPurchase bool  `json:"is_verified_purchase,omitempty"`
+	UserName           string `json:"user_name,omitempty"`
+	VariantName        string `json:"variant_name,omitempty"`
+	IsVerifiedPurchase bool   `json:"is_verified_purchase,omitempty"`
 }
 
 // RatingCount is one star bucket of the rating histogram.
@@ -227,6 +227,8 @@ type ProductQA struct {
 	AnsweredAt  *time.Time `json:"answered_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	AskUserName string     `json:"ask_user_name,omitempty"`
+	// Seller inbox context (QABySeller only).
+	ProductName string `json:"product_name,omitempty"`
 }
 
 // Bundle is a discounted combo sold by a seller.
@@ -245,6 +247,12 @@ type Bundle struct {
 type BundleItem struct {
 	VariantID string `json:"variant_id"`
 	Quantity  int    `json:"quantity"`
+	// Display hydration (public listing).
+	ProductName string  `json:"product_name,omitempty"`
+	VariantName string  `json:"variant_name,omitempty"`
+	ImageURL    string  `json:"image_url,omitempty"`
+	UnitPrice   float64 `json:"unit_price,omitempty"`
+	ProductSlug string  `json:"product_slug,omitempty"`
 }
 
 // PriceAlert watches a variant for a target price.

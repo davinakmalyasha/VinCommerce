@@ -31,6 +31,12 @@ type User struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	AvatarURL        string     `json:"avatar_url,omitempty"`
+	// TokenVer is embedded into access-token claims; server-side bumps
+	// (role/status changes) invalidate outstanding tokens immediately.
+	TokenVer int `json:"-"`
+	// ActingAs is set when the token was minted via admin impersonation and
+	// holds the ADMIN's id (the real actor). Subject remains the target.
+	ActingAs *string `json:"-"`
 }
 
 // HasRole reports role membership.

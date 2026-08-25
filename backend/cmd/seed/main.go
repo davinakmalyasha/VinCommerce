@@ -33,6 +33,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Safety: seeding inserts demo accounts with well-known credentials.
+	// Never allow it against a production database unless explicitly forced.
+	if cfg.Environment == "production" && os.Getenv("SEED_FORCE") != "yes" {
+		return fmt.Errorf("refusing to seed a production environment (known-credential demo accounts); set SEED_FORCE=yes to override")
+	}
+
 	ctx := context.Background()
 	pool, err := db.Connect(ctx, cfg.Database)
 	if err != nil {

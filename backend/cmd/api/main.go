@@ -15,9 +15,13 @@ import (
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
 	"github.com/vincommerce/backend/internal/httpapi"
+	"github.com/vincommerce/backend/internal/httpapi/handler"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/metrics"
 )
+
+// version is injected at build time via -ldflags "-X main.version=<git sha>".
+var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -34,6 +38,8 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// config.Load already enforces production guards (JWT secret strength,
+	// sslmode, gateway policy) for every binary; keep a belt-and-braces check.
 	if cfg.Environment == "production" && (len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "dev-secret-change-me") {
 		return fmt.Errorf("refusing to start: JWT_SECRET must be a strong unique value (32+ chars) in production")
 	}
@@ -79,6 +85,8 @@ func run(logger *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	logger.Info("build", "version", version)
+	handler.Version = version
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -95,6 +103,13 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGap)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			// Long-lived SSE connections never become idle, so Shutdown
+			// regularly hits its deadline during deploys. Draining was
+			// attempted; treat it as a clean exit so orchestrators don't
+			// count every deploy as a crash.
+			logger.Warn("shutdown deadline reached with active streams", "error", err.Error())
+		}
+		return nil
 	}
 }
