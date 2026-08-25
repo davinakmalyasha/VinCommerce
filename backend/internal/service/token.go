@@ -25,16 +25,30 @@ func NewTokenManager(secret string, accessTTL, refreshTTL time.Duration) *TokenM
 type accessClaims struct {
 	Roles []string `json:"roles"`
 	Ver   int      `json:"ver"`
+	// ActAs carries the admin ID when this token was minted by impersonation
+	// (RFC 8693 act_as semantics) so audit trails attribute correctly.
+	ActAs string `json:"act_as,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // IssueAccess creates a signed JWT for a user.
 func (t *TokenManager) IssueAccess(user *domain.User) (string, time.Time, error) {
+	return t.IssueAccessFor(user, "")
+}
+
+// IssueAccessFor creates a signed JWT, optionally stamped with the
+// impersonating admin's ID (actAs).
+func (t *TokenManager) IssueAccessFor(user *domain.User, actAs string) (string, time.Time, error) {
 	now := time.Now()
 	exp := now.Add(t.accessTTL)
+	ver := user.TokenVer
+	if ver < 1 {
+		ver = 1 // legacy rows / freshly constructed users
+	}
 	claims := accessClaims{
 		Roles: user.Roles,
-		Ver:   1,
+		Ver:   ver,
+		ActAs: actAs,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -67,7 +81,11 @@ func (t *TokenManager) ParseAccess(tokenStr string) (*domain.User, error) {
 	if !token.Valid {
 		return nil, domain.ErrTokenInvalid
 	}
-	return &domain.User{ID: claims.Subject, Roles: claims.Roles}, nil
+	u := &domain.User{ID: claims.Subject, Roles: claims.Roles, TokenVer: claims.Ver}
+	if claims.ActAs != "" {
+		u.ActingAs = &claims.ActAs
+	}
+	return u, nil
 }
 
 // NewRefreshToken generates a random opaque refresh token and its SHA-256 hash.

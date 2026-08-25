@@ -4,8 +4,11 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vincommerce/backend/internal/domain"
+	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
 )
 
@@ -22,8 +25,41 @@ func UserFrom(ctx context.Context) *domain.User {
 	return u
 }
 
+// VerChecker reports whether a token's ver claim is still current.
+type VerChecker func(userID string, ver int) bool
+
+// CachedVerChecker compares against users.token_ver with a short TTL cache,
+// so role/status changes propagate within ~ttl instead of waiting out the
+// full access-token lifetime — while keeping steady-state auth DB-free.
+func CachedVerChecker(users *repository.UserRepository, ttl time.Duration) VerChecker {
+	type entry struct {
+		ver int
+		at  time.Time
+	}
+	var mu sync.Mutex
+	cache := map[string]entry{}
+	return func(userID string, ver int) bool {
+		if userID == "" {
+			return true
+		}
+		now := time.Now()
+		mu.Lock()
+		e, ok := cache[userID]
+		mu.Unlock()
+		if !ok || now.Sub(e.at) >= ttl {
+			current := users.TokenVersion(context.Background(), userID)
+			e = entry{ver: current, at: now}
+			mu.Lock()
+			cache[userID] = e
+			mu.Unlock()
+		}
+		return e.ver == ver
+	}
+}
+
 // Authenticate validates the Bearer access token.
-func Authenticate(tokens *service.TokenManager) func(http.Handler) http.Handler {
+// verCheck may be nil (skips token-version validation).
+func Authenticate(tokens *service.TokenManager, verCheck VerChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -38,21 +74,27 @@ func Authenticate(tokens *service.TokenManager) func(http.Handler) http.Handler 
 				http.Error(w, `{"error":{"code":"TOKEN_INVALID","message":"invalid or expired token"}}`, http.StatusUnauthorized)
 				return
 			}
+			if verCheck != nil && !verCheck(user.ID, user.TokenVer) {
+				http.Error(w, `{"error":{"code":"TOKEN_STALE","message":"session was revoked or changed, please refresh"}}`, http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
 		})
 	}
 }
 
 // AuthenticateOptional resolves the user when a valid token is present, otherwise continues as guest.
-func AuthenticateOptional(tokens *service.TokenManager) func(http.Handler) http.Handler {
+func AuthenticateOptional(tokens *service.TokenManager, verCheck VerChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
 			tokenStr, ok := strings.CutPrefix(header, "Bearer ")
 			if ok && tokenStr != "" {
 				if user, err := tokens.ParseAccess(tokenStr); err == nil {
-					next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
-					return
+					if verCheck == nil || verCheck(user.ID, user.TokenVer) {
+						next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
+						return
+					}
 				}
 			}
 			next.ServeHTTP(w, r)

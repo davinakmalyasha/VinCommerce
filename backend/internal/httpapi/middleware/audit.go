@@ -27,13 +27,23 @@ func AuditMiddleware(sessions *repository.SessionRepository) func(http.Handler) 
 			if user == nil {
 				return
 			}
+			// Impersonation attribution: the token subject is the *target*
+			// user, but the real actor is the admin in the act_as claim.
+			// Record the admin as the actor and the target as context.
+			actorID := user.ID
+			metadata := map[string]any{}
+			if user.ActingAs != nil && *user.ActingAs != "" {
+				actorID = *user.ActingAs
+				metadata["acting_as"] = user.ID
+			}
 			_ = sessions.Audit(r.Context(), &domain.AuditEntry{
-				ActorID:    user.ID,
+				ActorID:    actorID,
 				Action:     r.Method + " " + r.URL.Path,
 				EntityType: "http",
 				EntityID:   RequestIDFrom(r.Context()),
 				IPAddress:  r.RemoteAddr,
 				UserAgent:  r.UserAgent(),
+				Metadata:   metadata,
 			})
 		})
 	}

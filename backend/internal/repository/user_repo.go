@@ -23,12 +23,13 @@ func NewUserRepository(pool *db.Pool) *UserRepository {
 }
 
 const userColumns = `id, email, COALESCE(phone,''), full_name, roles, status,
-	email_verified_at, two_factor_enabled, last_login_at, created_at, updated_at, COALESCE(avatar_url,'')`
+	email_verified_at, two_factor_enabled, last_login_at, created_at, updated_at, COALESCE(avatar_url,''), token_ver`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	err := row.Scan(&u.ID, &u.Email, &u.Phone, &u.FullName, &u.Roles, &u.Status,
-		&u.EmailVerifiedAt, &u.TwoFactorEnabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &u.AvatarURL)
+		&u.EmailVerifiedAt, &u.TwoFactorEnabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &u.AvatarURL,
+		&u.TokenVer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -36,6 +37,13 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// TokenVersion returns the current token_ver for a user (0 if unknown).
+func (r *UserRepository) TokenVersion(ctx context.Context, userID string) int {
+	var v int
+	_ = r.pool.QueryRow(ctx, `SELECT token_ver FROM users WHERE id = $1`, userID).Scan(&v)
+	return v
 }
 
 // Create inserts a new user. Returns ErrEmailTaken/ErrPhoneTaken on conflict.
@@ -202,9 +210,10 @@ func (r *UserRepository) SetLastLogin(ctx context.Context, userID string, at tim
 }
 
 // UpdateStatus changes account status (active/disabled/suspended).
+// Bumps token_ver so outstanding access tokens die immediately.
 func (r *UserRepository) UpdateStatus(ctx context.Context, userID, status string) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE users SET status = $2, updated_at = now() WHERE id = $1`, userID, status)
+		`UPDATE users SET status = $2, token_ver = token_ver + 1, updated_at = now() WHERE id = $1`, userID, status)
 	if err != nil {
 		return err
 	}
@@ -214,12 +223,55 @@ func (r *UserRepository) UpdateStatus(ctx context.Context, userID, status string
 	return nil
 }
 
-// AddRoles grants roles to a user.
+// AddRoles grants roles to a user (idempotent — duplicates are collapsed).
+// Binds the roles as a text[] and merges with DISTINCT so pgx's array
+// encoding is honored (array_append with an array param fails to type-check).
+// Bumps token_ver so fresh claims propagate on the next refresh.
 func (r *UserRepository) AddRoles(ctx context.Context, userID string, roles []string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE users SET roles = array_append(roles, $2), updated_at = now()
-		 WHERE id = $1 AND NOT roles @> ARRAY[$2]`, userID, roles)
-	return err
+	if len(roles) == 0 {
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE users SET roles = (
+				SELECT array_agg(DISTINCT r) FROM unnest(roles || $2::text[]) AS r
+			), token_ver = token_ver + 1, updated_at = now()
+		WHERE id = $1`, userID, roles)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// RemoveRoles strips roles from a user. Bumps token_ver so demotions take
+// effect on the next request instead of waiting out the access-token TTL.
+func (r *UserRepository) RemoveRoles(ctx context.Context, userID string, roles []string) error {
+	if len(roles) == 0 {
+		return nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE users SET roles = (
+				SELECT array_agg(r) FROM unnest(roles) AS r
+				WHERE NOT r = ANY($2::text[])
+			), token_ver = token_ver + 1, updated_at = now()
+		WHERE id = $1`, userID, roles)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// CountRoleHolders returns how many users hold a role (last-admin guard).
+func (r *UserRepository) CountRoleHolders(ctx context.Context, role string) (int64, error) {
+	var n int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM users WHERE roles @> ARRAY[$1]`, role).Scan(&n)
+	return n, err
 }
 
 // TOTPSecret loads the TOTP secret row for a user.

@@ -123,5 +123,49 @@ func Load() (*Config, error) {
 	if err := env.Parse(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// Validate enforces production safety guards for every binary (api, worker,
+// seed) so a misconfigured deployment fails loudly at startup instead of
+// running with development defaults.
+func (c *Config) Validate() error {
+	prod := c.Environment == "production"
+
+	if len(c.Auth.JWTSecret) < 32 || c.Auth.JWTSecret == "dev-secret-change-me" {
+		if prod {
+			return fmt.Errorf("JWT_SECRET must be set to a strong random value (>=32 chars) in production")
+		}
+	}
+
+	if c.Payments.Gateway == "" || c.Payments.Gateway == "sandbox" {
+		if prod {
+			return fmt.Errorf("PAYMENT_GATEWAY=sandbox is not allowed in production; configure 'midtrans' or another real gateway")
+		}
+	}
+	if c.Payments.MidtransEnv == "production" && !prod {
+		return fmt.Errorf("MIDTRANS_ENV=production requires APP_ENV=production")
+	}
+
+	if prod && c.Database.SSLMode == "disable" {
+		return fmt.Errorf("DB_SSL_MODE=disable is not allowed in production; use 'require' or 'verify-full'")
+	}
+	if prod && c.Database.Password == "vincom_dev" {
+		return fmt.Errorf("DB_PASSWORD must be changed from the development default in production")
+	}
+
+	switch c.Payments.MidtransEnv {
+	case "", "sandbox", "production":
+	default:
+		return fmt.Errorf("MIDTRANS_ENV must be 'sandbox' or 'production', got %q", c.Payments.MidtransEnv)
+	}
+	switch c.Payments.Gateway {
+	case "", "sandbox", "midtrans":
+	default:
+		return fmt.Errorf("unknown PAYMENT_GATEWAY %q (supported: sandbox, midtrans)", c.Payments.Gateway)
+	}
+	return nil
 }
