@@ -44,6 +44,19 @@ export function AdminUsers() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-users'] }),
   })
 
+  // Role revocation with per-row role picker.
+  const [revokeFor, setRevokeFor] = useState<string | null>(null)
+  const [revokeRole, setRevokeRole] = useState('seller')
+  const revoke = useMutation({
+    mutationFn: async ({ id, role }: { id: string; role: string }) =>
+      api.post(`/admin/users/${id}/revoke-role`, { role }),
+    onSuccess: () => {
+      setRevokeFor(null)
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+    onError: (e: Error) => alert(e.message),
+  })
+
   const impersonate = useMutation({
     mutationFn: async (id: string) =>
       (await api.post<{ access_token: string; user: AdminUser & Record<string, unknown> }>(`/admin/users/${id}/impersonate`)).data,
@@ -128,6 +141,46 @@ export function AdminUsers() {
                     >
                       Jadikan seller
                     </button>
+                  )}
+                  {u.roles.filter((r) => r !== 'buyer').length > 0 && (
+                    revokeFor === u.id ? (
+                      <span className="inline-flex items-center gap-1">
+                        <select
+                          value={revokeRole}
+                          onChange={(e) => setRevokeRole(e.target.value)}
+                          className="border rounded px-1.5 py-0.5 text-xs bg-transparent"
+                        >
+                          {u.roles.filter((r) => r !== 'buyer').map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => {
+                            if (confirm(`Cabut peran "${revokeRole}" dari ${u.email}?`)) {
+                              revoke.mutate({ id: u.id, role: revokeRole })
+                            }
+                          }}
+                          disabled={revoke.isPending}
+                          className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                        >
+                          ✓
+                        </button>
+                        <button onClick={() => setRevokeFor(null)} className="text-xs text-gray-400 hover:underline">
+                          ✕
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setRevokeFor(u.id)
+                          setRevokeRole(u.roles.find((r) => r !== 'buyer') ?? 'seller')
+                        }}
+                        className="text-xs text-red-500 hover:underline"
+                        title="Cabut peran (demote)"
+                      >
+                        Cabut peran
+                      </button>
+                    )
                   )}
                   {u.status === 'active' ? (
                     <button

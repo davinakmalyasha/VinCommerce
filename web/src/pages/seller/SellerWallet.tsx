@@ -20,13 +20,36 @@ export function SellerWallet() {
     queryFn: async () => (await api.get<{ payouts: { id: string; amount: number; status: string; bank_name: string; created_at: string }[] }>('/wallet/payouts')).data.payouts,
   })
 
+  const { data: kyc } = useQuery({
+    queryKey: ['seller-kyc'],
+    queryFn: async () =>
+      (
+        await api.get<{
+          kyc: { bank_name?: string; bank_account?: string; status: string } | null
+        }>('/seller/kyc')
+      ).data.kyc,
+  })
+
   const payout = useMutation({
     mutationFn: async () => {
       const amount = prompt('Jumlah penarikan (Rp):')
       if (!amount) throw new Error('dibatalkan')
-      await api.post('/wallet/payouts', { amount: Number(amount), bank_name: 'BCA', bank_account: '1234567890' })
+      // Withdrawals always go to the KYC-verified bank account — never to
+      // buyer-entered details, which would be a fraud vector.
+      if (!kyc?.bank_name || !kyc?.bank_account) {
+        throw new Error('Lengkapi rekening bank pada form KYC terlebih dahulu')
+      }
+      await api.post('/wallet/payouts', {
+        amount: Number(amount),
+        bank_name: kyc.bank_name,
+        bank_account: kyc.bank_account,
+      })
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wallet'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['wallet'] })
+      queryClient.invalidateQueries({ queryKey: ['payouts'] })
+    },
+    onError: (e) => alert(e instanceof Error ? e.message : 'Penarikan gagal'),
   })
 
   return (
@@ -37,6 +60,11 @@ export function SellerWallet() {
           <p className="text-xs text-gray-500">Saldo Tersedia</p>
           <p className="text-3xl font-extrabold text-amber-600">{formatIDR(data?.wallet.balance ?? 0)}</p>
           <p className="text-xs text-gray-400 mt-1">Ditahan: {formatIDR(data?.wallet.held_balance ?? 0)}</p>
+          <p className="text-xs text-gray-500 mt-2">
+            {kyc?.bank_name && kyc?.bank_account
+              ? `Cair ke: ${kyc.bank_name} •••• ${kyc.bank_account.slice(-4)}`
+              : 'Rekening belum terdaftar — lengkapi KYC di Pengaturan.'}
+          </p>
         </div>
         <button
           onClick={() => payout.mutate()}

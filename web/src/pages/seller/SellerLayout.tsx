@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useSession } from '../../stores/session'
@@ -21,32 +21,60 @@ export function SellerLayout() {
     enabled: !!user,
   })
 
-  if (!store) {
+  // Access model:
+  //  - logged-out → sign-in notice
+  //  - buyer WITHOUT a store → onboarding funnel ("Buka Toko") — this is the
+  //    advertised buyer→seller path and must stay reachable (the backend
+  //    grants the seller role on POST /seller/store, then the page reloads).
+  //  - buyer WITH a store but role grant still propagating → onboarding too
+  //    (a full reload re-mints claims from the DB via /auth/refresh).
+  //  - seller/admin with no store yet → onboarding as before.
+  const isSellerRole = !!user && (user.roles.includes('seller') || user.roles.includes('admin'))
+
+  if (!user) {
     return (
-      <div className="mx-auto max-w-xl px-4 py-20 text-center">
-        <h1 className="text-2xl font-bold mb-2">Mulai Jualan di VinCommerce</h1>
-        <p className="text-gray-500 text-sm mb-8">
-          Buka toko gratis, jangkau jutaan pembeli, terima pembayaran escrow yang aman.
-        </p>
-        <button
-          onClick={async () => {
-            const name = prompt('Nama toko:')
-            if (!name) return
-            setShowOnboard(true)
-            try {
-              await api.post('/seller/store', { name })
-              window.location.reload()
-            } finally {
-              setShowOnboard(false)
-            }
-          }}
-          disabled={showOnboard}
-          className="px-8 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
-        >
-          {showOnboard ? 'Membuat...' : 'Buka Toko Sekarang'}
-        </button>
+      <div className="mx-auto max-w-md px-4 py-20 text-center">
+        <h1 className="text-xl font-bold mb-2">Masuk Diperlukan</h1>
+        <p className="text-gray-500 text-sm">Masuk untuk membuka atau mengelola toko.</p>
       </div>
     )
+  }
+
+  const onboarding = (
+    <div className="mx-auto max-w-xl px-4 py-20 text-center">
+      <h1 className="text-2xl font-bold mb-2">Mulai Jualan di VinCommerce</h1>
+      <p className="text-gray-500 text-sm mb-8">
+        Buka toko gratis, jangkau jutaan pembeli, terima pembayaran escrow yang aman.
+      </p>
+      {!isSellerRole && store === null && (
+        <p className="text-xs text-gray-400 mb-4">
+          Setelah toko dibuat, akunmu otomatis mendapat peran penjual.
+        </p>
+      )}
+      <button
+        onClick={async () => {
+          const name = prompt('Nama toko:')
+          if (!name) return
+          setShowOnboard(true)
+          try {
+            await api.post('/seller/store', { name })
+            window.location.reload() // re-mints access token with fresh roles
+          } finally {
+            setShowOnboard(false)
+          }
+        }}
+        disabled={showOnboard}
+        className="px-8 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
+      >
+        {showOnboard ? 'Membuat...' : 'Buka Toko Sekarang'}
+      </button>
+    </div>
+  )
+
+  if (!store) return onboarding
+  if (!isSellerRole) {
+    // Store exists but claims not refreshed yet — force the same reload flow.
+    return onboarding
   }
 
   const nav = [
@@ -83,7 +111,7 @@ export function SellerLayout() {
           </NavLink>
         ))}
         <Link to="/" className="block px-4 py-2.5 rounded-lg text-sm text-gray-400 hover:bg-gray-100">
-          â† Kembali ke toko
+          ← Kembali ke toko
         </Link>
       </aside>
       <main className="md:col-span-5">
@@ -117,6 +145,16 @@ export function SellerHome() {
         await api.get<{
           variants: { variant_id: string; product_name: string; variant_name: string; stock: number }[]
         }>('/seller/low-stock')
+      ).data,
+  })
+
+  const { data: qa } = useQuery({
+    queryKey: ['seller-questions'],
+    queryFn: async () =>
+      (
+        await api.get<{
+          questions: { id: string; question: string; answer?: string; product_name?: string; ask_user_name?: string }[]
+        }>('/seller/questions')
       ).data,
   })
 
@@ -162,6 +200,85 @@ export function SellerHome() {
           </Link>
         </div>
       )}
+
+      {qa && qa.questions.length > 0 && (
+        <SellerQAInbox questions={qa.questions} />
+      )}
+    </div>
+  )
+}
+
+const unanswered = (q: { answer?: string }) => !q.answer
+
+function SellerQAInbox({
+  questions,
+}: {
+  questions: { id: string; question: string; answer?: string; product_name?: string; ask_user_name?: string }[]
+}) {
+  const queryClient = useQueryClient()
+  const [answerFor, setAnswerFor] = useState<string | null>(null)
+  const [text, setText] = useState('')
+
+  const answer = useMutation({
+    mutationFn: async ({ id, body }: { id: string; body: string }) =>
+      api.post(`/qa/${id}/answer`, { answer: body }),
+    onSuccess: () => {
+      setAnswerFor(null)
+      setText('')
+      queryClient.invalidateQueries({ queryKey: ['seller-questions'] })
+    },
+    onError: () => alert('Gagal mengirim jawaban'),
+  })
+
+  const pending = questions.filter(unanswered)
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
+      <h2 className="font-bold text-sm mb-3">
+        ❓ Tanya Jawab Produk {pending.length > 0 && <span className="text-amber-600">({pending.length} belum dijawab)</span>}
+      </h2>
+      <div className="space-y-3">
+        {questions.slice(0, 8).map((q) => (
+          <div key={q.id} className="border-b border-gray-100 dark:border-gray-800 pb-3 last:border-0 last:pb-0">
+            <p className="text-sm">
+              <span className="font-medium">{q.product_name ?? 'Produk'}</span>
+              <span className="text-gray-400 text-xs"> · {q.ask_user_name ?? 'pembeli'}</span>
+            </p>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mt-0.5">{q.question}</p>
+            {q.answer ? (
+              <p className="text-xs text-green-700 dark:text-green-400 mt-1">✓ {q.answer}</p>
+            ) : answerFor === q.id ? (
+              <div className="mt-2 flex gap-2">
+                <input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="Tulis jawaban..."
+                  className="flex-1 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => text.trim() && answer.mutate({ id: q.id, body: text.trim() })}
+                  disabled={answer.isPending || !text.trim()}
+                  className="px-4 py-2 rounded-lg bg-amber-500 text-white text-xs font-medium disabled:opacity-50"
+                >
+                  Kirim
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setAnswerFor(q.id)
+                  setText('')
+                }}
+                className="mt-1.5 px-3 py-1.5 rounded-lg border border-amber-400 text-amber-600 text-xs hover:bg-amber-50"
+              >
+                Jawab
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

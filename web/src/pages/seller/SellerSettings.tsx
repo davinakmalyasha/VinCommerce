@@ -56,6 +56,7 @@ export function SellerSettings() {
         <div>
           <label className="text-sm font-medium block mb-1">Nama Toko</label>
           <input
+            key={`name-${store?.id ?? 'loading'}`}
             defaultValue={store?.name}
             onChange={(e) => setName(e.target.value)}
             className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
@@ -64,6 +65,7 @@ export function SellerSettings() {
         <div>
           <label className="text-sm font-medium block mb-1">Deskripsi</label>
           <textarea
+            key={`desc-${store?.id ?? 'loading'}`}
             defaultValue={store?.description}
             onChange={(e) => setDescription(e.target.value)}
             rows={4}

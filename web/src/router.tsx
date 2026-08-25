@@ -5,17 +5,19 @@ import { HomePage } from './pages/HomePage'
 import { SearchPage } from './pages/SearchPage'
 import { ProductPage } from './pages/ProductPage'
 import { CartPage } from './pages/CartPage'
-import { CheckoutPage } from './pages/CheckoutPage'
-import { OrdersPage } from './pages/OrdersPage'
-import { OrderDetailPage } from './pages/OrderDetailPage'
-import { LoginPage } from './pages/LoginPage'
-import { RegisterPage } from './pages/RegisterPage'
-import { AccountPage } from './pages/AccountPage'
-import { WishlistPage } from './pages/WishlistPage'
 
-// Seller Center + Admin Console are separate bundles, loaded on demand.
+// Secondary storefront pages + Seller Center + Admin Console are separate
+// bundles, loaded on demand (keeps the entry chunk small for first paint).
 const lazyOf = (loader: () => Promise<Record<string, unknown>>, name: string) =>
   lazy(() => loader().then((m) => ({ default: m[name] as React.ComponentType })))
+
+const CheckoutPage = lazyOf(() => import('./pages/CheckoutPage'), 'CheckoutPage')
+const OrdersPage = lazyOf(() => import('./pages/OrdersPage'), 'OrdersPage')
+const OrderDetailPage = lazyOf(() => import('./pages/OrderDetailPage'), 'OrderDetailPage')
+const LoginPage = lazyOf(() => import('./pages/LoginPage'), 'LoginPage')
+const RegisterPage = lazyOf(() => import('./pages/RegisterPage'), 'RegisterPage')
+const AccountPage = lazyOf(() => import('./pages/AccountPage'), 'AccountPage')
+const WishlistPage = lazyOf(() => import('./pages/WishlistPage'), 'WishlistPage')
 
 const SellerLayout = lazyOf(() => import('./pages/seller/SellerLayout'), 'SellerLayout')
 const SellerHome = lazyOf(() => import('./pages/seller/SellerLayout'), 'SellerHome')
@@ -47,29 +49,39 @@ const AdminCommission = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'Adm
 const AdminCatalog = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminCatalog')
 const AdminFlashSales = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminFlashSales')
 const AdminDisputes = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminDisputes')
+const AdminPayouts = lazyOf(() => import('./pages/admin/AdminPayouts'), 'AdminPayouts')
 
-import { HelpCenterPage } from './pages/HelpCenterPage'
-import { HelpArticlePage } from './pages/HelpArticlePage'
-import { FaqPage } from './pages/FaqPage'
-import { ContactPage } from './pages/ContactPage'
-import { MyTicketsPage } from './pages/MyTicketsPage'
-import { TicketDetailPage } from './pages/TicketDetailPage'
-import { DocsPage } from './pages/DocsPage'
-import { LegalPage } from './pages/LegalPage'
-import { StorePage } from './pages/StorePage'
-import { NotificationsPage } from './pages/NotificationsPage'
-import { FlashSalePage } from './pages/FlashSalePage'
-import { TrackingPage } from './pages/TrackingPage'
-import { VouchersPage } from './pages/VouchersPage'
-import { ComparePage } from './pages/ComparePage'
-import { FollowedStoresPage } from './pages/FollowedStoresPage'
-import { VerifyEmailPage } from './pages/VerifyEmailPage'
-import { ResetPasswordPage } from './pages/ResetPasswordPage'
-import { MyReturnsPage } from './pages/MyReturnsPage'
-import { WalletPage } from './pages/WalletPage'
-import { DiscoverFeedPage } from './pages/DiscoverFeedPage'
-import { InviteLandingPage } from './pages/InviteLandingPage'
-import { NotFoundPage } from './pages/NotFoundPage'
+const HelpCenterPage = lazyOf(() => import('./pages/HelpCenterPage'), 'HelpCenterPage')
+const HelpArticlePage = lazyOf(() => import('./pages/HelpArticlePage'), 'HelpArticlePage')
+const FaqPage = lazyOf(() => import('./pages/FaqPage'), 'FaqPage')
+const ContactPage = lazyOf(() => import('./pages/ContactPage'), 'ContactPage')
+const MyTicketsPage = lazyOf(() => import('./pages/MyTicketsPage'), 'MyTicketsPage')
+const TicketDetailPage = lazyOf(() => import('./pages/TicketDetailPage'), 'TicketDetailPage')
+const DocsPage = lazyOf(() => import('./pages/DocsPage'), 'DocsPage')
+// LegalPage takes props — wrap it so the generic lazy component type works.
+const LazyLegal = lazy(() =>
+  import('./pages/LegalPage').then((m) => ({ default: m.LegalPage })),
+)
+const LegalTerms = () => <LazyLegal page="terms" />
+const LegalPrivacy = () => <LazyLegal page="privacy" />
+const LegalRefund = () => <LazyLegal page="refund-policy" />
+const LegalShipping = () => <LazyLegal page="shipping-policy" />
+const StorePage = lazyOf(() => import('./pages/StorePage'), 'StorePage')
+const NotificationsPage = lazyOf(() => import('./pages/NotificationsPage'), 'NotificationsPage')
+const FlashSalePage = lazyOf(() => import('./pages/FlashSalePage'), 'FlashSalePage')
+const TrackingPage = lazyOf(() => import('./pages/TrackingPage'), 'TrackingPage')
+const VouchersPage = lazyOf(() => import('./pages/VouchersPage'), 'VouchersPage')
+const ComparePage = lazyOf(() => import('./pages/ComparePage'), 'ComparePage')
+const FollowedStoresPage = lazyOf(() => import('./pages/FollowedStoresPage'), 'FollowedStoresPage')
+const VerifyEmailPage = lazyOf(() => import('./pages/VerifyEmailPage'), 'VerifyEmailPage')
+const ResetPasswordPage = lazyOf(() => import('./pages/ResetPasswordPage'), 'ResetPasswordPage')
+const MyReturnsPage = lazyOf(() => import('./pages/MyReturnsPage'), 'MyReturnsPage')
+const WalletPage = lazyOf(() => import('./pages/WalletPage'), 'WalletPage')
+const DiscoverFeedPage = lazyOf(() => import('./pages/DiscoverFeedPage'), 'DiscoverFeedPage')
+const InviteLandingPage = lazyOf(() => import('./pages/InviteLandingPage'), 'InviteLandingPage')
+const LivePage = lazyOf(() => import('./pages/LivePage'), 'LivePage')
+const SupportConsole = lazyOf(() => import('./pages/support/SupportConsole'), 'SupportConsole')
+const NotFoundPage = lazyOf(() => import('./pages/NotFoundPage'), 'NotFoundPage')
 
 function LazyOutlet({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="py-24 text-center text-sm text-gray-400">Memuat modul...</div>}>{children}</Suspense>
@@ -101,6 +113,8 @@ export const router = createBrowserRouter([
       { path: 'followed-stores', element: <FollowedStoresPage /> },
       { path: 'notifications', element: <NotificationsPage /> },
       { path: 'flash-sales', element: <FlashSalePage /> },
+      { path: 'live', element: <LivePage /> },
+      { path: 'support', element: <SupportConsole /> },
       { path: 'tracking/:number', element: <TrackingPage /> },
       { path: 'vouchers', element: <VouchersPage /> },
       { path: 'compare', element: <ComparePage /> },
@@ -112,10 +126,10 @@ export const router = createBrowserRouter([
       { path: 'account/tickets/:id', element: <TicketDetailPage /> },
       { path: 'docs', element: <DocsPage /> },
       { path: 'docs/api', element: <HelpArticlePage /> },
-      { path: 'terms', element: <LegalPage page="terms" /> },
-      { path: 'privacy', element: <LegalPage page="privacy" /> },
-      { path: 'refund-policy', element: <LegalPage page="refund-policy" /> },
-      { path: 'shipping-policy', element: <LegalPage page="shipping-policy" /> },
+      { path: 'terms', element: <LegalTerms /> },
+      { path: 'privacy', element: <LegalPrivacy /> },
+      { path: 'refund-policy', element: <LegalRefund /> },
+      { path: 'shipping-policy', element: <LegalShipping /> },
       { path: '*', element: <NotFoundPage /> },
       {
         path: 'seller',
@@ -154,6 +168,7 @@ export const router = createBrowserRouter([
           { path: 'catalog', element: <AdminCatalog /> },
           { path: 'flash-sales', element: <AdminFlashSales /> },
           { path: 'disputes', element: <AdminDisputes /> },
+          { path: 'payouts', element: <AdminPayouts /> },
         ],
       },
     ],

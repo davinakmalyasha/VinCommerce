@@ -1,8 +1,16 @@
 import { create } from 'zustand'
-import { api, setAccessToken, guestSessionKey } from '../lib/api'
+import { api, setAccessToken, guestSessionKey, refreshAccessToken } from '../lib/api'
 import type { User } from '../types'
 
 const IMPERSONATION_KEY = 'vc_impersonating'
+
+// Wired by App.tsx so login/logout can purge cached per-user react-query data
+// (orders, wallet, admin tables) — otherwise the next account could briefly
+// render the previous user's data.
+let clearQueryCache: () => void = () => {}
+export function bindQueryCacheClear(fn: () => void) {
+  clearQueryCache = fn
+}
 
 interface ImpersonationInfo {
   name: string
@@ -60,11 +68,13 @@ export const useSession = create<SessionState>((set) => ({
     sessionStorage.removeItem(IMPERSONATION_KEY)
     set({ impersonating: null })
     // Re-mint an admin access token from the untouched refresh cookie.
+    // Routed through the shared single-flight refresh so concurrent callers
+    // (streams, boot restore) join the same rotation instead of racing it.
     try {
-      const res = await api.post<{ access_token: string }>('/auth/refresh')
-      setAccessToken(res.data.access_token)
+      const token = await refreshAccessToken()
+      if (!token) throw new Error('refresh failed')
       const me = await api.get<{ user: User }>('/auth/me')
-      set({ user: me.data.user, accessToken: res.data.access_token })
+      set({ user: me.data.user, accessToken: token })
     } catch {
       setAccessToken(null)
       set({ user: null, accessToken: null })
@@ -73,16 +83,30 @@ export const useSession = create<SessionState>((set) => ({
 
   restore: async () => {
     // Access token lives in memory only; the refresh token is an httpOnly
-    // cookie, so restore = rotate it and fetch the profile.
-    try {
-      const res = await api.post<{ access_token: string }>('/auth/refresh')
-      setAccessToken(res.data.access_token)
-      const me = await api.get<{ user: User }>('/auth/me')
-      set({ user: me.data.user, accessToken: res.data.access_token, loading: false })
-    } catch {
-      setAccessToken(null)
-      set({ user: null, accessToken: null, loading: false })
+    // cookie, so restore = rotate it and fetch the profile. Uses the shared
+    // single-flight helper so StrictMode double-mounts and NotificationBell's
+    // stream share ONE rotation instead of invalidating each other's cookies.
+    const token = await refreshAccessToken()
+    if (token) {
+      try {
+        const me = await api.get<{ user: User }>('/auth/me')
+        // Silent-revert detection: mid-impersonation reloads rotate via the
+        // ADMIN's cookie — the banner would then lie about who is acting.
+        const imp = readImpersonation()
+        if (imp && me.data.user.email !== imp.email) {
+          sessionStorage.removeItem(IMPERSONATION_KEY)
+          set({ user: me.data.user, accessToken: token, loading: false, impersonating: null })
+          return
+        }
+        set({ user: me.data.user, accessToken: token, loading: false })
+        return
+      } catch {
+        // fall through to signed-out state
+      }
     }
+    setAccessToken(null)
+    sessionStorage.removeItem(IMPERSONATION_KEY)
+    set({ user: null, accessToken: null, loading: false, impersonating: null })
   },
 
   login: async (email, password, totpCode) => {
@@ -91,6 +115,7 @@ export const useSession = create<SessionState>((set) => ({
       password,
       totp_code: totpCode,
     })
+    clearQueryCache() // purge any previous account's cached data
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
     await mergeGuestCart()
@@ -98,6 +123,7 @@ export const useSession = create<SessionState>((set) => ({
 
   register: async (data) => {
     const res = await api.post<{ access_token: string; user: User }>('/auth/register', data)
+    clearQueryCache()
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
     await mergeGuestCart()
@@ -110,6 +136,7 @@ export const useSession = create<SessionState>((set) => ({
       // ignore
     }
     setAccessToken(null)
+    clearQueryCache()
     set({ user: null, accessToken: null })
   },
 }))

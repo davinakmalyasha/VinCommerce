@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Category, Product } from '../types'
 import { ProductCard } from '../components/ProductCard'
+import { BundlesStrip } from '../components/BundlesStrip'
 import { useActiveFlashSale } from '../lib/flashSale'
 
 interface RecentlyViewed extends Product {
@@ -103,6 +104,8 @@ export function HomePage() {
           {recommended?.map((p) => <ProductCard key={p.id} product={p} />)}
         </div>
       </section>
+
+      <BundlesStrip />
 
       <RecentlyViewedStrip />
     </div>

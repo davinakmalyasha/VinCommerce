@@ -4,6 +4,7 @@ import { api } from '../../lib/api'
 import type { Product, Category } from '../../types'
 import { formatIDR } from '../../lib/format'
 import { FileUpload } from '../../components/FileUpload'
+import { SellerBundles } from './SellerBundles'
 
 interface VariantRow {
   sku: string
@@ -169,6 +170,8 @@ export function SellerProducts() {
           </button>
         </div>
       )}
+
+      <SellerBundles />
 
       {stockFor && <StockAdjustPanel product={stockFor} onClose={() => setStockFor(null)} />}
 
@@ -363,6 +366,24 @@ function ProductForm({
   )
   const [error, setError] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [titles, setTitles] = useState<string[]>([])
+
+  // ✨ AI title suggestions — click a chip to adopt it.
+  const suggesting = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ titles: string[] }>('/ai/title-suggest', { name })).data.titles,
+    onSuccess: (t) => setTitles(t),
+    onError: () => setTitles([]),
+  })
+
+  const suggestTitles = async () => {
+    if (!name.trim()) return
+    try {
+      setTitles(await suggesting.mutateAsync())
+    } catch {
+      setTitles([])
+    }
+  }
 
   const generateDescription = useMutation({
     mutationFn: async () => {
@@ -425,11 +446,36 @@ function ProductForm({
         <div className="space-y-4">
           <div>
             <label className="text-sm font-medium block mb-1">Nama Produk</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
-            />
+            <div className="flex gap-2">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+              />
+              <button
+                type="button"
+                onClick={suggestTitles}
+                disabled={suggesting.isPending || !name.trim()}
+                title="Saran judul dengan AI"
+                className="shrink-0 px-3 py-2 rounded-xl border border-amber-400 text-amber-600 text-xs font-medium hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-50"
+              >
+                {suggesting.isPending ? '...' : '✨ Saran'}
+              </button>
+            </div>
+            {titles.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {titles.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setName(t)}
+                    className="px-2.5 py-1 rounded-full border border-gray-300 text-xs hover:border-amber-400 hover:text-amber-600"
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
