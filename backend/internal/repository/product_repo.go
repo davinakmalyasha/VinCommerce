@@ -126,9 +126,14 @@ func (r *ProductRepository) Search(ctx context.Context, f *domain.ProductFilter)
 	return &domain.SearchResult{Items: items, Total: total, Page: f.Page, PageSize: f.PageSize}, nil
 }
 
+// publicStoreFilter keeps pending/rejected/suspended stores invisible on
+// all public product surfaces (search, PDP, related).
+const publicStoreFilter = `AND EXISTS (
+	SELECT 1 FROM stores s WHERE s.owner_id = p.seller_id AND s.status = 'active')`
+
 // ByID fetches a product with variants, images, category and brand.
 func (r *ProductRepository) ByID(ctx context.Context, id string) (*domain.Product, error) {
-	p, err := r.byID(ctx, `WHERE p.id = $1 AND p.status = 'active'`, id)
+	p, err := r.byID(ctx, `WHERE p.id = $1 AND p.status = 'active' `+publicStoreFilter, id)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +142,7 @@ func (r *ProductRepository) ByID(ctx context.Context, id string) (*domain.Produc
 
 // BySlug fetches an active product by slug.
 func (r *ProductRepository) BySlug(ctx context.Context, slug string) (*domain.Product, error) {
-	p, err := r.byID(ctx, `WHERE p.slug = $1 AND p.status = 'active'`, slug)
+	p, err := r.byID(ctx, `WHERE p.slug = $1 AND p.status = 'active' `+publicStoreFilter, slug)
 	if err != nil {
 		return nil, err
 	}
@@ -466,10 +471,66 @@ func (r *ProductRepository) ListBySeller(ctx context.Context, sellerID string, p
 	return items, total, rows.Err()
 }
 
+// ListActiveBySeller lists ACTIVE products of a store (public storefront).
+// Filtering in SQL (not post-load) so pagination stays correct.
+func (r *ProductRepository) ListActiveBySeller(ctx context.Context, sellerID string, page, pageSize int) ([]*domain.Product, int64, error) {
+	var total int64
+	if err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM products WHERE seller_id = $1 AND status = 'active'`, sellerID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT p.id, p.seller_id, p.category_id, p.brand_id, p.name, p.slug, p.description,
+		       p.status, p.attributes, p.avg_rating, p.rating_count, p.sold_count,
+		       p.published_at, p.created_at, p.updated_at,
+		       COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0),
+		       (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id)
+		FROM products p
+		WHERE p.seller_id = $1 AND p.status = 'active'
+		ORDER BY p.created_at DESC
+		LIMIT $2 OFFSET $3`, sellerID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := []*domain.Product{}
+	for rows.Next() {
+		var p domain.Product
+		var attrs []byte
+		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
+			&p.Status, &attrs, &p.AvgRating, &p.RatingCount, &p.SoldCount,
+			&p.PublishedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		if err := json.Unmarshal(attrs, &p.Attributes); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, &p)
+	}
+	return items, total, rows.Err()
+}
+
 // SlugEntry is a product URL candidate for the sitemap.
 type SlugEntry struct {
 	Slug      string    `json:"slug"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SetModerationLock marks a product as staff-taken-down; sellers cannot
+// reactivate it while locked.
+func (r *ProductRepository) SetModerationLock(ctx context.Context, productID string, locked bool) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE products SET moderation_locked = $2 WHERE id = $1`, productID, locked)
+	return err
+}
+
+// ModerationLocked reports the lock flag (false when unknown).
+func (r *ProductRepository) ModerationLocked(ctx context.Context, productID string) bool {
+	var locked bool
+	_ = r.pool.QueryRow(ctx,
+		`SELECT moderation_locked FROM products WHERE id = $1`, productID).Scan(&locked)
+	return locked
 }
 
 // LowStockVariant is a variant at/below the stock threshold.
@@ -818,7 +879,12 @@ func safeIdent(s string) string {
 
 // buildSearchWhere assembles the filter clauses and their bound arguments.
 func (r *ProductRepository) buildSearchWhere(f *domain.ProductFilter) (string, []any) {
-	where := []string{"p.status = 'active'"}
+	// Only active products from ACTIVE stores are publicly searchable —
+	// pending/rejected/suspended stores must be invisible storefront-side.
+	where := []string{
+		"p.status = 'active'",
+		"EXISTS (SELECT 1 FROM stores s WHERE s.owner_id = p.seller_id AND s.status = 'active')",
+	}
 	args := []any{}
 
 	if f.Query != "" {

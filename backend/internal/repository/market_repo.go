@@ -74,6 +74,39 @@ func (r *QARepository) QAByProduct(ctx context.Context, productID string, limit 
 	return items, rows.Err()
 }
 
+// QABySeller lists questions across ALL of a seller's products
+// (unanswered first) — feeds the Seller Center Q&A inbox.
+func (r *QARepository) QABySeller(ctx context.Context, sellerID string, limit int) ([]*domain.ProductQA, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT q.id, q.product_id, q.user_id, q.question, COALESCE(q.answer,''),
+		       q.answered_at, q.created_at, u.full_name, p.name AS product_name
+		FROM product_qa q
+		JOIN users u ON u.id = q.user_id
+		JOIN products p ON p.id = q.product_id
+		WHERE p.seller_id = $1
+		ORDER BY (q.answer IS NOT NULL), q.created_at DESC
+		LIMIT $2`, sellerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []*domain.ProductQA{}
+	for rows.Next() {
+		var q domain.ProductQA
+		var productName string
+		if err := rows.Scan(&q.ID, &q.ProductID, &q.UserID, &q.Question, &q.Answer,
+			&q.AnsweredAt, &q.CreatedAt, &q.AskUserName, &productName); err != nil {
+			return nil, err
+		}
+		items = append(items, &q)
+	}
+	return items, rows.Err()
+}
+
 // QAByID loads a question.
 func (r *QARepository) QAByID(ctx context.Context, qaID string) (*domain.ProductQA, error) {
 	var q domain.ProductQA
@@ -159,7 +192,62 @@ func (r *QARepository) Bundles(ctx context.Context, sellerID string) ([]*domain.
 		}
 		items = append(items, &b)
 	}
+	if err := r.hydrateBundleItems(ctx, items); err != nil {
+		return nil, err
+	}
 	return items, rows.Err()
+}
+
+// hydrateBundleItems fills display fields (names/prices/images) for every
+// bundle item in ONE query so the storefront can render real bundles.
+func (r *QARepository) hydrateBundleItems(ctx context.Context, bundles []*domain.Bundle) error {
+	variantIDs := make([]string, 0)
+	for _, b := range bundles {
+		for i := range b.Items {
+			variantIDs = append(variantIDs, b.Items[i].VariantID)
+		}
+	}
+	if len(variantIDs) == 0 {
+		return nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT v.id, p.name, v.name, COALESCE(v.image_url,''), v.price, p.slug
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		WHERE v.id = ANY($1)`, variantIDs)
+	if err != nil {
+		return err // hydration is best-effort; bundle still usable by id
+	}
+	defer rows.Close()
+
+	type variantInfo struct {
+		productName, variantName, imageURL string
+		price                              float64
+		slug                               string
+	}
+	info := map[string]variantInfo{}
+	for rows.Next() {
+		var (
+			id string
+			v  variantInfo
+		)
+		if err := rows.Scan(&id, &v.productName, &v.variantName, &v.imageURL, &v.price, &v.slug); err != nil {
+			return err
+		}
+		info[id] = v
+	}
+	for _, b := range bundles {
+		for i := range b.Items {
+			if v, ok := info[b.Items[i].VariantID]; ok {
+				b.Items[i].ProductName = v.productName
+				b.Items[i].VariantName = v.variantName
+				b.Items[i].ImageURL = v.imageURL
+				b.Items[i].UnitPrice = v.price
+				b.Items[i].ProductSlug = v.slug
+			}
+		}
+	}
+	return rows.Err()
 }
 
 // BundleByID loads a bundle with items.
@@ -411,6 +499,18 @@ func (r *QARepository) ListFlashSales(ctx context.Context) ([]*domain.FlashSale,
 // SetFlashSaleActive toggles a sale (admin).
 func (r *QARepository) SetFlashSaleActive(ctx context.Context, saleID string, active bool) error {
 	_, err := r.pool.Exec(ctx, `UPDATE flash_sales SET is_active = $2 WHERE id = $1`, saleID, active)
+	return err
+}
+
+// ReturnBuyerOrderSeller resolves the buyer, order and seller of a return
+// request (used for dispute ownership verification).
+func (r *QARepository) ReturnBuyerOrderSeller(ctx context.Context, returnID string, buyerID, orderID, sellerID *string) error {
+	err := r.pool.QueryRow(ctx, `
+		SELECT buyer_id, order_id, seller_id FROM return_requests WHERE id = $1`, returnID).
+		Scan(buyerID, orderID, sellerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
 	return err
 }
 

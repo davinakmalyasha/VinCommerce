@@ -144,7 +144,7 @@ func (r *LiveRepository) AttachProducts(ctx context.Context, sessionID string, v
 
 const liveProductCols = `
 	lp.variant_id, lp.session_id, lp.price_override, lp.pinned_at, lp.unpinned_at,
-	v.product_name, v.name, COALESCE(v.image_url,''), v.price, v.stock`
+	p.name AS product_name, v.name AS variant_name, COALESCE(v.image_url,''), v.price, v.stock`
 
 func scanLiveProduct(row interface{ Scan(...any) error }) (*domain.LiveProduct, error) {
 	var p domain.LiveProduct
@@ -156,8 +156,7 @@ func scanLiveProduct(row interface{ Scan(...any) error }) (*domain.LiveProduct, 
 // Pinned lists products currently pinned on screen for a session.
 func (r *LiveRepository) Pinned(ctx context.Context, sessionID string) ([]*domain.LiveProduct, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT lp.variant_id, lp.session_id, lp.price_override, lp.pinned_at, lp.unpinned_at,
-		       p.name AS product_name, v.name AS variant_name, COALESCE(v.image_url,''), v.price, v.stock
+		SELECT `+liveProductCols+`
 		FROM live_products lp
 		JOIN product_variants v ON v.id = lp.variant_id
 		JOIN products p ON p.id = v.product_id
@@ -172,6 +171,7 @@ func (r *LiveRepository) Catalog(ctx context.Context, sessionID string) ([]*doma
 		SELECT `+liveProductCols+`
 		FROM live_products lp
 		JOIN product_variants v ON v.id = lp.variant_id
+		JOIN products p ON p.id = v.product_id
 		WHERE lp.session_id = $1`, sessionID)
 	return r.collectProducts(rows, err)
 }
@@ -215,9 +215,19 @@ func (r *LiveRepository) Unpin(ctx context.Context, sessionID, variantID string)
 }
 
 // BumpViewer records a viewer join and raises the peak counter.
+// GREATEST keeps peak a true high-water mark instead of accumulating joins.
 func (r *LiveRepository) BumpViewer(ctx context.Context, sessionID string) {
 	_, _ = r.pool.Exec(ctx, `
-		UPDATE live_sessions SET viewer_peak = viewer_peak + 1 WHERE id = $1`, sessionID)
+		UPDATE live_sessions SET
+			viewer_peak = GREATEST(viewer_peak + 1, viewer_count + 1),
+			viewer_count = viewer_count + 1
+		WHERE id = $1`, sessionID)
+}
+
+// DropViewer records a viewer leaving the stream.
+func (r *LiveRepository) DropViewer(ctx context.Context, sessionID string) {
+	_, _ = r.pool.Exec(ctx, `
+		UPDATE live_sessions SET viewer_count = GREATEST(viewer_count - 1, 0) WHERE id = $1`, sessionID)
 }
 
 // TouchStarted ensures started_at is set when streaming begins via SSE too.

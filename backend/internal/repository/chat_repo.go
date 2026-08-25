@@ -29,7 +29,8 @@ func (r *ChatRepository) CreateSession(ctx context.Context, s *domain.ChatSessio
 	return err
 }
 
-// SessionByOrder finds the open seller chat for an order (any participant).
+// SessionByOrder finds the open seller chat for an order, scoped to a
+// participant (the buyer who owns the session or the agent assigned to it).
 func (r *ChatRepository) SessionByOrder(ctx context.Context, orderID, userID string) (*domain.ChatSession, error) {
 	var s domain.ChatSession
 	err := r.pool.QueryRow(ctx, `
@@ -37,7 +38,8 @@ func (r *ChatRepository) SessionByOrder(ctx context.Context, orderID, userID str
 		FROM chat_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.order_id = $1 AND s.type = 'seller' AND s.status = 'open'
-		ORDER BY s.created_at DESC LIMIT 1`, orderID).
+		  AND ($2::uuid IS NULL OR s.user_id = $2::uuid OR s.agent_id = $2::uuid)
+		ORDER BY s.created_at DESC LIMIT 1`, orderID, userID).
 		Scan(&s.ID, &s.UserID, &s.AgentID, &s.Status, &s.Source, &s.CreatedAt, &s.ClosedAt, &s.UserName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound

@@ -10,12 +10,14 @@ import (
 	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/repository"
+	"golang.org/x/sync/singleflight"
 )
 
 // CatalogService implements category, brand and attribute queries.
 type CatalogService struct {
 	categories *repository.CategoryRepository
 	cache      *cache.Store
+	sf         singleflight.Group
 }
 
 // NewCatalogService creates a CatalogService.
@@ -23,17 +25,31 @@ func NewCatalogService(categories *repository.CategoryRepository) *CatalogServic
 	return &CatalogService{categories: categories}
 }
 
-// SetCache enables hot-path caching (5 min TTL).
+// SetCache enables hot-path caching (5 min TTL + jitter).
 func (s *CatalogService) SetCache(c *cache.Store) { s.cache = c }
 
-// Tree returns the full category tree.
+const categoriesCacheKey = "cache:categories"
+
+// Tree returns the full category tree. Concurrent cache misses collapse to a
+// single DB load via singleflight (stampede guard).
 func (s *CatalogService) Tree(ctx context.Context) ([]*domain.Category, error) {
 	if s.cache != nil {
 		var cached []*domain.Category
-		if ok, err := s.cache.Get(ctx, "cache:categories", &cached); err == nil && ok {
+		if ok, err := s.cache.Get(ctx, categoriesCacheKey, &cached); err == nil && ok {
 			return cached, nil
 		}
+		v, err, _ := s.sf.Do(categoriesCacheKey, func() (any, error) {
+			return s.buildTree(ctx)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return v.([]*domain.Category), nil
 	}
+	return s.buildTree(ctx)
+}
+
+func (s *CatalogService) buildTree(ctx context.Context) ([]*domain.Category, error) {
 	flat, err := s.categories.Tree(ctx)
 	if err != nil {
 		return nil, err
@@ -54,7 +70,7 @@ func (s *CatalogService) Tree(ctx context.Context) ([]*domain.Category, error) {
 		}
 	}
 	if s.cache != nil {
-		_ = s.cache.Set(ctx, "cache:categories", roots, 5*time.Minute)
+		_ = s.cache.SetJitter(ctx, categoriesCacheKey, roots, 5*time.Minute)
 	}
 	return roots, nil
 }
@@ -96,6 +112,10 @@ func (s *CatalogService) CreateCategory(ctx context.Context, parentID *string, n
 	}
 	if err := s.categories.Create(ctx, c); err != nil {
 		return nil, err
+	}
+	// Mutations invalidate the cached tree immediately.
+	if s.cache != nil {
+		_ = s.cache.Del(context.WithoutCancel(ctx), categoriesCacheKey)
 	}
 	return c, nil
 }

@@ -28,6 +28,9 @@ type NotificationPref struct {
 
 var prefCategories = []string{
 	"order", "payment", "price_alert", "back_in_stock", "store_new_product", "low_stock", "marketing",
+	// Drift fix: these types were emitted by Notify() but missing from the
+	// category list, making them impossible to mute or see in the prefs UI.
+	"cart_recovery", "moderation", "ticket",
 }
 
 // Preferences lists the user's prefs, materializing defaults for unset categories.
@@ -92,12 +95,46 @@ func (r *NotificationRepository) InAppEnabled(ctx context.Context, userID, categ
 	return on
 }
 
+// EmailEnabled reports whether promo/optional email for a category is
+// allowed. NOTE: defaults to FALSE (matching the prefs UI default) — only
+// genuinely transactional mail (password reset, verification, order/payment
+// status) should bypass this check entirely.
+func (r *NotificationRepository) EmailEnabled(ctx context.Context, userID, category string) bool {
+	var on bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT email FROM notification_prefs WHERE user_id = $1 AND category = $2`,
+		userID, category).Scan(&on)
+	if err != nil {
+		return false // opt-out by default for optional mail
+	}
+	return on
+}
+
 // Create stores a notification for a user.
 func (r *NotificationRepository) Create(ctx context.Context, n *domain.Notification) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO notifications (user_id, type, title, body, data)
 		VALUES ($1, $2, $3, $4, $5)`,
 		n.UserID, n.Type, n.Title, n.Body, n.Data)
+	return err
+}
+
+// CreateMany inserts one notification per user in a single statement.
+func (r *NotificationRepository) CreateMany(ctx context.Context, userIDs []string, ntype, title, body string, data map[string]any) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO notifications (user_id, type, title, body, data)
+		SELECT uid, $2, $3, $4, $5::jsonb FROM unnest($1::uuid[]) AS uid`,
+		userIDs, ntype, title, body, string(payload))
 	return err
 }
 

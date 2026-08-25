@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/vincommerce/backend/internal/domain"
@@ -74,13 +75,16 @@ func (s *ChatService) Queue(ctx context.Context) ([]*domain.ChatSession, error) 
 	return s.chat.OpenSessions(ctx)
 }
 
-// Session loads a session if the user owns it or is staff.
+// Session loads a session if the user participates in it (customer or
+// assigned agent) or is staff.
 func (s *ChatService) Session(ctx context.Context, sessionID, requesterID string, staff bool) (*domain.ChatSession, error) {
 	sess, err := s.chat.SessionByID(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if !staff && sess.UserID != requesterID {
+	isParticipant := sess.UserID == requesterID ||
+		(sess.AgentID != nil && *sess.AgentID == requesterID)
+	if !staff && !isParticipant {
 		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "session does not belong to user")
 	}
 	return sess, nil
@@ -95,6 +99,11 @@ func (s *ChatService) Messages(ctx context.Context, sessionID string) ([]*domain
 func (s *ChatService) SendMessage(ctx context.Context, sessionID, senderID, role, body string) (*domain.ChatMessage, error) {
 	if len([]rune(body)) == 0 {
 		return nil, domain.E(domain.KindInvalid, "MESSAGE_REQUIRED", "message is required")
+	}
+	const maxLen = 2000
+	if len([]rune(body)) > maxLen {
+		return nil, domain.E(domain.KindInvalid, "MESSAGE_TOO_LONG",
+			"message must be at most "+fmt.Sprintf("%d", maxLen)+" characters")
 	}
 	msg := &domain.ChatMessage{
 		SessionID: sessionID, SenderRole: role, SenderID: &senderID, Body: body,

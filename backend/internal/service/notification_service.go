@@ -30,6 +30,33 @@ func (s *NotificationService) Notify(ctx context.Context, userID, ntype, title, 
 	})
 }
 
+// NotifyMany fans out one notification to many users in TWO queries total:
+// a single pref-exclusion lookup and a single INSERT..SELECT FROM unnest.
+// Replaces per-recipient loops (follower fan-out, alert sweeps) that cost
+// 2 round trips per user.
+func (s *NotificationService) NotifyMany(ctx context.Context, userIDs []string, ntype, title, body string, data map[string]any, excluded map[string]bool) (int, error) {
+	if len(userIDs) == 0 {
+		return 0, nil
+	}
+	eligible := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if excluded[id] {
+			continue
+		}
+		if !s.repo.InAppEnabled(ctx, id, ntype) {
+			continue
+		}
+		eligible = append(eligible, id)
+	}
+	if len(eligible) == 0 {
+		return 0, nil
+	}
+	if err := s.repo.CreateMany(ctx, eligible, ntype, title, body, data); err != nil {
+		return 0, err
+	}
+	return len(eligible), nil
+}
+
 // List returns recent notifications, optionally filtered by type.
 func (s *NotificationService) List(ctx context.Context, userID string, limit int, ntype string) ([]*domain.Notification, error) {
 	return s.repo.List(ctx, userID, limit, ntype)

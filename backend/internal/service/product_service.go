@@ -11,10 +11,11 @@ import (
 
 // ProductService implements catalog queries and review flows.
 type ProductService struct {
-	products *repository.ProductRepository
-	reviews  *repository.ReviewRepository
-	orders   *repository.OrderRepository
-	notifs   *NotificationService
+	products         *repository.ProductRepository
+	reviews          *repository.ReviewRepository
+	orders           *repository.OrderRepository
+	notifs           *NotificationService
+	onProductChanged func(ctx context.Context)
 }
 
 // NewProductService creates a ProductService.
@@ -24,6 +25,16 @@ func NewProductService(products *repository.ProductRepository, reviews *reposito
 
 // SetNotificationService enables moderation notifications.
 func (s *ProductService) SetNotificationService(n *NotificationService) { s.notifs = n }
+
+// SetOnProductChanged registers a cache-invalidation callback fired after
+// moderation status changes (wired to recommendation epoch).
+func (s *ProductService) SetOnProductChanged(fn func(ctx context.Context)) { s.onProductChanged = fn }
+
+func (s *ProductService) productChanged(ctx context.Context) {
+	if s.onProductChanged != nil {
+		s.onProductChanged(ctx)
+	}
+}
 
 // ReportProductInput for a buyer's report.
 type ReportProductInput struct {
@@ -76,6 +87,12 @@ func (s *ProductService) ResolveReport(ctx context.Context, reportID, note strin
 	if err := s.products.SetStatus(ctx, product.ID, domain.ProductInactive); err != nil {
 		return err
 	}
+	// Sticky takedown: only staff can lift it (seller SetProductStatus
+	// refuses 'active' while this flag is set).
+	if err := s.products.SetModerationLock(ctx, product.ID, true); err != nil {
+		return err
+	}
+	s.productChanged(ctx)
 	if s.notifs != nil {
 		_ = s.notifs.Notify(ctx, product.SellerID, "moderation", "Produk dinonaktifkan oleh admin",
 			product.Name+" ditarik karena laporan: "+report.Reason, map[string]any{"product_id": product.ID, "product_slug": product.Slug})

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,13 +24,13 @@ func NewGamificationRepository(pool *db.Pool) *GamificationRepository {
 
 // ClaimedCoupon is a coupon a user has claimed to their account.
 type ClaimedCoupon struct {
-	CouponID    string     `json:"coupon_id"`
-	Code        string     `json:"code"`
-	Type        string     `json:"type"`
-	Value       float64    `json:"value"`
-	MinSubtotal float64    `json:"min_subtotal"`
-	StoreName   string     `json:"store_name,omitempty"`
-	ClaimedAt   time.Time  `json:"claimed_at"`
+	CouponID    string    `json:"coupon_id"`
+	Code        string    `json:"code"`
+	Type        string    `json:"type"`
+	Value       float64   `json:"value"`
+	MinSubtotal float64   `json:"min_subtotal"`
+	StoreName   string    `json:"store_name,omitempty"`
+	ClaimedAt   time.Time `json:"claimed_at"`
 }
 
 const couponCols = `id, code, type, value, min_subtotal,
@@ -123,54 +124,67 @@ type CheckInStatus struct {
 	Dates        []string `json:"dates"`
 }
 
-// CheckInStatus loads the check-in dashboard payload.
+// CheckInStatus loads the check-in dashboard payload in a single query:
+// today's flag, the current streak and this month's dates are all derived
+// from one windowed scan of the last year of check-ins.
 func (r *GamificationRepository) CheckInStatus(ctx context.Context, userID string) (*CheckInStatus, error) {
 	st := &CheckInStatus{Dates: []string{}}
 
-	var todayRow bool
-	err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM check_ins WHERE user_id = $1 AND checkin_date = CURRENT_DATE)`,
-		userID).Scan(&todayRow)
+	rows, err := r.pool.Query(ctx, `
+		SELECT to_char(d, 'YYYY-MM-DD'),
+		       EXISTS (
+		           SELECT 1 FROM check_ins ci
+		           WHERE ci.user_id = $1 AND ci.checkin_date = d
+		       ) AS present,
+		       (d = CURRENT_DATE)
+		FROM generate_series(
+		         CURRENT_DATE - INTERVAL '365 days', CURRENT_DATE, INTERVAL '1 day'
+		     ) AS d`, userID)
 	if err != nil {
 		return nil, err
 	}
-	st.CheckedToday = todayRow
+	defer rows.Close()
 
-	// current streak: walk back from today/yesterday
-	base := time.Now().UTC()
-	if !todayRow {
-		base = base.AddDate(0, 0, -1)
+	type day struct {
+		date    string
+		present bool
+		today   bool
 	}
-	for i := 0; i < 365; i++ {
-		d := base.AddDate(0, 0, -i).Format("2006-01-02")
-		var exists bool
-		if err := r.pool.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM check_ins WHERE user_id = $1 AND checkin_date = $2)`,
-			userID, d).Scan(&exists); err != nil {
+	days := make([]day, 0, 366)
+	for rows.Next() {
+		var dd day
+		if err := rows.Scan(&dd.date, &dd.present, &dd.today); err != nil {
 			return nil, err
 		}
-		if !exists {
+		days = append(days, dd)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// walk backwards from today (or yesterday if today is unchecked) counting
+	// the consecutive run — all in memory, zero extra round trips.
+	start := len(days) - 1
+	if start >= 0 && !days[start].present && !days[start].today {
+		start-- // today not checked yet: streak counts back from yesterday
+	}
+	for i := start; i >= 0; i-- {
+		if !days[i].present {
 			break
 		}
 		st.Streak++
 	}
 
-	rows, err := r.pool.Query(ctx, `
-		SELECT to_char(checkin_date, 'YYYY-MM-DD') FROM check_ins
-		WHERE user_id = $1 AND checkin_date >= date_trunc('month', CURRENT_DATE)::date
-		ORDER BY checkin_date`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, err
+	monthPrefix := time.Now().UTC().Format("2006-01")
+	for _, dd := range days {
+		if dd.date == time.Now().UTC().Format("2006-01-02") {
+			st.CheckedToday = dd.present
 		}
-		st.Dates = append(st.Dates, d)
+		if strings.HasPrefix(dd.date, monthPrefix) && dd.present {
+			st.Dates = append(st.Dates, dd.date)
+		}
 	}
-	return st, rows.Err()
+	return st, nil
 }
 
 // CanSpin reports whether the daily free spin is available.

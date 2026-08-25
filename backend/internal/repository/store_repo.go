@@ -67,6 +67,14 @@ func (r *StoreRepository) Create(ctx context.Context, s *domain.Store) error {
 	return nil
 }
 
+// DeleteIfOwner removes a store owned by userID (compensation path for
+// failed onboarding role grants).
+func (r *StoreRepository) DeleteIfOwner(ctx context.Context, storeID, ownerID string) error {
+	_, err := r.pool.Exec(ctx,
+		`DELETE FROM stores WHERE id = $1 AND owner_id = $2`, storeID, ownerID)
+	return err
+}
+
 // ByID fetches a store by id (any status).
 func (r *StoreRepository) ByID(ctx context.Context, storeID string) (*domain.Store, error) {
 	var s domain.Store
@@ -474,10 +482,11 @@ func (r *StoreRepository) CreateReturn(ctx context.Context, req *domain.ReturnRe
 		req.IssueType = "return"
 	}
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO return_requests (id, order_id, order_item_id, buyer_id, seller_id, issue_type, reason, description, evidence_urls)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO return_requests (id, order_id, order_item_id, buyer_id, seller_id, issue_type, reason, description, evidence_urls, status, resolution)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))
 		RETURNING requested_at`,
-		req.ID, req.OrderID, req.OrderItemID, req.BuyerID, req.SellerID, req.IssueType, req.Reason, req.Description, req.EvidenceURLs).
+		req.ID, req.OrderID, req.OrderItemID, req.BuyerID, req.SellerID, req.IssueType,
+		req.Reason, req.Description, req.EvidenceURLs, req.Status, req.Resolution).
 		Scan(&req.RequestedAt)
 	return err
 }
