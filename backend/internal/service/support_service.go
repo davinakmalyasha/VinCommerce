@@ -201,7 +201,9 @@ func (s *SupportService) ReplyMessage(ctx context.Context, ticketID, authorID, a
 			_ = s.support.UpdateTicketStatus(ctx, ticketID, domain.TicketOpen)
 		}
 	}
-	if s.notifications != nil && authorRole == "agent" {
+	// Customer-facing notifications fire ONLY for visible replies — internal
+	// staff notes must never notify or email the customer.
+	if !internal && s.notifications != nil && authorRole == "agent" {
 		t, err := s.support.TicketByID(ctx, ticketID)
 		if err == nil {
 			_ = s.notifications.Notify(ctx, t.UserID, "ticket", "Balasan baru di tiket "+t.TicketNumber,
@@ -209,7 +211,7 @@ func (s *SupportService) ReplyMessage(ctx context.Context, ticketID, authorID, a
 				map[string]any{"ticket_id": ticketID})
 		}
 	}
-	if s.mailer != nil && s.users != nil && authorRole == "agent" {
+	if !internal && s.mailer != nil && s.users != nil && authorRole == "agent" {
 		t, err := s.support.TicketByID(ctx, ticketID)
 		if err == nil {
 			if u, err := s.users.ByID(ctx, t.UserID); err == nil {

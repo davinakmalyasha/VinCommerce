@@ -256,4 +256,3 @@ func (h *AI) Suggest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, res)
 }
-

@@ -14,6 +14,10 @@ import (
 
 var startTime = time.Now()
 
+// Version is the deployed build identifier, injected via
+// -ldflags "-X github.com/vincommerce/backend/internal/httpapi/handler.Version=<sha>".
+var Version = "dev"
+
 // Health holds dependencies for the health endpoints.
 type Health struct {
 	pool  *db.Pool
@@ -49,7 +53,7 @@ func (h *Health) Readiness(w http.ResponseWriter, r *http.Request) {
 	resp := healthResponse{
 		Status:      "ok",
 		Environment: h.cfg.Environment,
-		Version:     "dev",
+		Version:     Version,
 		Uptime:      time.Since(startTime).Round(time.Second).String(),
 		Time:        time.Now().UTC(),
 		RequestID:   middleware.RequestIDFrom(r.Context()),

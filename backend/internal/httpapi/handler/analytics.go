@@ -121,10 +121,28 @@ func (h *Analytics) SellerOrdersCSV(w http.ResponseWriter, r *http.Request) {
 	_ = cw.Write([]string{"order_number", "status", "payment_status", "buyer", "total", "external_payment_ref", "placed_at"})
 	for _, o := range orders {
 		_ = cw.Write([]string{
-			o.OrderNumber, o.Status, o.PaymentStatus, o.SellerName, strconv.FormatFloat(o.TotalAmount, 'f', 2, 64),
-			o.ExternalPaymentRef, o.PlacedAt.Format("2006-01-02 15:04"),
+			escapeCSVCell(o.OrderNumber), escapeCSVCell(o.Status), escapeCSVCell(o.PaymentStatus),
+			escapeCSVCell(o.SellerName), // carries buyer-controlled full_name
+			strconv.FormatFloat(o.TotalAmount, 'f', 2, 64),
+			escapeCSVCell(o.ExternalPaymentRef),
+			o.PlacedAt.Format("2006-01-02 15:04"),
 		})
 	}
+}
+
+// escapeCSVCell neutralizes spreadsheet formula injection: a cell beginning
+// with = + - @ TAB or CR would execute as a formula (e.g. =HYPERLINK/=cmd)
+// when the export is opened in Excel. Prefixing an apostrophe forces
+// text interpretation.
+func escapeCSVCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 func (h *Analytics) writeCSV(w http.ResponseWriter, report *service.Report) {

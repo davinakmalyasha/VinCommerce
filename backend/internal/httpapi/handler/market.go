@@ -48,6 +48,17 @@ func (h *Market) QA(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"questions": items})
 }
 
+// SellerQuestions handles GET /seller/questions (Seller Center Q&A inbox).
+func (h *Market) SellerQuestions(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	items, err := h.svc.SellerQuestions(r.Context(), user.ID, intQuery(r.URL.Query().Get("limit"), 50))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"questions": items})
+}
+
 // Answer handles POST /qa/{id}/answer (seller).
 func (h *Market) Answer(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())

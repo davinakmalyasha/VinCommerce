@@ -492,7 +492,7 @@ func (h *BuyerReturns) Request(w http.ResponseWriter, r *http.Request) {
 	item, err := h.svc.RequestReturn(r.Context(), service.CreateReturnInput{
 		OrderID: req.OrderID, OrderItemID: req.OrderItemID, BuyerID: user.ID,
 		IssueType: req.IssueType,
-		Reason: req.Reason, Description: req.Description, EvidenceURLs: req.EvidenceURLs,
+		Reason:    req.Reason, Description: req.Description, EvidenceURLs: req.EvidenceURLs,
 	})
 	if err != nil {
 		writeErr(w, r, err)

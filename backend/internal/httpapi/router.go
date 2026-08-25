@@ -87,10 +87,17 @@ func NewRouter(deps Dependencies) http.Handler {
 	orderSvc.SetLoyalty(loyaltyRepo)
 	orderSvc.SetWishlist(wishlistRepo)
 	orderSvc.SetInsurancePct(cfg.Payments.ShippingInsurancePct)
-	// payment gateways: sandbox always available; Midtrans when keys configured.
+	// payment gateways: the sandbox adapter is DEV-ONLY (its webhook secret is
+	// public knowledge); Midtrans when keys configured. In production the
+	// sandbox gateway must never exist so forged webhooks fail closed.
+	isDev := cfg.Environment == "" || cfg.Environment == "development"
 	gateways := []payments.Gateway{}
-	if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", "", nil); err == nil {
-		gateways = append(gateways, gw)
+	if isDev {
+		if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", "", nil); err == nil {
+			gateways = append(gateways, gw)
+		}
+	} else if cfg.Payments.Gateway == "sandbox" {
+		logger.Error("payment gateway: refusing sandbox gateway in production")
 	}
 	if cfg.Payments.MidtransServerKey != "" {
 		methods := []string{}
@@ -108,13 +115,17 @@ func NewRouter(deps Dependencies) http.Handler {
 		}
 	}
 	paymentSvc := service.NewPaymentService(paymentRepo, orders, gateways, cfg.Payments.Gateway, cfg.App.BaseURL)
+	paymentSvc.SetSandboxAutoSend(isDev)
 	sellerSvc := service.NewSellerService(stores, users, products, orders, paymentRepo)
 	sellerSvc.SetSessions(sessions)
 	sellerSvc.SetReturnAutoApprove(cfg.Payments.ReturnAutoApproveMax)
+	paymentSvc.SetPayoutGuard(sellerSvc.AssertPayoutEligible)
 	sellerSvc.SetPresenceCache(cache.NewStore(deps.Redis.Client))
 	engagementSvc := service.NewEngagementService(wishlistRepo, products)
 	engagementSvc.SetCache(cache.NewStore(deps.Redis.Client))
 	engagementSvc.SetStores(stores)
+	productSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
+	sellerSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
 	analyticsSvc := service.NewAnalyticsService(analyticsRepo)
 	analyticsSvc.SetOrders(orders)
 	supportSvc := service.NewSupportService(supportRepo, orders)
@@ -163,6 +174,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	paymentSvc.SetNotificationService(notificationSvc)
 	paymentSvc.SetUsers(users)
 	paymentSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
+	marketSvc.SetPaymentService(paymentSvc)
 	sellerSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
 	sellerSvc.SetNotificationService(notificationSvc)
 	supportSvc.SetNotificationService(notificationSvc)
@@ -202,7 +214,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(chimw.RealIP)
-	r.Use(chimw.Timeout(60 * time.Second))
+	r.Use(timeoutExceptStreams(60 * time.Second))
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Compress(5))
 	r.Use(cors.Handler(cors.Options{
@@ -217,8 +229,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(mw.Logging(logger))
 	r.Use(metricsReg.Middleware)
 
-	authMw := mw.Authenticate(tokens)
-	optionalAuthMw := mw.AuthenticateOptional(tokens)
+	authMw := mw.Authenticate(tokens, mw.CachedVerChecker(users, 30*time.Second))
+	optionalAuthMw := mw.AuthenticateOptional(tokens, mw.CachedVerChecker(users, 30*time.Second))
 	auditMw := mw.AuditMiddleware(sessions)
 	flagMw := adminOps.FeatureFlagMiddleware
 
@@ -271,8 +283,10 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Post("/sessions/revoke", auth.RevokeSession)
 				r.Post("/verify-email/request", auth.RequestEmailVerification)
 				r.Post("/verify-email", auth.VerifyEmail)
-				r.Post("/password/reset-request", auth.RequestPasswordReset)
-				r.Post("/password/reset", auth.ResetPassword)
+				r.With(rateLimiter.Limit(3, time.Hour, userKey)).
+					Post("/password/reset-request", auth.RequestPasswordReset)
+				r.With(rateLimiter.Limit(5, time.Minute, userKey)).
+					Post("/password/reset", auth.ResetPassword)
 				r.Post("/password/change", auth.ChangePassword)
 				r.Put("/profile", auth.UpdateProfile)
 				r.Post("/2fa/setup", auth.SetupTOTP)
@@ -321,7 +335,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 
 		r.Route("/payments", func(r chi.Router) {
-			r.Post("/webhook/{gateway}", paymentsH.Webhook)
+			r.With(rateLimiter.Limit(60, time.Minute, ipKey)).
+				Post("/webhook/{gateway}", paymentsH.Webhook)
 			r.Group(func(r chi.Router) {
 				r.Use(authMw)
 				r.Post("/orders/{orderId}/intent", paymentsH.Initiate)
@@ -350,39 +365,46 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/seller", func(r chi.Router) {
 			r.Use(authMw)
+			// Store open/view stay auth-only: that's the buyer→seller
+			// onboarding funnel. Everything else requires the seller role —
+			// ownership checks remain as defense-in-depth beneath this gate.
 			r.Get("/store", seller.MyStore)
 			r.Post("/store", seller.OpenStore)
-			r.Put("/store", seller.UpdateStore)
-			r.Get("/kyc", seller.KYC)
-			r.Post("/kyc", seller.SubmitKYC)
-			r.Get("/dashboard", seller.Dashboard)
-			r.Get("/low-stock", seller.LowStock)
-			r.Get("/analytics", analyticsH.Seller)
-			r.Get("/analytics/export.csv", analyticsH.SellerCSV)
-			r.Get("/orders/export.csv", analyticsH.SellerOrdersCSV)
-			r.Get("/products", seller.Products)
-			r.Get("/reviews", product.SellerReviews)
-			r.Post("/reviews/{id}/reply", product.ReplyReview)
-			r.Post("/products", seller.CreateProduct)
-			r.Post("/products/import", seller.ImportProducts)
-			r.Get("/products/import-template", seller.ImportTemplate)
-			r.Put("/products/{id}", seller.UpdateProduct)
-			r.Post("/products/{id}/status", seller.UpdateProductStatus)
-			r.Post("/stock/{variantId}/adjust", seller.AdjustStock)
-			r.Post("/bundles", marketH.CreateBundle)
-			r.Get("/coupons", seller.SellerCoupons)
-			r.Post("/coupons", seller.CreateSellerCoupon)
-			r.Put("/free-shipping", seller.SetFreeShipping)
-			r.Get("/returns", seller.Returns)
-			r.Get("/orders", ordersH.SellerList)
-			r.Post("/returns/{id}/decide", seller.DecideReturn)
-			r.Post("/orders/{id}/transition", seller.FulfillOrder)
-			r.Get("/live", liveH.MySessions)
-			r.Post("/live", liveH.Create)
-			r.Post("/live/{id}/transition", liveH.Transition)
-			r.Put("/live/{id}/products", liveH.Attach)
-			r.Get("/live/{id}/catalog", liveH.Catalog)
-			r.Post("/live/{id}/pin", liveH.Pin)
+			r.Group(func(r chi.Router) {
+				r.Use(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin))
+				r.Put("/store", seller.UpdateStore)
+				r.Get("/kyc", seller.KYC)
+				r.Post("/kyc", seller.SubmitKYC)
+				r.Get("/dashboard", seller.Dashboard)
+				r.Get("/low-stock", seller.LowStock)
+				r.Get("/analytics", analyticsH.Seller)
+				r.Get("/analytics/export.csv", analyticsH.SellerCSV)
+				r.Get("/orders/export.csv", analyticsH.SellerOrdersCSV)
+				r.Get("/products", seller.Products)
+				r.Get("/questions", marketH.SellerQuestions)
+				r.Get("/reviews", product.SellerReviews)
+				r.Post("/reviews/{id}/reply", product.ReplyReview)
+				r.Post("/products", seller.CreateProduct)
+				r.Post("/products/import", seller.ImportProducts)
+				r.Get("/products/import-template", seller.ImportTemplate)
+				r.Put("/products/{id}", seller.UpdateProduct)
+				r.Post("/products/{id}/status", seller.UpdateProductStatus)
+				r.Post("/stock/{variantId}/adjust", seller.AdjustStock)
+				r.Post("/bundles", marketH.CreateBundle)
+				r.Get("/coupons", seller.SellerCoupons)
+				r.Post("/coupons", seller.CreateSellerCoupon)
+				r.Put("/free-shipping", seller.SetFreeShipping)
+				r.Get("/returns", seller.Returns)
+				r.Get("/orders", ordersH.SellerList)
+				r.Post("/returns/{id}/decide", seller.DecideReturn)
+				r.Post("/orders/{id}/transition", seller.FulfillOrder)
+				r.Get("/live", liveH.MySessions)
+				r.Post("/live", liveH.Create)
+				r.Post("/live/{id}/transition", liveH.Transition)
+				r.Put("/live/{id}/products", liveH.Attach)
+				r.Get("/live/{id}/catalog", liveH.Catalog)
+				r.Post("/live/{id}/pin", liveH.Pin)
+			})
 		})
 
 		r.Route("/returns", func(r chi.Router) {
@@ -408,6 +430,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/users", adminOps.Users)
 			r.Post("/users/{id}/status", adminOps.SetUserStatus)
 			r.Post("/users/{id}/grant-seller", adminOps.GrantSeller)
+			r.Post("/users/{id}/revoke-role", adminOps.RevokeRole)
 			r.Post("/users/{id}/impersonate", adminOps.Impersonate)
 			r.Get("/coupons", adminOps.Coupons)
 			r.Post("/coupons", adminOps.CreateCoupon)
@@ -429,6 +452,8 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/flash-sales/{id}/items", marketH.AddFlashSaleItems)
 			r.Post("/flash-sales/{id}/toggle", marketH.ToggleFlashSale)
 			r.Get("/users/{id}", adminOps.UserDetail)
+			r.Get("/payouts", wallet.AdminPayouts)
+			r.Post("/payouts/{id}/process", wallet.ProcessPayout)
 			r.Get("/disputes", marketH.Disputes)
 			r.Post("/disputes/{id}/resolve", marketH.ResolveDispute)
 			r.Get("/reports", product.AdminReports)
@@ -470,8 +495,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(authMw).Get("/back-in-stock", marketH.BackInStock)
 		r.With(authMw).Delete("/back-in-stock/{id}", marketH.CancelBackInStock)
 		r.With(authMw).Post("/engagement/checkin", marketH.CheckIn)
-		r.With(authMw).Get("/engagement/checkin/status", marketH.CheckInStatus)
-		r.With(authMw).Get("/loyalty", marketH.Loyalty)
+		r.With(authMw, flagMw("games")).Get("/engagement/checkin/status", marketH.CheckInStatus)
+		r.With(authMw, flagMw("loyalty_points")).Get("/loyalty", marketH.Loyalty)
 		r.With(authMw).Get("/referral/code", marketH.Referral)
 		r.With(authMw, flagMw("referrals")).Post("/referral/redeem", marketH.RedeemReferral)
 		r.Get("/vouchers", adminOps.Vouchers)
@@ -517,7 +542,11 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/media", func(r chi.Router) {
 			r.Use(authMw)
-			r.Post("/upload", media.Upload)
+			// Uploads stay open to all authenticated users (buyer avatars,
+			// review photos) but are throttled per-user to prevent the
+			// endpoint becoming a free file host.
+			r.With(rateLimiter.Limit(20, time.Hour, userKey)).
+				Post("/upload", media.Upload)
 		})
 
 		r.Route("/chat", func(r chi.Router) {
@@ -525,7 +554,8 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/sessions", chatH.List)
 			r.Post("/sessions", chatH.Open)
 			r.Get("/sessions/{id}", chatH.Detail)
-			r.Post("/sessions/{id}/messages", chatH.Send)
+			r.With(rateLimiter.Limit(30, time.Minute, userKey)).
+				Post("/sessions/{id}/messages", chatH.Send)
 			r.Post("/sessions/{id}/close", chatH.Close)
 			r.Get("/orders/{orderId}", chatH.SellerChatForOrder)
 			r.Post("/orders/{orderId}", chatH.OpenSellerChat)
@@ -533,11 +563,14 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/ai", func(r chi.Router) {
 			r.Use(authMw)
-			r.With(flagMw("ai_assistant")).Post("/ask", aiH.Ask)
-			r.Post("/review-summary", aiH.ReviewSummary)
-			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin)).
+			r.With(flagMw("ai_assistant"), rateLimiter.Limit(20, time.Minute, userKey)).Post("/ask", aiH.Ask)
+			// review-summary renders on the public product page, so any
+			// authenticated user may call it — the per-user limiter keeps
+			// LLM cost bounded.
+			r.With(rateLimiter.Limit(30, time.Minute, userKey)).Post("/review-summary", aiH.ReviewSummary)
+			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin), rateLimiter.Limit(20, time.Minute, userKey)).
 				Post("/describe-product", aiH.DescribeProduct)
-			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin)).
+			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin), rateLimiter.Limit(20, time.Minute, userKey)).
 				Post("/title-suggest", aiH.TitleSuggestions)
 		})
 
@@ -585,6 +618,22 @@ func NewRouter(deps Dependencies) http.Handler {
 }
 
 func ipKey(r *http.Request) string { return "ip:" + r.RemoteAddr }
+
+// timeoutExceptStreams applies a request timeout to every route EXCEPT the
+// long-lived SSE streams, which would otherwise be killed mid-flight at the
+// deadline (causing reconnect storms).
+func timeoutExceptStreams(d time.Duration) func(http.Handler) http.Handler {
+	inner := chimw.Timeout(d)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if strings.HasPrefix(req.URL.Path, "/api/v1/stream/") {
+				next.ServeHTTP(w, req)
+				return
+			}
+			inner(next).ServeHTTP(w, req)
+		})
+	}
+}
 
 func userKey(r *http.Request) string {
 	if u := mw.UserFrom(r.Context()); u != nil {

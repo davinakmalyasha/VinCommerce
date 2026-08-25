@@ -10,6 +10,7 @@ import (
 	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
 )
+
 // AdminOps exposes coupon, user and feature-flag management.
 type AdminOps struct {
 	svc   *service.SellerService
@@ -63,6 +64,23 @@ func (h *AdminOps) GrantSeller(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"granted": true})
+}
+
+// RevokeRole handles POST /admin/users/{id}/revoke-role.
+func (h *AdminOps) RevokeRole(w http.ResponseWriter, r *http.Request) {
+	admin := middleware.UserFrom(r.Context())
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.RevokeUserRole(r.Context(), admin.ID, chi.URLParam(r, "id"), req.Role); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
 }
 
 // Impersonate handles POST /admin/users/{id}/impersonate — mints a
@@ -203,12 +221,12 @@ func (h *AdminOps) PublicShipping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type opt struct {
-		Code    string  `json:"code"`
-		Name    string  `json:"name"`
-		BaseFee float64 `json:"base_fee"`
+		Code     string  `json:"code"`
+		Name     string  `json:"name"`
+		BaseFee  float64 `json:"base_fee"`
 		PerKgFee float64 `json:"per_kg_fee"`
-		MinDays int     `json:"min_days"`
-		MaxDays int     `json:"max_days"`
+		MinDays  int     `json:"min_days"`
+		MaxDays  int     `json:"max_days"`
 	}
 	out := make([]opt, 0, len(items))
 	for _, m := range items {

@@ -824,6 +824,8 @@ func (s *OrderService) Transition(ctx context.Context, orderID, from, to string,
 
 // ConfirmExternalPayment records an off-platform payment (buyer pays outside
 // the app, e.g. bank transfer), moving the order from pending to paid.
+// The reported amount must match the order total — a mismatching or absent
+// amount is rejected so an order can never be marked paid for less than owed.
 func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) error {
 	o, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
@@ -838,8 +840,15 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 	if strings.TrimSpace(reference) == "" {
 		return domain.E(domain.KindInvalid, "REF_REQUIRED", "external payment reference is required")
 	}
+	if len(strings.TrimSpace(reference)) > 100 {
+		return domain.E(domain.KindInvalid, "REF_TOO_LONG", "external payment reference is too long")
+	}
 	if amount <= 0 {
 		return domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
+	}
+	if absDiff(amount, o.TotalAmount) > 1.0 {
+		return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
+			fmt.Sprintf("reported amount Rp %.2f does not match order total Rp %.2f", amount, o.TotalAmount))
 	}
 	if paidAt.IsZero() {
 		paidAt = time.Now().UTC()
@@ -938,6 +947,29 @@ func (s *OrderService) CancelExpired(ctx context.Context, limit int) (int, error
 		}
 	}
 	return cancelled, nil
+}
+
+// AdvanceShippedOrders marks shipped orders delivered after the carrier
+// window elapses (ghost-buyer sweep). Without this, orders strand in
+// 'shipped' forever and escrow is never released to the seller. COD intents
+// are captured at this point too.
+func (s *OrderService) AdvanceShippedOrders(ctx context.Context, olderThan time.Duration, limit int) (int, error) {
+	ids, err := s.orders.ShippedBefore(ctx, time.Now().UTC().Add(-olderThan), limit)
+	if err != nil {
+		return 0, err
+	}
+	advanced := 0
+	for _, id := range ids {
+		if err := s.orders.TransitionOrder(ctx, id, domain.OrderShipped, domain.OrderDelivered, "system"); err != nil {
+			continue
+		}
+		s.publishOrderEvent(ctx, id, domain.OrderShipped, domain.OrderDelivered)
+		if s.payments != nil {
+			_ = s.payments.CaptureCOD(ctx, id)
+		}
+		advanced++
+	}
+	return advanced, nil
 }
 
 // CompleteDelivered auto-completes delivered orders past the confirmation window.

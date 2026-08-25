@@ -17,15 +17,16 @@ import (
 
 // SellerService implements store onboarding, product management and returns.
 type SellerService struct {
-	stores   *repository.StoreRepository
-	users    *repository.UserRepository
-	products *repository.ProductRepository
-	orders   *repository.OrderRepository
-	payments *repository.PaymentRepository
-	sessions *repository.SessionRepository
-	mailer   *mail.Client
-	webURL   string
-	notifs   *NotificationService
+	stores           *repository.StoreRepository
+	users            *repository.UserRepository
+	products         *repository.ProductRepository
+	orders           *repository.OrderRepository
+	payments         *repository.PaymentRepository
+	sessions         *repository.SessionRepository
+	mailer           *mail.Client
+	webURL           string
+	notifs           *NotificationService
+	onProductChanged func(ctx context.Context)
 
 	returnAutoApproveMax float64
 	presence             *cache.Store
@@ -73,6 +74,16 @@ func (s *SellerService) SetSessions(sess *repository.SessionRepository) { s.sess
 // SetNotificationService enables follower notifications.
 func (s *SellerService) SetNotificationService(n *NotificationService) { s.notifs = n }
 
+// SetOnProductChanged registers a cache-invalidation callback fired after
+// any product create/update/status change (wired to recommendation epoch).
+func (s *SellerService) SetOnProductChanged(fn func(ctx context.Context)) { s.onProductChanged = fn }
+
+func (s *SellerService) productChanged(ctx context.Context) {
+	if s.onProductChanged != nil {
+		s.onProductChanged(ctx)
+	}
+}
+
 // SetMailer enables transactional shipping emails.
 func (s *SellerService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
 
@@ -117,6 +128,32 @@ func (s *SellerService) SetUserStatus(ctx context.Context, userID, status string
 // GrantSellerRole promotes a user to seller (admin).
 func (s *SellerService) GrantSellerRole(ctx context.Context, userID string) error {
 	return s.users.AddRoles(ctx, userID, []string{domain.RoleSeller})
+}
+
+// RevokeUserRole strips a role from a user (admin). Guards:
+//   - 'buyer' is the base identity role and cannot be removed
+//   - an admin cannot revoke roles from themselves
+//   - the last admin can never be demoted (lockout prevention)
+func (s *SellerService) RevokeUserRole(ctx context.Context, adminID, userID, role string) error {
+	switch role {
+	case domain.RoleSeller, domain.RoleAdmin, domain.RoleSupport:
+	case domain.RoleBuyer:
+		return domain.E(domain.KindInvalid, "ROLE_IRREVOCABLE", "buyer is the base role and cannot be revoked")
+	default:
+		return domain.E(domain.KindInvalid, "BAD_ROLE", "unknown role")
+	}
+	if adminID == userID && role == domain.RoleAdmin {
+		return domain.E(domain.KindInvalid, "SELF_DEMOTE", "cannot revoke your own admin role")
+	}
+	if role == domain.RoleAdmin {
+		n, err := s.users.CountRoleHolders(ctx, domain.RoleAdmin)
+		if err == nil && n <= 1 {
+			return domain.E(domain.KindConflict, "LAST_ADMIN", "cannot revoke the last administrator")
+		}
+		// Revoking admin also strips seller/support so no hidden escalation path remains.
+		return s.users.RemoveRoles(ctx, userID, []string{domain.RoleAdmin})
+	}
+	return s.users.RemoveRoles(ctx, userID, []string{role})
 }
 
 // UserDetail returns a user's profile with stats (admin).
@@ -370,15 +407,11 @@ func (s *SellerService) PublicStore(ctx context.Context, slug, userID string) (*
 			store.IsPowerSeller = true
 		}
 	}
-	products, _, err := s.products.ListBySeller(ctx, store.OwnerID, 1, 24)
+	// SQL-level active filter keeps pagination correct (post-load filtering
+	// shrank pages when drafts existed).
+	active, _, err := s.products.ListActiveBySeller(ctx, store.OwnerID, 1, 24)
 	if err != nil {
 		return nil, nil, err
-	}
-	active := products[:0]
-	for _, p := range products {
-		if p.Status == domain.ProductActive {
-			active = append(active, p)
-		}
 	}
 	return store, active, nil
 }
@@ -424,10 +457,12 @@ func (s *SellerService) notifyFollowers(ctx context.Context, storeID, productID,
 	if err != nil || len(followers) == 0 {
 		return
 	}
-	for _, uid := range followers {
-		_ = s.notifs.Notify(ctx, uid, "store_new_product", "Toko favorit punya produk baru! 🛍️",
-			productName, map[string]any{"product_id": productID, "product_slug": productSlug})
-	}
+	// Single batched fan-out: one INSERT for every follower instead of one
+	// round trip per row (popular stores previously inserted thousands of
+	// rows serially inside the request goroutine).
+	_, _ = s.notifs.NotifyMany(ctx, followers, "store_new_product",
+		"Toko favorit punya produk baru! 🛍️", productName,
+		map[string]any{"product_id": productID, "product_slug": productSlug}, nil)
 }
 
 // CreateProduct creates a product (draft) with variants and images.
@@ -475,6 +510,7 @@ func (s *SellerService) CreateProduct(ctx context.Context, in CreateProductInput
 	if err := s.products.CreateWithVariants(ctx, product, variants, images); err != nil {
 		return nil, err
 	}
+	s.productChanged(ctx)
 	return product, nil
 }
 
@@ -519,6 +555,7 @@ func (s *SellerService) UpdateProduct(ctx context.Context, sellerID, productID s
 	if err := s.products.UpdateWithVariants(ctx, existing, variants, images); err != nil {
 		return nil, err
 	}
+	s.productChanged(ctx)
 	return existing, nil
 }
 
@@ -567,7 +604,30 @@ func (s *SellerService) MyStore(ctx context.Context, userID string) (*domain.Sto
 	return s.stores.ByOwner(ctx, userID)
 }
 
+// AssertPayoutEligible enforces the KYC contract promised in the admin UI:
+// withdrawals require an ACTIVE store with APPROVED KYC.
+func (s *SellerService) AssertPayoutEligible(ctx context.Context, userID string) error {
+	store, err := s.stores.ByOwner(ctx, userID)
+	if err != nil {
+		return domain.E(domain.KindForbidden, "NO_STORE", "a store is required to withdraw funds")
+	}
+	if store.Status != domain.StoreActive {
+		return domain.E(domain.KindForbidden, "STORE_NOT_ACTIVE", "store must be approved before withdrawing funds")
+	}
+	kyc, err := s.stores.KYCByStore(ctx, store.ID)
+	if err != nil || kyc == nil {
+		return domain.E(domain.KindForbidden, "KYC_REQUIRED", "complete KYC verification before withdrawing funds")
+	}
+	if kyc.Status != "approved" {
+		return domain.E(domain.KindForbidden, "KYC_NOT_APPROVED",
+			"withdrawals unlock after KYC approval (current status: "+kyc.Status+")")
+	}
+	return nil
+}
+
 // OpenStore registers a pending store and grants the seller role.
+// The grant is compensated away if it fails, so a store can never exist
+// whose owner was never promoted (orphan-store state).
 func (s *SellerService) OpenStore(ctx context.Context, userID, name string) (*domain.Store, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, domain.E(domain.KindInvalid, "NAME_REQUIRED", "store name is required")
@@ -583,7 +643,10 @@ func (s *SellerService) OpenStore(ctx context.Context, userID, name string) (*do
 		return nil, err
 	}
 	if err := s.users.AddRoles(ctx, userID, []string{domain.RoleSeller}); err != nil {
-		return nil, err
+		// Best-effort compensation: don't leave a role-less store behind.
+		_ = s.stores.DeleteIfOwner(ctx, store.ID, userID)
+		return nil, domain.Wrap(domain.KindInternal, "ROLE_GRANT_FAILED",
+			"store could not be opened; please retry", err)
 	}
 	return store, nil
 }
@@ -689,9 +752,16 @@ func (s *SellerService) UpdateProductStatus(ctx context.Context, sellerID, produ
 	default:
 		return domain.E(domain.KindInvalid, "BAD_STATUS", "invalid product status")
 	}
+	// Moderation lock: a staff-taken-down product stays down. Reactivation is
+	// an admin decision (ResolveReport dismiss / unlock), not a seller toggle.
+	if status == domain.ProductActive && s.products.ModerationLocked(ctx, productID) {
+		return domain.E(domain.KindForbidden, "MODERATION_LOCKED",
+			"product was taken down by moderation and cannot be reactivated")
+	}
 	if err := s.products.SetStatus(ctx, productID, status); err != nil {
 		return err
 	}
+	s.productChanged(ctx)
 	if status == domain.ProductActive && product.Status != domain.ProductActive {
 		store, err := s.stores.ByOwner(ctx, sellerID)
 		if err == nil {
@@ -739,9 +809,13 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	}
 
 	status := domain.ReturnRequested
+	resolution := ""
 	// Auto-approve low-value claims (platform policy) to cut response latency.
+	// The resolution MUST be set here — otherwise the later refund step
+	// rejects with NO_REFUND and auto-approved claims dead-end forever.
 	if s.returnAutoApproveMax > 0 && item.Total <= s.returnAutoApproveMax {
 		status = domain.ReturnApproved
+		resolution = "refund"
 	}
 
 	req := &domain.ReturnRequest{
@@ -755,6 +829,7 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 		Description:  strings.TrimSpace(in.Description),
 		EvidenceURLs: in.EvidenceURLs,
 		Status:       status,
+		Resolution:   resolution,
 	}
 	switch in.Reason {
 	case "wrong_item", "defective", "not_as_described", "other":
@@ -763,6 +838,13 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	}
 	if err := s.stores.CreateReturn(ctx, req); err != nil {
 		return nil, err
+	}
+	if s.notifs != nil {
+		title, body := "Retur baru menunggu keputusan", "Pembeli mengajukan retur pada pesanan."
+		if status == domain.ReturnApproved {
+			title, body = "Retur disetujui otomatis", "Klaim bernilai kecil disetujui otomatis — siapkan penggantian barang."
+		}
+		_ = s.notifs.Notify(ctx, req.SellerID, "order", title, body+" ("+req.OrderID+")", map[string]any{"order_id": req.OrderID})
 	}
 	return req, nil
 }
@@ -796,6 +878,11 @@ func (s *SellerService) SellerDecideReturn(ctx context.Context, sellerID, return
 		}
 		s.emailBuyer(ctx, req.OrderID, "return_updated", "Retur disetujui — VinCommerce",
 			map[string]any{"ReturnStatus": "disetujui", "ReturnNote": "Silakan kirim barang kembali."})
+		if s.notifs != nil {
+			_ = s.notifs.Notify(ctx, req.BuyerID, "order", "Retur disetujui",
+				"Penjual menyetujui returanmu. Refund menyusul setelah barang diterima.",
+				map[string]any{"order_id": req.OrderID})
+		}
 		return nil
 	case "rejected":
 		if err := s.stores.SetReturnStatus(ctx, returnID, domain.ReturnRejected, "none", note, "seller_note"); err != nil {
@@ -803,12 +890,20 @@ func (s *SellerService) SellerDecideReturn(ctx context.Context, sellerID, return
 		}
 		s.emailBuyer(ctx, req.OrderID, "return_updated", "Retur ditolak — VinCommerce",
 			map[string]any{"ReturnStatus": "ditolak", "ReturnNote": note})
+		if s.notifs != nil {
+			_ = s.notifs.Notify(ctx, req.BuyerID, "order", "Retur ditolak",
+				"Penjual menolak returanmu. Kamu bisa eskalasi menjadi sengketa.",
+				map[string]any{"order_id": req.OrderID})
+		}
 		return nil
 	}
 	return domain.E(domain.KindInvalid, "BAD_DECISION", "decision must be approved or rejected")
 }
 
 // RefundReturn finalizes a refund after the item is returned (admin).
+// Money movement is ledger-correct: the payment intent is flipped to
+// refunded (guarded), the seller wallet is clawed back when escrow was
+// already released, and the buyer is credited — all in ONE transaction.
 func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note string) error {
 	req, err := s.stores.ReturnByID(ctx, returnID)
 	if err != nil {
@@ -820,22 +915,70 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 	if req.Resolution != "refund" {
 		return domain.E(domain.KindConflict, "NO_REFUND", "return resolution is not a refund")
 	}
-	amount := req.Amount
-	// credit buyer wallet
-	if err := s.payments.WalletTx(ctx, req.BuyerID, "credit", domain.TxReasonRefund, amount, req.OrderID); err != nil {
+	order, err := s.orders.ByID(ctx, req.OrderID)
+	if err != nil {
 		return err
 	}
-	if err := s.orders.SetPaymentStatus(ctx, req.OrderID, domain.PaymentRefunded); err != nil {
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	if err := s.orders.SetStatus(ctx, req.OrderID, domain.OrderReturned); err != nil {
+	defer tx.Rollback(ctx)
+
+	// Claim the return atomically inside the same tx as the money movement:
+	// two concurrent admin clicks cannot double-credit.
+	tag, err := tx.PgTx().Exec(ctx,
+		`UPDATE return_requests SET status = 'refunded', admin_note = NULLIF($2, ''), resolved_at = now(), updated_at = now()
+		 WHERE id = $1 AND status = 'approved' AND resolution = 'refund'`, returnID, note)
+	if err != nil {
 		return err
 	}
-	if err := s.stores.SetReturnStatus(ctx, returnID, domain.ReturnRefunded, "refund", note, "admin_note"); err != nil {
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "ALREADY_REFUNDED", "return was already refunded or is not refundable")
+	}
+
+	intent, ierr := s.payments.IntentByOrder(ctx, req.OrderID)
+	switch {
+	case ierr == nil && (intent.Status == domain.IntentCaptured || intent.Status == domain.IntentReleased):
+		wasReleased := intent.Status == domain.IntentReleased
+		if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+			[]string{domain.IntentCaptured, domain.IntentReleased}, domain.IntentRefunded); err != nil {
+			return err
+		}
+		if wasReleased {
+			// escrow already paid out to the seller — claw the item value back
+			if err := s.payments.WalletTxOn(ctx, tx.PgTx(), req.SellerID, "debit", domain.TxReasonRefund, req.Amount, req.OrderID); err != nil {
+				return err
+			}
+		}
+	case ierr == nil:
+		return domain.E(domain.KindConflict, "INTENT_STATE", "payment intent for this order is not refundable")
+	default:
+		// No intent (legacy/external flows): wallet credit only.
+	}
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), req.BuyerID, "credit", domain.TxReasonRefund, req.Amount, req.OrderID); err != nil {
 		return err
 	}
+	if err := tx.SetPaymentStatus(ctx, req.OrderID, domain.PaymentRefunded); err != nil {
+		return err
+	}
+	if err := tx.AddEvent(ctx, &domain.OrderEvent{
+		OrderID: req.OrderID, FromStatus: order.Status, ToStatus: order.Status,
+		ActorID: nil, Note: fmt.Sprintf("return refund: item value Rp %.0f (%s)", req.Amount, returnID),
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
 	s.emailBuyer(ctx, req.OrderID, "return_updated", "Refund selesai — VinCommerce",
 		map[string]any{"ReturnStatus": "refund", "ReturnNote": "Dana refund telah dikembalikan."})
+	if s.notifs != nil {
+		_ = s.notifs.Notify(ctx, req.BuyerID, "order", "Refund diproses",
+			"Refund untuk returanmu telah dikirim ke dompet.", map[string]any{"order_id": req.OrderID})
+	}
 	return nil
 }
 
@@ -856,6 +999,7 @@ func (s *SellerService) AdminReturns(ctx context.Context, status string) ([]*dom
 // AdminDecideStore approves/suspends/rejects a store (admin).
 func (s *SellerService) AdminDecideStore(ctx context.Context, storeID, decision string) error {
 	label := ""
+	deactivate := false
 	switch decision {
 	case "approve":
 		label = "disetujui"
@@ -867,13 +1011,26 @@ func (s *SellerService) AdminDecideStore(ctx context.Context, storeID, decision 
 		if err := s.stores.SetStatus(ctx, storeID, domain.StoreSuspended); err != nil {
 			return err
 		}
+		deactivate = true
 	case "reject":
 		label = "ditolak"
 		if err := s.stores.SetStatus(ctx, storeID, domain.StoreRejected); err != nil {
 			return err
 		}
+		deactivate = true
 	default:
 		return domain.E(domain.KindInvalid, "BAD_DECISION", "decision must be approve, suspend or reject")
+	}
+	if deactivate {
+		// A suspended/rejected store's catalog must vanish from the storefront
+		// immediately (public queries also filter by store status; this keeps
+		// seller dashboards and counts consistent too).
+		store, err := s.stores.ByID(ctx, storeID)
+		if err == nil {
+			_, _ = s.products.Pool().Exec(ctx,
+				`UPDATE products SET status = 'inactive', updated_at = now()
+				 WHERE seller_id = $1 AND status = 'active'`, store.OwnerID)
+		}
 	}
 	s.emailStoreOwner(ctx, storeID, "store_status", "Status toko diperbarui — VinCommerce",
 		map[string]any{"StoreStatus": label})

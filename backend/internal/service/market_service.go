@@ -23,6 +23,7 @@ type MarketService struct {
 	users    *repository.UserRepository
 	mailer   *mail.Client
 	webURL   string
+	payments *PaymentService
 }
 
 // NewMarketService creates a MarketService.
@@ -86,10 +87,10 @@ func (s *MarketService) CheckInStatus(ctx context.Context, userID string) (*repo
 
 // SpinResult is what the wheel landed on.
 type SpinResult struct {
-	Type   string `json:"type"` // coupon | points
-	Label  string `json:"label"`
+	Type   string         `json:"type"` // coupon | points
+	Label  string         `json:"label"`
 	Coupon *domain.Coupon `json:"coupon,omitempty"`
-	Points int    `json:"points,omitempty"`
+	Points int            `json:"points,omitempty"`
 }
 
 // SpinWheel plays the daily free game: either a prize coupon (auto-claimed)
@@ -161,6 +162,10 @@ func (s *MarketService) SetLoyalty(l *repository.LoyaltyRepository, d *repositor
 	s.disputes = d
 }
 
+// SetPaymentService enables dispute decisions with real money effects
+// (buyer-win full refunds, split settlements).
+func (s *MarketService) SetPaymentService(p *PaymentService) { s.payments = p }
+
 // --- Q&A ---
 
 // AskQuestion posts a buyer question.
@@ -178,6 +183,12 @@ func (s *MarketService) AskQuestion(ctx context.Context, productID, userID, ques
 }
 
 // AnswerQuestion records a seller answer.
+// SellerQuestions lists questions across the seller's products
+// (unanswered first) — the Seller Center Q&A inbox.
+func (s *MarketService) SellerQuestions(ctx context.Context, sellerID string, limit int) ([]*domain.ProductQA, error) {
+	return s.market.QABySeller(ctx, sellerID, limit)
+}
+
 func (s *MarketService) AnswerQuestion(ctx context.Context, qaID, sellerID, answer string) (*domain.ProductQA, error) {
 	ok, err := s.market.QASeller(ctx, qaID, sellerID)
 	if err != nil {
@@ -383,16 +394,20 @@ func (s *MarketService) RedeemReferral(ctx context.Context, newUserID, code stri
 
 // --- disputes ---
 
-// OpenDispute escalates a return into a platform dispute.
+// OpenDispute escalates a return into a platform dispute. Only the buyer who
+// owns the return may open a dispute on it.
 func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subject, description string) (*domain.Dispute, error) {
 	if s.disputes == nil {
 		return nil, domain.E(domain.KindConflict, "UNAVAILABLE", "disputes unavailable")
 	}
-	// resolve return details
-	var orderID, sellerID string
-	err := s.market.ReturnOrderSeller(ctx, returnID, &orderID, &sellerID)
+	// resolve return details and verify ownership
+	var buyerID, orderID, sellerID string
+	err := s.market.ReturnBuyerOrderSeller(ctx, returnID, &buyerID, &orderID, &sellerID)
 	if err != nil {
 		return nil, err
+	}
+	if buyerID != userID {
+		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "return does not belong to user")
 	}
 	d := &domain.Dispute{
 		ID: uuid.NewString(), ReturnID: &returnID, OrderID: orderID,
@@ -409,15 +424,34 @@ func (s *MarketService) Disputes(ctx context.Context, status string) ([]*domain.
 	return s.disputes.ListByStatus(ctx, status)
 }
 
-// ResolveDispute decides a dispute (admin).
+// ResolveDispute decides a dispute (admin). Decisions carry REAL money
+// effects: "buyer" triggers a full refund through the escrow pipeline;
+// "split" credits the buyer half from the platform wallet; "seller"/"none"
+// move nothing.
 func (s *MarketService) ResolveDispute(ctx context.Context, disputeID, decision, note string) error {
 	switch decision {
 	case "buyer", "seller", "split", "none":
 	default:
 		return domain.E(domain.KindInvalid, "BAD_DECISION", "decision must be buyer, seller, split or none")
 	}
+	d, err := s.disputes.DisputeByID(ctx, disputeID)
+	if err != nil {
+		return err
+	}
 	if err := s.disputes.Resolve(ctx, disputeID, decision, note); err != nil {
 		return err
+	}
+	if s.payments != nil {
+		switch decision {
+		case "buyer":
+			if err := s.payments.RefundOrder(ctx, d.OrderID, "dispute resolution: buyer wins ("+disputeID+")", true); err != nil {
+				return err
+			}
+		case "split":
+			if err := s.payments.DisputeSplitCredit(ctx, d.OrderID); err != nil {
+				return err
+			}
+		}
 	}
 	s.emailDisputeOutcome(ctx, disputeID, decision)
 	return nil
