@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
+import { useDebouncedValue } from '../lib/useDebouncedValue'
 import { useSession } from '../stores/session'
 import { formatIDR } from '../lib/format'
 import type { Address } from '../types'
@@ -88,19 +89,28 @@ export function CheckoutPage() {
 
   const quoteEnabled = !!user && !paidOrder
 
-  const { data: quote } = useQuery({
-    queryKey: ['quote', coupon, shippingMethod, insurance, pointsInput],
+  // Debounce free-text inputs: without it every keystroke fires a
+  // POST /checkout/quote and thrashes the pricing engine.
+  const debCoupon = useDebouncedValue(coupon, 450)
+  const debPoints = useDebouncedValue(pointsInput, 450)
+
+  const {
+    data: quote,
+    isError: quoteError,
+  } = useQuery({
+    queryKey: ['quote', debCoupon, shippingMethod, insurance, debPoints],
     queryFn: async () =>
       (
         await api.post<Quote>('/checkout/quote', {
-          coupon_code: coupon || undefined,
+          coupon_code: debCoupon || undefined,
           shipping_method_code: shippingMethod,
           insurance,
-          points_to_redeem: pointsInput || undefined,
+          points_to_redeem: debPoints || undefined,
         })
       ).data,
     enabled: quoteEnabled,
     retry: false,
+    placeholderData: (prev) => prev, // keep last good totals while refetching
   })
 
   const placeOrder = useMutation({
@@ -372,6 +382,11 @@ export function CheckoutPage() {
           <span>Total</span>
           <span className="text-amber-600">{formatIDR(quote?.total ?? 0)}</span>
         </div>
+        {quoteError && (
+          <p className="text-xs text-red-600 bg-red-50 dark:bg-red-950/40 rounded-lg p-2.5">
+            Gagal memuat ringkasan pembayaran. Periksa koneksi lalu coba lagi sebelum memesan.
+          </p>
+        )}
         {quote?.insurance_available && (
           <label className="flex items-center justify-between text-xs bg-blue-50 dark:bg-blue-900/20 rounded-lg p-2.5 cursor-pointer">
             <span className="flex items-center gap-2">
@@ -403,7 +418,10 @@ export function CheckoutPage() {
         {error && <p className="text-sm text-red-600">{error}</p>}
         <button
           onClick={() => placeOrder.mutate()}
-          disabled={placeOrder.isPending}
+          // Never place an order against a failed/stale quote — the displayed
+          // total must be real. quoteFetching keeps the button live during
+          // background refreshes (placeholderData holds the previous quote).
+          disabled={placeOrder.isPending || !quote || quoteError}
           className="w-full py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
         >
           {placeOrder.isPending ? 'Memproses...' : 'Buat Pesanan'}
@@ -418,6 +436,13 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
   const [form, setForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [done, setDone] = useState(false)
   const [err, setErr] = useState('')
+  const [showExternal, setShowExternal] = useState(false)
+
+  const refreshOrder = () => {
+    queryClient.invalidateQueries({ queryKey: ['order', order.id] })
+    queryClient.invalidateQueries({ queryKey: ['orders'] })
+    queryClient.invalidateQueries({ queryKey: ['cart'] })
+  }
 
   const confirm = useMutation({
     mutationFn: async () =>
@@ -428,15 +453,40 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
       }),
     onSuccess: () => {
       setDone(true)
-      queryClient.invalidateQueries({ queryKey: ['cart'] })
+      refreshOrder()
     },
     onError: (e: Error) => setErr(e.message),
   })
 
   const snapPay = useMutation({
     mutationFn: async () => payWithSnap(order.id, { onSuccess: () => setDone(true) }),
+    onSuccess: () => refreshOrder(),
     onError: (e: Error) => setErr(e.message),
   })
+
+  // Wallet balance payment: instant capture from stored saldo.
+  const walletPay = useMutation({
+    mutationFn: async () =>
+      api.post(`/payments/orders/${order.id}/intent`, { method: 'wallet' }),
+    onSuccess: () => {
+      setDone(true)
+      refreshOrder()
+    },
+    onError: (e: Error) => setErr(e.message),
+  })
+
+  // COD: pay cash on delivery — seller fulfills immediately.
+  const codPay = useMutation({
+    mutationFn: async () =>
+      api.post(`/payments/orders/${order.id}/intent`, { method: 'cod' }),
+    onSuccess: () => {
+      setDone(true)
+      refreshOrder()
+    },
+    onError: (e: Error) => setErr(e.message),
+  })
+
+  const busy = walletPay.isPending || codPay.isPending || snapPay.isPending
 
   return (
     <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
@@ -445,7 +495,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
         <p className="font-bold text-sm text-amber-600">{formatIDR(order.total_amount)}</p>
       </div>
       {done ? (
-        <p className="text-sm text-green-700">✅ Pembayaran tercatat. Penjual akan memproses pesananmu.</p>
+        <p className="text-sm text-green-700">✅ Metode pembayaran tercatat. Penjual akan memproses pesananmu.</p>
       ) : (
         <>
           {order.placed_at && (
@@ -453,44 +503,73 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
               <PaymentCountdown placedAt={order.placed_at} />
             </div>
           )}
-          {midtransEnabled() && (
+          {/* Payment method picker — every backend method is reachable */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+            {midtransEnabled() && (
+              <button
+                onClick={() => snapPay.mutate()}
+                disabled={busy}
+                className="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {snapPay.isPending ? 'Membuka...' : '⚡ Midtrans'}
+              </button>
+            )}
             <button
-              onClick={() => snapPay.mutate()}
-              disabled={snapPay.isPending}
-              className="mb-2 w-full px-4 py-2 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+              onClick={() => walletPay.mutate()}
+              disabled={busy}
+              className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
             >
-              {snapPay.isPending ? 'Membuka Midtrans...' : '⚡ Bayar via Midtrans (QRIS / e-wallet / VA / kartu)'}
+              {walletPay.isPending ? 'Memproses...' : '💰 Saldo Wallet'}
             </button>
-          )}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <input
-              value={form.reference}
-              onChange={(e) => setForm({ ...form, reference: e.target.value })}
-              placeholder="No. referensi / bukti transfer"
-              className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
-            />
-            <input
-              type="number"
-              value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              placeholder={`Jumlah (Rp ${Math.round(order.total_amount).toLocaleString('id-ID')})`}
-              className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
-            />
-            <input
-              type="date"
-              value={form.paid_at}
-              onChange={(e) => setForm({ ...form, paid_at: e.target.value })}
-              className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
-            />
+            <button
+              onClick={() => codPay.mutate()}
+              disabled={busy}
+              className="px-3 py-2 rounded-lg bg-violet-600 text-white text-xs font-medium hover:bg-violet-700 disabled:opacity-50"
+            >
+              {codPay.isPending ? 'Memproses...' : '💵 COD'}
+            </button>
+            <button
+              onClick={() => setShowExternal(!showExternal)}
+              className={`px-3 py-2 rounded-lg text-xs font-medium border ${
+                showExternal ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-300 hover:bg-white'
+              }`}
+            >
+              🏦 Transfer Manual
+            </button>
           </div>
+          {showExternal && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input
+                  value={form.reference}
+                  onChange={(e) => setForm({ ...form, reference: e.target.value })}
+                  placeholder="No. referensi / bukti transfer"
+                  className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                />
+                <input
+                  type="number"
+                  value={form.amount}
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                  placeholder={`Jumlah (Rp ${Math.round(order.total_amount).toLocaleString('id-ID')})`}
+                  className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                />
+                <input
+                  type="date"
+                  value={form.paid_at}
+                  onChange={(e) => setForm({ ...form, paid_at: e.target.value })}
+                  className="px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                />
+              </div>
+              <button
+                onClick={() => confirm.mutate()}
+                disabled={confirm.isPending || !form.reference.trim() || !form.amount}
+                className="mt-2 px-4 py-2 rounded-lg bg-gray-900 text-white text-xs hover:bg-gray-800 disabled:opacity-50"
+              >
+                {confirm.isPending ? 'Mencatat...' : 'Saya Sudah Bayar'}
+              </button>
+            </>
+          )}
           {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
-          <button
-            onClick={() => confirm.mutate()}
-            disabled={confirm.isPending || !form.reference.trim() || !form.amount}
-            className="mt-2 px-4 py-2 rounded-lg bg-gray-900 text-white text-xs hover:bg-gray-800 disabled:opacity-50"
-          >
-            {confirm.isPending ? 'Mencatat...' : 'Saya Sudah Bayar'}
-          </button>
         </>
       )}
     </div>

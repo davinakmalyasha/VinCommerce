@@ -19,7 +19,7 @@ export function CartPage() {
   const { user } = useSession()
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  const { data: cartData } = useQuery({
+  const { data: cartData, isLoading } = useQuery({
     queryKey: ['cart'],
     queryFn: async () => {
       const res = (await api.get<{ lines: CartLine[]; free_shipping?: FreeShippingInfo[] }>('/cart')).data
@@ -56,6 +56,14 @@ export function CartPage() {
       queryClient.invalidateQueries({ queryKey: ['wishlist'] })
     },
   })
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-20 text-center">
+        <p className="text-gray-400 animate-pulse">Memuat keranjang...</p>
+      </div>
+    )
+  }
 
   if (!lines || lines.length === 0) {
     return (

@@ -44,7 +44,10 @@ interface QA {
 }
 
 function JsonLd({ data }: { data: Record<string, unknown> }) {
-  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />
+  // Escape "<" so seller-controlled text (name/description) can't break out
+  // of the ld+json <script> element via "</script><script>...".
+  const json = JSON.stringify(data).replace(/</g, '\\u003c')
+  return <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: json }} />
 }
 
 export function ProductPage() {
@@ -245,6 +248,10 @@ export function ProductPage() {
     },
   })
 
+  // Mount-stable idempotency key (same pattern as CheckoutPage): retries and
+  // double-clicks reuse ONE key so the backend can dedupe order creation.
+  const [buyNowIdemKey] = useState(() => crypto.randomUUID())
+
   const buyNow = useMutation({
     mutationFn: async () => {
       if (!variantId || !user) throw new Error('Pilih varian dulu')
@@ -252,7 +259,7 @@ export function ProductPage() {
         await api.post<{ orders: { id: string }[] }>(
           '/checkout/buy-now',
           { variant_id: variantId, quantity: qty },
-          { headers: { 'X-Idempotency-Key': `buynow-${variantId}-${Date.now()}` } },
+          { headers: { 'X-Idempotency-Key': buyNowIdemKey } },
         )
       ).data
     },
@@ -268,6 +275,7 @@ export function ProductPage() {
       await api.post(`/wishlist/items/${variantId}`)
     },
     onSuccess: () => setNotice('Disimpan ke wishlist!'),
+    onError: (e: Error) => setNotice(e.message),
   })
 
   if (!data) {
@@ -476,13 +484,15 @@ export function ProductPage() {
           <div className="flex items-center gap-3">
             <div className="flex items-center border rounded-lg">
               <button
+                type="button"
+                aria-label="Kurangi jumlah"
                 onClick={() => setQty(Math.max(1, qty - 1))}
                 className="px-3 py-2 text-gray-500 hover:text-gray-900"
               >
-                âˆ’
+                −
               </button>
               <span className="w-10 text-center">{qty}</span>
-              <button onClick={() => setQty(qty + 1)} className="px-3 py-2 text-gray-500 hover:text-gray-900">
+              <button type="button" aria-label="Tambah jumlah" onClick={() => setQty(qty + 1)} className="px-3 py-2 text-gray-500 hover:text-gray-900">
                 +
               </button>
             </div>

@@ -113,6 +113,7 @@ export function AdminAudit() {
 export function AdminCommission() {
   const [pct, setPct] = useState('')
   const [fixed, setFixed] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const { data } = useQuery({
     queryKey: ['admin-commission'],
@@ -120,8 +121,18 @@ export function AdminCommission() {
   })
 
   const save = async () => {
-    await api.put('/admin/commission', { pct: Number(pct || data?.pct), fixed: Number(fixed || data?.fixed || 0) })
-    alert('Komisi diperbarui')
+    // Busy-guard + error feedback: this is a money-affecting setting, so
+    // double submits and silent failures are both unacceptable.
+    if (saving) return
+    setSaving(true)
+    try {
+      await api.put('/admin/commission', { pct: Number(pct || data?.pct), fixed: Number(fixed || data?.fixed || 0) })
+      alert('Komisi diperbarui')
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Gagal menyimpan komisi')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -129,20 +140,20 @@ export function AdminCommission() {
       <h1 className="text-xl font-bold">Komisi Platform</h1>
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-6 space-y-3">
         <p className="text-sm text-gray-500">
-          Komisi dipotong dari escrow saat pesanan selesai: penjual menerima (total âˆ’ komisi), sisanya masuk dompet platform.
+          Komisi dipotong dari escrow saat pesanan selesai: penjual menerima (total − komisi), sisanya masuk dompet platform.
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-sm font-medium block mb-1">Persen (%)</label>
-            <input type="number" value={pct || data?.pct} onChange={(e) => setPct(e.target.value)} className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800" />
+            <input type="number" min={0} value={pct || data?.pct} onChange={(e) => setPct(e.target.value)} className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800" />
           </div>
           <div>
             <label className="text-sm font-medium block mb-1">Biaya tetap (Rp)</label>
-            <input type="number" value={fixed || data?.fixed} onChange={(e) => setFixed(e.target.value)} className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800" />
+            <input type="number" min={0} value={fixed || data?.fixed} onChange={(e) => setFixed(e.target.value)} className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800" />
           </div>
         </div>
-        <button onClick={save} className="px-6 py-3 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm font-medium">
-          Simpan
+        <button onClick={save} disabled={saving} className="px-6 py-3 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm font-medium disabled:opacity-50">
+          {saving ? 'Menyimpan...' : 'Simpan'}
         </button>
         <p className="text-xs text-gray-400">
           Saat ini: {data?.pct}% + Rp {data?.fixed} per transaksi

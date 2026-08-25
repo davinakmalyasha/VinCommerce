@@ -10,6 +10,7 @@ export function ResetPasswordPage() {
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [done, setDone] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   const submit = async () => {
     if (password.length < 8) {
@@ -20,12 +21,16 @@ export function ResetPasswordPage() {
       setError('Konfirmasi kata sandi tidak cocok.')
       return
     }
+    if (submitting) return
+    setSubmitting(true)
     try {
       await api.post('/auth/password/reset', { token, new_password: password })
       setDone(true)
       setTimeout(() => navigate('/login'), 2500)
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -45,6 +50,7 @@ export function ResetPasswordPage() {
             <div className="space-y-3">
               <input
                 type="password"
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Kata sandi baru (min. 8 karakter)"
@@ -52,6 +58,7 @@ export function ResetPasswordPage() {
               />
               <input
                 type="password"
+                autoComplete="new-password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 placeholder="Ulangi kata sandi baru"
@@ -60,9 +67,10 @@ export function ResetPasswordPage() {
               {error && <p className="text-sm text-red-600">{error}</p>}
               <button
                 onClick={submit}
-                className="w-full py-2.5 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600"
+                disabled={submitting}
+                className="w-full py-2.5 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
               >
-                Simpan Kata Sandi
+                {submitting ? 'Menyimpan...' : 'Simpan Kata Sandi'}
               </button>
             </div>
           </>

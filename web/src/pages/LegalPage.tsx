@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
+import { useMemo } from 'react'
 import { api } from '../lib/api'
 import type { HelpArticle } from '../types'
+import { sanitizeHtml } from '../lib/sanitize'
 
 // Legal and static pages rendered from admin-editable seeded articles.
 const SLUGS: Record<string, string> = {
@@ -26,6 +28,8 @@ export function LegalPage({ page }: { page: keyof typeof SLUGS }) {
     queryFn: async () => (await api.get<{ article: HelpArticle }>(`/help/articles/${slug}`)).data.article,
   })
 
+  const safeContent = useMemo(() => sanitizeHtml(data?.content ?? ''), [data?.content])
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <Link to="/docs" className="text-sm text-gray-400 hover:text-gray-700">← Dokumentasi</Link>
@@ -33,7 +37,7 @@ export function LegalPage({ page }: { page: keyof typeof SLUGS }) {
       {data ? (
         <div
           className="prose prose-sm prose-gray max-w-none bg-white border border-gray-200 rounded-2xl p-8"
-          dangerouslySetInnerHTML={{ __html: data.content }}
+          dangerouslySetInnerHTML={{ __html: safeContent }}
         />
       ) : (
         <p className="text-gray-500 text-sm">Dokumen sedang disiapkan.</p>

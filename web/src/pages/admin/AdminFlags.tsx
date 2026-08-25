@@ -9,11 +9,15 @@ interface Flag {
   updated_at: string
 }
 
+// Mirrors the flags seeded by cmd/seed — keys here MUST match the enforced
+// flagMw("key") call sites in the backend router exactly.
 const DEFAULT_FLAGS: { key: string; description: string }[] = [
-  { key: 'flash_sale', description: 'Aktifkan program Flash Sale' },
-  { key: 'recommendations', description: 'Tampilkan rekomendasi produk di beranda' },
-  { key: 'checkout_coupons', description: 'Izinkan pemakaian kupon saat checkout' },
-  { key: 'new_checkout', description: 'Gerbang versi checkout baru' },
+  { key: 'flash_sales', description: 'Aktifkan program Flash Sale' },
+  { key: 'referrals', description: 'Program referral (bonus kode)' },
+  { key: 'loyalty_points', description: 'Poin loyalitas (earned & spend)' },
+  { key: 'ai_assistant', description: 'Asisten AI di chat widget' },
+  { key: 'games', description: 'Bonus Center (check-in & roda hadiah)' },
+  { key: 'live_commerce', description: 'Live shopping' },
 ]
 
 export function AdminFlags() {

@@ -26,6 +26,7 @@ export function VouchersPage() {
   const queryClient = useQueryClient()
   const [code, setCode] = useState('')
   const [msg, setMsg] = useState('')
+  const [msgOk, setMsgOk] = useState(false)
 
   const { data } = useQuery({
     queryKey: ['vouchers'],
@@ -38,14 +39,20 @@ export function VouchersPage() {
   })
 
   const claimByCode = useMutation({
-    mutationFn: async () =>
-      (await api.post<{ coupon: { code: string } }>('/vouchers/claim', { code })).data,
+    // Accept the code explicitly so the voucher-list buttons claim THEIR code
+    // (not whatever happens to sit in the search input).
+    mutationFn: async (claimCode: string) =>
+      (await api.post<{ coupon: { code: string } }>('/vouchers/claim', { code: claimCode })).data,
     onSuccess: (res) => {
       setMsg(`Kupon ${res.coupon.code} berhasil diklaim! 🎉`)
+      setMsgOk(true)
       setCode('')
       queryClient.invalidateQueries({ queryKey: ['voucher-claims'] })
     },
-    onError: (e: Error) => setMsg(e.message),
+    onError: (e: Error) => {
+      setMsg(e.message)
+      setMsgOk(false)
+    },
   })
 
   return (
@@ -65,18 +72,18 @@ export function VouchersPage() {
             className="flex-1 px-4 py-2.5 border rounded-xl text-sm uppercase outline-none focus:border-amber-400"
           />
           <button
-            onClick={() => claimByCode.mutate()}
+            onClick={() => claimByCode.mutate(code.trim())}
             disabled={claimByCode.isPending || !code.trim()}
             className="px-6 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
           >
             {claimByCode.isPending ? 'Mengklaim...' : 'Klaim'}
           </button>
         </div>
-        {msg && <p className={`text-xs mt-2 ${msg.includes('🎉') ? 'text-green-600' : 'text-red-600'}`}>{msg}</p>}
+        {msg && <p className={`text-xs mt-2 ${msgOk ? 'text-green-600' : 'text-red-600'}`}>{msg}</p>}
       </section>
 
       <section className="space-y-3">
-        <h2 className="font-bold">🎟️ Kuponsaya ({claims?.length ?? 0})</h2>
+        <h2 className="font-bold">🎟️ Kupon Saya ({claims?.length ?? 0})</h2>
         {claims?.length === 0 && (
           <p className="text-sm text-gray-500">Belum ada kupon terklaim — klaim dari daftar di bawah!</p>
         )}
@@ -114,7 +121,7 @@ export function VouchersPage() {
                   {v.valid_until && <p className="text-xs text-gray-400">Berlaku s/d {v.valid_until.slice(0, 10)}</p>}
                 </div>
                 <button
-                  onClick={() => claimByCode.mutate()}
+                  onClick={() => claimByCode.mutate(v.code)}
                   disabled={claimed || claimByCode.isPending}
                   className={`px-4 py-2.5 rounded-xl text-sm font-medium shrink-0 ${
                     claimed

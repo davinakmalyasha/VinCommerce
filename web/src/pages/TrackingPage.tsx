@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../lib/format'
 
@@ -13,15 +14,53 @@ interface TrackingEvent {
 
 export function TrackingPage() {
   const { number } = useParams()
+  const navigate = useNavigate()
+  const [lookup, setLookup] = useState('')
 
-  const { data } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['tracking', number],
     queryFn: async () =>
       (await api.get<{ order: { order_number: string; status: string; total_amount: number; shipping_method?: string; tracking_number?: string; carrier?: string; seller?: { name: string } }; events: TrackingEvent[] }>(`/orders/tracking/${number}`))
         .data,
+    retry: false,
+    enabled: !!number,
   })
 
-  if (!data) {
+  if (!number || isError) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-10">
+        <Link to="/" className="text-sm text-gray-400 hover:text-gray-700">← Beranda</Link>
+        <h1 className="text-2xl font-extrabold mt-3 mb-1">Lacak Pesanan</h1>
+        <p className="text-gray-500 text-sm mb-6">
+          Masukkan nomor pesanan yang diterima lewat email. Lacak status secara publik.
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (lookup.trim()) navigate(`/tracking/${encodeURIComponent(lookup.trim().toUpperCase())}`)
+          }}
+          className="flex gap-2"
+        >
+          <input
+            value={lookup}
+            onChange={(e) => setLookup(e.target.value)}
+            placeholder="Contoh: VC-20260824-0001"
+            className="flex-1 px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+          />
+          <button
+            type="submit"
+            disabled={!lookup.trim()}
+            className="px-6 py-3 rounded-xl bg-amber-500 text-white text-sm font-medium disabled:opacity-50"
+          >
+            Lacak
+          </button>
+        </form>
+        {isError && <p className="text-sm text-red-600 mt-3">Pesanan tidak ditemukan. Periksa kembali nomornya.</p>}
+      </div>
+    )
+  }
+
+  if (!data || isLoading) {
     return <div className="mx-auto max-w-2xl px-4 py-16 text-center text-gray-500">Melacak pesanan...</div>
   }
 

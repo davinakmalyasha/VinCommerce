@@ -6,6 +6,7 @@ import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../
 import { ReturnModal } from './ReturnModal'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
 import { FileUpload } from '../components/FileUpload'
+import { OrderChat } from '../components/OrderChat'
 import { PaymentCountdown, usePaymentDeadline } from '../components/PaymentCountdown'
 import { paymentMethodLabel } from '../lib/format'
 
@@ -18,6 +19,7 @@ interface OrderEvent {
 }
 
 interface OrderDetail extends Record<string, unknown> {
+  id: string
   order_number: string
   status: string
   payment_status: string
@@ -295,6 +297,8 @@ export function OrderDetailPage() {
 
       {events && events.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-xl p-5">
+          <OrderChat orderId={data.id} status={data.status} />
+
           <h2 className="font-bold text-sm mb-4">Riwayat Pesanan</h2>
           <div className="space-y-0">
             {events.map((e, i) => (
