@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/vincommerce/backend/internal/db"
@@ -296,10 +295,12 @@ func (r *SupportRepository) TicketsByUser(ctx context.Context, userID string) ([
 // TicketsByStatus lists tickets by status (staff queue).
 func (r *SupportRepository) TicketsByStatus(ctx context.Context, status string) ([]*domain.SupportTicket, error) {
 	where := `t.status <> 'closed'`
+	var arg any
 	if status != "" && status != "all" {
-		where = `t.status = '` + strings.ReplaceAll(status, "'", "") + `'`
+		where = `t.status = $1`
+		arg = status
 	}
-	return r.tickets(ctx, `WHERE `+where, nil)
+	return r.tickets(ctx, `WHERE `+where, arg)
 }
 
 func (r *SupportRepository) tickets(ctx context.Context, where string, arg any) ([]*domain.SupportTicket, error) {

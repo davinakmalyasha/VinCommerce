@@ -93,10 +93,17 @@ func (h *Payments) Refund(w http.ResponseWriter, r *http.Request) {
 }
 
 // Intent handles GET /payments/orders/{orderId}/intent.
+// Ownership-gated: payment intents carry Snap tokens and buyer metadata, so
+// only the buyer (or staff) may read them.
 func (h *Payments) Intent(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
 	intent, err := h.svc.IntentForOrder(r.Context(), chi.URLParam(r, "orderId"))
 	if err != nil {
 		writeErr(w, r, err)
+		return
+	}
+	if intent.BuyerID != user.ID && !user.HasRole(domain.RoleAdmin) && !user.HasRole(domain.RoleSupport) {
+		writeErr(w, r, domain.E(domain.KindForbidden, "NOT_OWNED", "intent does not belong to user"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"intent": intent})
@@ -210,4 +217,33 @@ func (h *Wallet) RequestPayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"payout": payout})
+}
+
+// AdminPayouts handles GET /admin/payouts?status=pending (ops queue).
+func (h *Wallet) AdminPayouts(w http.ResponseWriter, r *http.Request) {
+	items, err := h.svc.AdminPayouts(r.Context(), r.URL.Query().Get("status"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"payouts": items})
+}
+
+type processPayoutRequest struct {
+	Action    string `json:"action"` // sent | failed
+	Reference string `json:"reference,omitempty"`
+}
+
+// ProcessPayout handles POST /admin/payouts/{id}/process.
+func (h *Wallet) ProcessPayout(w http.ResponseWriter, r *http.Request) {
+	var req processPayoutRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.ProcessPayout(r.Context(), chi.URLParam(r, "id"), req.Action, req.Reference); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"processed": true})
 }

@@ -69,6 +69,13 @@ func (s *OAuthService) HandleCallback(ctx context.Context, code string) (*Tokens
 	if profile.Email == "" {
 		return nil, domain.E(domain.KindUnauthenticated, "OAUTH_NO_EMAIL", "google account has no email")
 	}
+	// Refuse unverified Google emails: an attacker can attach someone else's
+	// address as an UNVERIFIED secondary email on their own Google account,
+	// then use this flow to take over the matching local account.
+	if !profile.EmailVerified {
+		return nil, domain.E(domain.KindUnauthenticated, "OAUTH_EMAIL_UNVERIFIED",
+			"google account email is not verified")
+	}
 
 	user, err := s.users.ByEmail(ctx, profile.Email)
 	if err != nil {

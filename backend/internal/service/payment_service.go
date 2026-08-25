@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/payments"
@@ -18,16 +22,18 @@ const platformWalletID = "00000000-0000-0000-0000-000000000001"
 
 // PaymentService implements the escrow payment lifecycle.
 type PaymentService struct {
-	payments      *repository.PaymentRepository
-	orders        *repository.OrderRepository
-	users         *repository.UserRepository
-	gateways      map[string]payments.Gateway // adapters by name ("sandbox", "midtrans", ...)
-	defaultGW     string                      // gateway used for generic bank_transfer/e_wallet methods
-	baseURL       string
-	broker        *stream.Broker
-	notifications *NotificationService
-	mailer        *mail.Client
-	webURL        string
+	payments        *repository.PaymentRepository
+	orders          *repository.OrderRepository
+	users           *repository.UserRepository
+	gateways        map[string]payments.Gateway // adapters by name ("sandbox", "midtrans", ...)
+	defaultGW       string                      // gateway used for generic bank_transfer/e_wallet methods
+	baseURL         string
+	broker          *stream.Broker
+	notifications   *NotificationService
+	mailer          *mail.Client
+	webURL          string
+	sandboxAutoSend bool // dev-only: instantly mark payouts sent (simulated transfer)
+	payoutGuard     func(ctx context.Context, userID string) error
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -54,6 +60,16 @@ func (s *PaymentService) SetBroker(b *stream.Broker) { s.broker = b }
 
 // SetNotificationService persists payment events as in-app notifications.
 func (s *PaymentService) SetNotificationService(n *NotificationService) { s.notifications = n }
+
+// SetSandboxAutoSend enables the dev-only instant payout simulation.
+// Must never be enabled in production.
+func (s *PaymentService) SetSandboxAutoSend(v bool) { s.sandboxAutoSend = v }
+
+// PayoutGuard validates that a user may withdraw (e.g. KYC approved +
+// store active). Wired at startup; nil disables the check.
+func (s *PaymentService) SetPayoutGuard(g func(ctx context.Context, userID string) error) {
+	s.payoutGuard = g
+}
 
 // CreateIntentInput for initiating a payment.
 type CreateIntentInput struct {
@@ -106,8 +122,14 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 	}
 
 	// Wallet balance payment: instant capture, no gateway.
+	// Debit, intent creation and capture run in ONE transaction.
 	if in.Method == "wallet" {
-		if err := s.payments.WalletTx(ctx, order.BuyerID, "debit", "order_payment", order.TotalAmount, order.ID); err != nil {
+		tx, err := s.orders.Begin(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer tx.Rollback(ctx)
+		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "debit", "order_payment", order.TotalAmount, order.ID); err != nil {
 			return nil, nil, err
 		}
 		intent := &domain.PaymentIntent{
@@ -115,25 +137,72 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "internal", Method: "wallet", IdempotencyKey: key,
 		}
-		if err := s.payments.CreateIntent(ctx, intent); err != nil {
+		if err := s.payments.CreateIntentTx(ctx, tx.PgTx(), intent); err != nil {
 			return nil, nil, err
 		}
-		if err := s.onPaid(ctx, intent); err != nil {
+		if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+			[]string{domain.IntentInitiated}, domain.IntentCaptured); err != nil {
 			return nil, nil, err
 		}
+		if err := tx.ConsumeReservation(ctx, order.ID); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.AddEvent(ctx, &domain.OrderEvent{
+			OrderID: order.ID, FromStatus: domain.OrderPending, ToStatus: domain.OrderPaid,
+			ActorID: &in.BuyerID, Note: "payment captured (escrow held)",
+		}); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.SetPaymentStatus(ctx, order.ID, domain.PaymentPaid); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.SetStatus(ctx, order.ID, domain.OrderPaid); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, err
+		}
+		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
+		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima — VinCommerce",
+			map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 		return intent, &payments.GatewayPayment{Reference: "wallet", Status: "paid"}, nil
 	}
 
-	// COD: no charge at checkout; captured on delivery confirmation.
+	// COD: payment happens on delivery, but fulfillment must start now.
+	// The order moves pending→paid with payment_status=pending (obligation
+	// acknowledged, cash not yet collected) and the reservation is consumed
+	// so the sweeper doesn't cancel it. CaptureCOD finalizes money state at
+	// delivery confirmation.
 	if in.Method == "cod" {
 		intent := &domain.PaymentIntent{
 			ID: uuid.NewString(), OrderID: order.ID, BuyerID: in.BuyerID,
 			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "cod", Method: "cod", IdempotencyKey: key,
 		}
-		if err := s.payments.CreateIntent(ctx, intent); err != nil {
+		tx, err := s.orders.Begin(ctx)
+		if err != nil {
 			return nil, nil, err
 		}
+		defer tx.Rollback(ctx)
+		if err := s.payments.CreateIntentTx(ctx, tx.PgTx(), intent); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.SetStatusGuarded(ctx, order.ID, domain.OrderPending, domain.OrderPaid); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.ConsumeReservation(ctx, order.ID); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.AddEvent(ctx, &domain.OrderEvent{
+			OrderID: order.ID, FromStatus: domain.OrderPending, ToStatus: domain.OrderPaid,
+			ActorID: &in.BuyerID, Note: "COD — bayar tunai saat barang diterima",
+		}); err != nil {
+			return nil, nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, nil, err
+		}
+		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "COD — menunggu pelunasan saat diterima")
 		return intent, &payments.GatewayPayment{Reference: "cod", Status: "pending"}, nil
 	}
 
@@ -195,6 +264,8 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 }
 
 // CaptureCOD finalizes payment when the buyer confirms delivery on a COD order.
+// COD capture must NOT touch order status — the order is already delivered;
+// only the money state (intent → captured, payment_status → paid) moves.
 func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
@@ -203,8 +274,36 @@ func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 	if intent.Method != "cod" || intent.Status != domain.IntentInitiated {
 		return nil
 	}
-	intent.Status = domain.IntentInitiated
-	return s.onPaid(ctx, intent)
+	return s.captureIntentOnly(ctx, intent)
+}
+
+// captureIntentOnly flips an initiated intent to captured and marks the order
+// payment_status=paid, leaving the order status untouched (used by COD where
+// delivery has already happened).
+func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.PaymentIntent) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+		[]string{domain.IntentInitiated}, domain.IntentCaptured); err != nil {
+		return err
+	}
+	if err := tx.ConsumeReservation(ctx, intent.OrderID); err != nil {
+		return err
+	}
+	if err := tx.SetPaymentStatus(ctx, intent.OrderID, domain.PaymentPaid); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.publish(ctx, intent.OrderID, "", "", "pembayaran COD tercatat")
+	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
+		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
+	return nil
 }
 
 // HandleWebhook processes a gateway event (idempotent). Events are routed to
@@ -241,8 +340,13 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 
 	switch ev.Type {
 	case "payment.paid":
-		// Never capture when the provider amount disagrees with the order.
-		if ev.Amount > 0 && absDiff(ev.Amount, intent.Amount) > 0.01 {
+		// Never capture when the provider amount is missing or disagrees with
+		// the intent — a webhook without an amount must not move money.
+		if ev.Amount <= 0 {
+			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
+				"webhook did not include a payable amount")
+		}
+		if absDiff(ev.Amount, intent.Amount) > 0.01 {
 			return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
 				fmt.Sprintf("webhook amount %.2f does not match intent amount %.2f", ev.Amount, intent.Amount))
 		}
@@ -250,6 +354,13 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 	case "payment.refunded":
 		return s.onRefunded(ctx, intent)
 	case "payment.failed":
+		// Never downgrade financial state: once money has been captured (or
+		// moved on) a late cancel/deny/expire notification must not mark the
+		// intent failed. Surface for manual review instead.
+		if intent.Status == domain.IntentCaptured || intent.Status == domain.IntentReleased ||
+			intent.Status == domain.IntentRefunded || intent.Status == domain.IntentPartiallyRefunded {
+			return nil
+		}
 		if err := s.payments.SetIntentStatus(ctx, intent.ID, domain.IntentFailed); err != nil {
 			return err
 		}
@@ -265,6 +376,9 @@ func absDiff(a, b float64) float64 {
 }
 
 // onPaid captures escrow and moves the order to paid.
+// All financial writes (intent status, reservation consumption, order status,
+// payment status) happen inside ONE transaction so a crash can never leave a
+// captured intent with held stock or an unpaid paid-order.
 func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentIntent) error {
 	if intent.Status == domain.IntentCaptured || intent.Status == domain.IntentReleased {
 		return nil // idempotent replay
@@ -279,7 +393,10 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.payments.SetIntentStatus(ctx, intent.ID, domain.IntentCaptured); err != nil {
+	// Guarded transition inside the tx: concurrent webhooks/replays cannot
+	// double-capture (the second one finds no row in 'initiated').
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+		[]string{domain.IntentInitiated}, domain.IntentCaptured); err != nil {
 		return err
 	}
 	if err := tx.ConsumeReservation(ctx, intent.OrderID); err != nil {
@@ -291,13 +408,20 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	}); err != nil {
 		return err
 	}
+	// pending→paid ONLY. If the order moved on meanwhile (cancelled by the
+	// payment-timeout sweeper, or already paid via another path), the whole
+	// capture rolls back — a late webhook can never resurrect it.
+	if err := tx.SetStatusGuarded(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || domain.Is(err, domain.KindConflict, "") || domain.Is(err, domain.KindNotFound, "") {
+			return domain.E(domain.KindConflict, "ORDER_NOT_PENDING",
+				"order is no longer awaiting payment; capture rejected")
+		}
+		return err
+	}
+	if err := tx.SetPaymentStatus(ctx, intent.OrderID, domain.PaymentPaid); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if err := s.orders.SetPaymentStatus(ctx, intent.OrderID, domain.PaymentPaid); err != nil {
-		return err
-	}
-	if err := s.orders.SetStatus(ctx, intent.OrderID, domain.OrderPaid); err != nil {
 		return err
 	}
 	s.publish(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
@@ -355,13 +479,17 @@ func (s *PaymentService) publish(ctx context.Context, orderID, from, to, message
 }
 
 // ReleaseEscrow transfers funds to the seller wallet (on delivery completion),
-// deducting the platform commission.
+// deducting the platform commission. The status flip, fee split and both
+// wallet credits happen in ONE transaction — a crash can never release escrow
+// without crediting the seller.
 func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
 		return err
 	}
-	if intent.Status != domain.IntentCaptured && intent.Status != domain.IntentReleased {
+	// Guarded by SQL below too; only 'captured' may be released so repeated
+	// calls cannot double-credit the seller.
+	if intent.Status != domain.IntentCaptured {
 		return domain.E(domain.KindConflict, "ESCROW_NOT_HELD", "escrow is not held for this order")
 	}
 	order, err := s.orders.ByID(ctx, orderID)
@@ -370,16 +498,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 
 	fee, sellerAmount := intent.Amount, 0.0
-	if intent.FeeAmount == 0 {
-		cfg, err := s.payments.ActiveFee(ctx)
-		if err != nil {
-			return err
-		}
-		fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
-		if err := s.payments.ApplyFee(ctx, intent.ID, fee, sellerAmount); err != nil {
-			return err
-		}
-	} else {
+	if intent.FeeAmount > 0 {
 		fee, sellerAmount = intent.FeeAmount, intent.SellerAmount
 	}
 
@@ -389,7 +508,19 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.payments.SetIntentStatus(ctx, intent.ID, domain.IntentReleased); err != nil {
+	if intent.FeeAmount == 0 {
+		cfg, err := s.payments.ActiveFeeTx(ctx, tx.PgTx())
+		if err != nil {
+			return err
+		}
+		fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
+		if err := s.payments.ApplyFeeTx(ctx, tx.PgTx(), intent.ID, fee, sellerAmount); err != nil {
+			return err
+		}
+	}
+
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+		[]string{domain.IntentCaptured}, domain.IntentReleased); err != nil {
 		return err
 	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
@@ -398,15 +529,16 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}); err != nil {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
+
+	// seller credited the net amount; platform fee recorded against the platform wallet.
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "credit", domain.TxReasonEscrowRelease, sellerAmount, orderID); err != nil {
+		return err
+	}
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", fee, orderID); err != nil {
 		return err
 	}
 
-	// seller credited the net amount; platform fee recorded against the platform wallet.
-	if err := s.payments.WalletTx(ctx, order.SellerID, "credit", domain.TxReasonEscrowRelease, sellerAmount, orderID); err != nil {
-		return err
-	}
-	if err := s.payments.WalletTx(ctx, platformWalletID, "credit", "commission", fee, orderID); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
@@ -417,10 +549,15 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 }
 
 // RefundOrder refunds an order fully (escrow -> buyer wallet, or seller wallet -> buyer).
+// The intent transition is guarded so a refund can only ever execute once.
 func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason string, refundToBuyer bool) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
 		return err
+	}
+	if intent.Status != domain.IntentCaptured && intent.Status != domain.IntentReleased {
+		return domain.E(domain.KindConflict, "NOT_REFUNDABLE",
+			"only captured or released payments can be refunded")
 	}
 	order, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
@@ -428,30 +565,36 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 	}
 
 	amount := intent.Amount
-	if err := s.payments.SetIntentStatus(ctx, intent.ID, domain.IntentRefunded); err != nil {
-		return err
-	}
+	wasReleased := intent.Status == domain.IntentReleased
 
-	if intent.Status == domain.IntentReleased {
-		// funds already with seller: debit seller wallet, credit buyer wallet
-		if err := s.payments.WalletTx(ctx, order.SellerID, "debit", domain.TxReasonRefund, amount, orderID); err != nil {
-			return err
-		}
-	}
-	if refundToBuyer {
-		if err := s.payments.WalletTx(ctx, order.BuyerID, "credit", domain.TxReasonRefund, amount, orderID); err != nil {
-			return err
-		}
-	}
-
-	if err := s.orders.SetPaymentStatus(ctx, orderID, domain.PaymentRefunded); err != nil {
-		return err
-	}
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// Guarded in SQL: the first refund wins; replays conflict here and never
+	// reach the ledger writes below (no infinite money minting).
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+		[]string{domain.IntentCaptured, domain.IntentReleased}, domain.IntentRefunded); err != nil {
+		return err
+	}
+
+	if wasReleased {
+		// funds already with seller: debit seller wallet, credit buyer wallet
+		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "debit", domain.TxReasonRefund, amount, orderID); err != nil {
+			return err
+		}
+	}
+	if refundToBuyer {
+		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "credit", domain.TxReasonRefund, amount, orderID); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.SetPaymentStatus(ctx, orderID, domain.PaymentRefunded); err != nil {
+		return err
+	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: orderID, FromStatus: order.Status, ToStatus: order.Status,
 		ActorID: nil, Note: "refund: " + reason,
@@ -469,6 +612,43 @@ func (s *PaymentService) onRefunded(ctx context.Context, intent *domain.PaymentI
 	return s.RefundOrder(ctx, intent.OrderID, "gateway refund", true)
 }
 
+// DisputeSplitCredit settles a "split" dispute: the platform mediates by
+// crediting the buyer HALF the paid amount out of the platform wallet.
+// Escrow keeps its normal lifecycle (the seller's side resolves at release).
+func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID string) error {
+	intent, err := s.payments.IntentByOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if intent.Status != domain.IntentCaptured && intent.Status != domain.IntentReleased {
+		return domain.E(domain.KindConflict, "ESCROW_NOT_HELD", "no settled payment to split")
+	}
+	half := math.Floor(intent.Amount/2*100) / 100
+	if half <= 0 {
+		return nil
+	}
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// Platform absorbs its mediation share — debited from the platform wallet
+	// so the ledger stays balanced (no money minted).
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, half, orderID); err != nil {
+		return err
+	}
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, half, orderID); err != nil {
+		return err
+	}
+	if err := tx.AddEvent(ctx, &domain.OrderEvent{
+		OrderID: orderID, FromStatus: "", ToStatus: domain.OrderPaid,
+		ActorID: nil, Note: fmt.Sprintf("dispute split settlement: Rp %.0f credited to buyer", half),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Wallet returns the user's wallet.
 func (s *PaymentService) Wallet(ctx context.Context, userID string) (*domain.Wallet, error) {
 	return s.payments.Wallet(ctx, userID)
@@ -480,11 +660,31 @@ func (s *PaymentService) WalletTransactions(ctx context.Context, userID string, 
 }
 
 // RequestPayout creates a withdrawal request and debits the wallet.
+// The debit and the payout row are written in ONE transaction so a failure
+// can never leave money debited with no payout record. The instant
+// "sent" simulation only runs in development (sandboxAutoSend).
 func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amount float64, bankName, bankAccount string) (*domain.Payout, error) {
 	if amount <= 0 {
 		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
 	}
-	if err := s.payments.WalletTx(ctx, userID, "debit", domain.TxReasonPayout, amount, ""); err != nil {
+	if strings.TrimSpace(bankName) == "" || strings.TrimSpace(bankAccount) == "" {
+		return nil, domain.E(domain.KindInvalid, "BANK_REQUIRED", "bank name and account number are required")
+	}
+	// KYC/store gate: withdrawals only for verified sellers with active
+	// stores (wired via SetPayoutGuard at startup).
+	if s.payoutGuard != nil {
+		if err := s.payoutGuard(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), userID, "debit", domain.TxReasonPayout, amount, ""); err != nil {
 		return nil, err
 	}
 	payout := &domain.Payout{
@@ -495,22 +695,49 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 		BankName:    bankName,
 		BankAccount: bankAccount,
 	}
-	if err := s.payments.CreatePayout(ctx, payout); err != nil {
+	if err := s.payments.CreatePayoutTx(ctx, tx.PgTx(), payout); err != nil {
 		return nil, err
 	}
-	// Sandbox: simulate instant transfer.
-	if err := s.payments.MarkPayoutSent(ctx, payout.ID, fmt.Sprintf("payout_%s", payout.ID[:8])); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	payout.Status = "sent"
-	now := time.Now().UTC()
-	payout.ProcessedAt = &now
+
+	// Sandbox/dev only: simulate an instant successful transfer.
+	if s.sandboxAutoSend {
+		if err := s.payments.MarkPayoutSent(ctx, payout.ID, fmt.Sprintf("payout_%s", payout.ID[:8])); err != nil {
+			return nil, err
+		}
+		payout.Status = "sent"
+		now := time.Now().UTC()
+		payout.ProcessedAt = &now
+	}
 	return payout, nil
 }
 
 // Payouts lists the user's withdrawals.
 func (s *PaymentService) Payouts(ctx context.Context, userID string) ([]*domain.Payout, error) {
 	return s.payments.Payouts(ctx, userID)
+}
+
+// AdminPayouts lists withdrawal requests for the operations queue.
+func (s *PaymentService) AdminPayouts(ctx context.Context, status string) ([]*repository.AdminPayout, error) {
+	return s.payments.PayoutsByStatus(ctx, status, 100)
+}
+
+// ProcessPayout finalizes a pending withdrawal: 'sent' records the real
+// transfer reference; 'failed' rejects it and refunds the seller's wallet.
+func (s *PaymentService) ProcessPayout(ctx context.Context, payoutID, action, ref string) error {
+	switch action {
+	case "sent":
+		if strings.TrimSpace(ref) == "" {
+			return domain.E(domain.KindInvalid, "REF_REQUIRED", "transfer reference is required to mark a payout sent")
+		}
+		return s.payments.CompletePayout(ctx, payoutID, strings.TrimSpace(ref))
+	case "failed":
+		return s.payments.FailPayout(ctx, payoutID)
+	default:
+		return domain.E(domain.KindInvalid, "BAD_ACTION", "action must be sent or failed")
+	}
 }
 
 // IntentForOrder returns the intent for an order.

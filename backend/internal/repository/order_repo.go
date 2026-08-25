@@ -47,6 +47,57 @@ func (t *OrderTx) Commit(ctx context.Context) error {
 	return t.tx.Commit(ctx)
 }
 
+// PgTx exposes the underlying transaction so other repositories (payments,
+// wallets) can participate in the same atomic unit of work.
+func (t *OrderTx) PgTx() pgx.Tx { return t.tx }
+
+// SetStatus updates the order status inside this transaction.
+func (t *OrderTx) SetStatus(ctx context.Context, orderID, status string) error {
+	tag, err := t.tx.Exec(ctx, `
+		UPDATE orders SET status = $2::varchar, updated_at = now(),
+			paid_at = CASE WHEN $2::varchar = 'paid' THEN now() ELSE paid_at END,
+			shipped_at = CASE WHEN $2::varchar = 'shipped' THEN now() ELSE shipped_at END,
+			delivered_at = CASE WHEN $2::varchar = 'delivered' THEN now() ELSE delivered_at END,
+			completed_at = CASE WHEN $2::varchar = 'completed' THEN now() ELSE completed_at END,
+			cancelled_at = CASE WHEN $2::varchar = 'cancelled' THEN now() ELSE cancelled_at END
+		WHERE id = $1 AND status <> $2::varchar`, orderID, status)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetStatusGuarded updates the order status ONLY when it currently equals
+// `from` (optimistic state-machine guard for money-critical transitions).
+func (t *OrderTx) SetStatusGuarded(ctx context.Context, orderID, from, to string) error {
+	tag, err := t.tx.Exec(ctx, `
+		UPDATE orders SET status = $3::varchar, updated_at = now(),
+			paid_at = CASE WHEN $3::varchar = 'paid' THEN now() ELSE paid_at END,
+			shipped_at = CASE WHEN $3::varchar = 'shipped' THEN now() ELSE shipped_at END,
+			delivered_at = CASE WHEN $3::varchar = 'delivered' THEN now() ELSE delivered_at END,
+			completed_at = CASE WHEN $3::varchar = 'completed' THEN now() ELSE completed_at END,
+			cancelled_at = CASE WHEN $3::varchar = 'cancelled' THEN now() ELSE cancelled_at END
+		WHERE id = $1 AND status = $2::varchar`, orderID, from, to)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "INVALID_TRANSITION",
+			"order is not in the expected state")
+	}
+	return nil
+}
+
+// SetPaymentStatus updates the payment status inside this transaction.
+func (t *OrderTx) SetPaymentStatus(ctx context.Context, orderID, paymentStatus string) error {
+	_, err := t.tx.Exec(ctx,
+		`UPDATE orders SET payment_status = $2, updated_at = now() WHERE id = $1`, orderID, paymentStatus)
+	return err
+}
+
 // ClearCart deletes all lines of a cart inside the checkout transaction.
 func (t *OrderTx) ClearCart(ctx context.Context, cartID string) error {
 	_, err := t.tx.Exec(ctx, `DELETE FROM cart_items WHERE cart_id = $1`, cartID)
@@ -199,10 +250,11 @@ func (t *OrderTx) ReleaseReservation(ctx context.Context, orderID string) error 
 }
 
 // IncrementCouponUsage claims a coupon use (locking the row).
+// usage_limit = 0 means unlimited, so the guard only applies when a limit is set.
 func (t *OrderTx) IncrementCouponUsage(ctx context.Context, couponID, userID, orderID string) error {
 	tag, err := t.tx.Exec(ctx, `
 		UPDATE coupons SET used_count = used_count + 1
-		WHERE id = $1 AND used_count < usage_limit`, couponID)
+		WHERE id = $1 AND (usage_limit = 0 OR used_count < usage_limit)`, couponID)
 	if err != nil {
 		return err
 	}
@@ -723,6 +775,29 @@ func (r *OrderRepository) ExpiredPendingOrders(ctx context.Context, deadline tim
 	}
 	defer rows.Close()
 
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ShippedBefore lists shipped orders whose shipped_at is older than the
+// cutoff — the ghost-buyer sweep marks these delivered automatically.
+func (r *OrderRepository) ShippedBefore(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id FROM orders
+		WHERE status = 'shipped' AND shipped_at < $1
+		ORDER BY shipped_at
+		LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	ids := []string{}
 	for rows.Next() {
 		var id string

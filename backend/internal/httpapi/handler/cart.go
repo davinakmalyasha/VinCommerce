@@ -254,7 +254,7 @@ func (h *Checkout) BuyNow(w http.ResponseWriter, r *http.Request) {
 		address = &domain.Address{
 			Recipient: req.Address.Recipient, Phone: req.Address.Phone,
 			AddressLine1: req.Address.AddressLine1,
-			City: req.Address.City, Province: req.Address.Province,
+			City:         req.Address.City, Province: req.Address.Province,
 			PostalCode: req.Address.PostalCode, Country: "Indonesia",
 		}
 	}
@@ -467,6 +467,9 @@ func (h *Orders) ByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // ByNumber handles GET /orders/tracking/{number}.
+// Public tracking is intentionally MINIMAL: only status/logistics data —
+// never buyer PII (address, phone), payment refs or notes. Full detail
+// requires ownership (see ByID).
 func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
 	o, err := h.svc.ByNumber(r.Context(), chi.URLParam(r, "number"))
 	if err != nil {
@@ -477,6 +480,13 @@ func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, r, err)
 		return
+	}
+	// Strip everything that identifies the buyer or the transaction.
+	o.ShippingAddressJSON = nil
+	o.Notes = ""
+	o.ExternalPaymentRef = ""
+	for _, it := range o.Items {
+		it.SKU = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"order": o, "events": events})
 }

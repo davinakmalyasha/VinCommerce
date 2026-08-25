@@ -19,6 +19,8 @@ func NewRateLimiter(rdb *redis.Client) *RateLimiter {
 }
 
 // Limit enforces `max` requests per `window` for an identifier extracted from the request.
+// Uses SET NX to seed the window atomically, so a crash between INCR and EXPIRE
+// can never leave a permanent key that rate-limits an identity forever.
 func (l *RateLimiter) Limit(max int, window time.Duration, key func(r *http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,13 +30,18 @@ func (l *RateLimiter) Limit(max int, window time.Duration, key func(r *http.Requ
 			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 			defer cancel()
 
+			seeded, err := l.rdb.SetNX(ctx, redisKey, 0, window).Result()
+			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 			count, err := l.rdb.Incr(ctx, redisKey).Result()
 			if err != nil {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if count == 1 {
-				l.rdb.Expire(ctx, redisKey, window)
+			if seeded && count == 1 {
+				l.rdb.Expire(ctx, redisKey, window) // belt & braces; NX already set TTL
 			}
 			w.Header().Set("X-RateLimit-Limit", itoa(max))
 			w.Header().Set("X-RateLimit-Remaining", itoa(max-int(count)))

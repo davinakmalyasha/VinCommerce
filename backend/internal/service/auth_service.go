@@ -213,6 +213,9 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*Tokens, error)
 // Impersonate mints a short-lived access token for another user (admin
 // support tool). No refresh session is created: impersonation ends when the
 // in-memory token expires or is discarded.
+// Guardrails: admin targets are refused server-side (privilege laundering /
+// clean-second-token attack), and the token carries an act_as claim so every
+// audited action during impersonation attributes to the real (admin) actor.
 func (s *AuthService) Impersonate(ctx context.Context, adminID, targetUserID, ipAddress, userAgent string) (*domain.User, string, error) {
 	admin, err := s.users.ByID(ctx, adminID)
 	if err != nil {
@@ -228,7 +231,11 @@ func (s *AuthService) Impersonate(ctx context.Context, adminID, targetUserID, ip
 	if !target.IsActive() {
 		return nil, "", domain.ErrUserDisabled
 	}
-	token, _, err := s.tokens.IssueAccess(target)
+	if target.HasRole(domain.RoleAdmin) {
+		return nil, "", domain.E(domain.KindForbidden, "IMPERSONATE_ADMIN",
+			"impersonating administrator accounts is not permitted")
+	}
+	token, _, err := s.tokens.IssueAccessFor(target, adminID)
 	if err != nil {
 		return nil, "", domain.Wrap(domain.KindInternal, "TOKEN_GEN", "failed to mint token", err)
 	}

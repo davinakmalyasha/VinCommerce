@@ -146,8 +146,10 @@ func (r *DisputeRepository) DisputeByID(ctx context.Context, disputeID string) (
 // ListByStatus lists disputes (admin).
 func (r *DisputeRepository) ListByStatus(ctx context.Context, status string) ([]*domain.Dispute, error) {
 	where := `d.status <> 'closed'`
+	args := []any{}
 	if status != "" && status != "all" {
-		where = `d.status = '` + status + `'`
+		where = `d.status = $1`
+		args = append(args, status)
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT d.id, d.order_id, d.return_id, d.user_id, d.seller_id, d.subject, d.description,
@@ -156,7 +158,7 @@ func (r *DisputeRepository) ListByStatus(ctx context.Context, status string) ([]
 		FROM disputes d
 		JOIN users b ON b.id = d.user_id
 		LEFT JOIN stores s ON s.owner_id = d.seller_id
-		WHERE `+where+` ORDER BY d.created_at DESC`)
+		WHERE `+where+` ORDER BY d.created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
