@@ -136,6 +136,7 @@ export function Header() {
                     {suggestions.products.map((s) => (
                       <button
                         key={`p${s.slug}`}
+                        type="button"
                         onClick={() => goProduct(s.slug)}
                         className="w-full text-left px-4 py-1.5 hover:bg-gray-50 truncate"
                       >
@@ -145,6 +146,7 @@ export function Header() {
                     {suggestions.categories.map((s) => (
                       <button
                         key={`c${s.slug}`}
+                        type="button"
                         onClick={() => goCategory(s.slug)}
                         className="w-full text-left px-4 py-1.5 hover:bg-gray-50 truncate"
                       >
@@ -154,6 +156,7 @@ export function Header() {
                     {suggestions.brands.map((s) => (
                       <button
                         key={`b${s.slug}`}
+                        type="button"
                         onClick={() => goBrand(s.name)}
                         className="w-full text-left px-4 py-1.5 hover:bg-gray-50 truncate"
                       >
@@ -167,10 +170,10 @@ export function Header() {
                     <p className="px-4 py-1 text-xs text-gray-400 uppercase">Tersimpan</p>
                     {saved.map((q) => (
                       <div key={`s${q}`} className="flex items-center justify-between px-4 py-1.5 hover:bg-gray-50">
-                        <button onClick={() => goQuery(q)} className="flex-1 text-left truncate">
+                        <button type="button" onClick={() => goQuery(q)} className="flex-1 text-left truncate">
                           ⭐ {q}
                         </button>
-                        <button onClick={() => toggleSaved(q)} className="text-gray-300 hover:text-red-500 px-2">
+                        <button type="button" aria-label={`Hapus ${q} dari tersimpan`} onClick={() => toggleSaved(q)} className="text-gray-300 hover:text-red-500 px-2">
                           ✕
                         </button>
                       </div>
@@ -182,10 +185,10 @@ export function Header() {
                     <p className="px-4 py-1 text-xs text-gray-400 uppercase mt-1">Riwayat</p>
                     {recent.map((q) => (
                       <div key={`r${q}`} className="flex items-center justify-between px-4 py-1.5 hover:bg-gray-50">
-                        <button onClick={() => goQuery(q)} className="flex-1 text-left truncate">
+                        <button type="button" onClick={() => goQuery(q)} className="flex-1 text-left truncate">
                           🕐 {q}
                         </button>
-                        <button onClick={() => toggleSaved(q)} className="text-gray-300 hover:text-amber-500 px-2" title="Simpan">
+                        <button type="button" aria-label={`Simpan ${q}`} onClick={() => toggleSaved(q)} className="text-gray-300 hover:text-amber-500 px-2" title="Simpan">
                           ☆
                         </button>
                       </div>
@@ -226,14 +229,19 @@ export function Header() {
             {user ? (
               <div className="flex items-center gap-2">
                 <NotificationBell />
-                {user.roles.includes('seller') && (
+                {user.roles.includes('seller') || user.roles.includes('admin') ? (
                   <Link to="/seller" className="px-3 py-2 rounded-lg hover:bg-amber-600">
                     Seller
                   </Link>
-                )}
+                ) : null}
                 {user.roles.includes('admin') && (
                   <Link to="/admin" className="px-3 py-2 rounded-lg hover:bg-amber-600">
                     Admin
+                  </Link>
+                )}
+                {user.roles.includes('support') && (
+                  <Link to="/support" className="px-3 py-2 rounded-lg hover:bg-amber-600">
+                    Support
                   </Link>
                 )}
                 <Link to="/account" className="px-3 py-2 rounded-lg hover:bg-amber-600 flex items-center gap-2">
@@ -281,11 +289,11 @@ function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-96 bg-white shadow-xl flex flex-col">
+      <div className="absolute right-0 top-0 h-full w-full max-w-xs sm:w-96 bg-white shadow-xl flex flex-col">
         <div className="p-4 border-b flex justify-between items-center">
           <h2 className="font-bold">Keranjang ({lines.length})</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700">
-            âœ•
+          <button type="button" aria-label="Tutup keranjang" onClick={onClose} className="text-gray-400 hover:text-gray-700">
+            ✕
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -293,7 +301,7 @@ function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void
           {lines.map((l) => (
             <div key={l.variant_id} className="flex gap-3">
               {l.image_url ? (
-                <img src={l.image_url} alt="" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
+                <img src={l.image_url} alt="" loading="lazy" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
               ) : (
                 <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
                   {l.product_name.slice(0, 8)}
@@ -302,7 +310,7 @@ function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void
               <div className="flex-1 text-sm">
                 <p className="line-clamp-1">{l.product_name}</p>
                 <p className="text-gray-500 text-xs">
-                  {l.variant_name} Ã— {l.quantity}
+                  {l.variant_name} × {l.quantity}
                 </p>
                 <p className="text-amber-600 font-medium">{formatIDR(l.subtotal)}</p>
               </div>

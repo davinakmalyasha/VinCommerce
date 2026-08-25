@@ -12,6 +12,7 @@ export function ProductCard({ product }: { product: Product }) {
   const { user } = useSession()
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState(false)
+  const [compareMsg, setCompareMsg] = useState('')
   const { data: flashSale } = useActiveFlashSale()
   const price = product.variants?.[0]?.price ?? 0
   const compareAt = product.variants?.[0]?.compare_at_price
@@ -38,16 +39,26 @@ export function ProductCard({ product }: { product: Product }) {
 
   const addCompare = () => {
     const list = JSON.parse(localStorage.getItem('vc_compare') ?? '[]') as { id: string }[]
-    if (list.length >= 4 || list.some((i) => i.id === product.id)) return
+    if (list.some((i) => i.id === product.id)) {
+      setCompareMsg('Sudah ada')
+      return
+    }
+    if (list.length >= 4) {
+      setCompareMsg('Penuh (maks 4)')
+      return
+    }
     list.push({ ...product, compared_at: Date.now() } as never)
     localStorage.setItem('vc_compare', JSON.stringify(list))
+    setCompareMsg('Ditambahkan ✓')
   }
 
   return (
     <div className="group relative flex flex-col bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:shadow-lg hover:-translate-y-0.5 transition-all">
       {user && variantId && (
         <button
+          type="button"
           onClick={() => wishlist.mutate()}
+          aria-label={saved ? 'Hapus dari wishlist' : 'Simpan ke wishlist'}
           className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-white/90 dark:bg-gray-800 shadow flex items-center justify-center hover:scale-110 transition-transform"
           title={saved ? 'Hapus dari wishlist' : 'Simpan ke wishlist'}
         >
@@ -86,15 +97,18 @@ export function ProductCard({ product }: { product: Product }) {
             <Rating value={product.avg_rating} count={product.rating_count} />
             <span>{product.sold_count} terjual</span>
           </div>
-          <button
-            onClick={addCompare}
-            className="text-[11px] text-gray-400 hover:text-amber-600 text-left mt-1"
-            title="Tambahkan ke perbandingan"
-          >
-            ⚖ Bandingkan
-          </button>
         </div>
       </Link>
+      {/* Compare lives OUTSIDE the card <Link>: a button nested inside a link
+          is invalid HTML — clicking it navigated instead of comparing. */}
+      <button
+        type="button"
+        onClick={addCompare}
+        className="text-[11px] text-gray-400 hover:text-amber-600 text-left px-3 pb-2 -mt-1"
+        title="Tambahkan ke perbandingan"
+      >
+        ⚖ Bandingkan{compareMsg ? ` · ${compareMsg}` : ''}
+      </button>
     </div>
   )
 }

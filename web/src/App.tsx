@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from 'react-router-dom'
 import { router } from './router'
-import { useSession } from './stores/session'
+import { useSession, bindQueryCacheClear } from './stores/session'
 import { initTheme } from './stores/theme'
 
 initTheme()
@@ -16,6 +16,9 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+// Let the session store purge cached per-user queries on login/logout.
+bindQueryCacheClear(() => queryClient.clear())
 
 function SessionBootstrap() {
   const restore = useSession((s) => s.restore)

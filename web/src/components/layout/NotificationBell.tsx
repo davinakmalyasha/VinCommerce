@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api, getAccessToken } from '../../lib/api'
+import { api, getAccessToken, refreshAccessToken } from '../../lib/api'
 import { useSession } from '../../stores/session'
 import { formatDate } from '../../lib/format'
 import { notificationHref } from '../../lib/notifications'
@@ -46,18 +46,42 @@ export function NotificationBell() {
   useEffect(() => {
     if (!user) return
     let cancelled = false
+    let reconnectTimer: number | undefined
+    const cleanupFns: Array<() => void> = []
 
-    const connect = async () => {
-      const res = await fetch('/api/v1/stream/orders', {
-        headers: { Authorization: `Bearer ${getAccessToken()}` },
-      })
-      if (!res.ok || !res.body) return
+    const connect = async (): Promise<void> => {
+      // The access token is short-lived and memory-only. Refresh FIRST so the
+      // stream doesn't 401 immediately after boot; raw fetch bypasses the axios
+      // refresh interceptor, so an expired token here would silently kill all
+      // realtime notifications for the whole session.
+      await refreshAccessToken()
+      if (cancelled) return
+
+      const controller = new AbortController()
+      const onCleanup = () => controller.abort()
+      cleanupFns.push(onCleanup)
+
+      let res: Response
+      try {
+        res = await fetch('/api/v1/stream/orders', {
+          headers: { Authorization: `Bearer ${getAccessToken()}` },
+          signal: controller.signal,
+        })
+      } catch {
+        cleanupFns.splice(cleanupFns.indexOf(onCleanup), 1)
+        throw new Error('stream aborted')
+      }
+      if (!res.ok || !res.body) {
+        cleanupFns.splice(cleanupFns.indexOf(onCleanup), 1)
+        throw new Error('stream unavailable')
+      }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
 
-      const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
+      const pump = async (): Promise<void> => {
+        for (;;) {
+          const { done, value } = await reader.read()
           if (done || cancelled) return
           buffer += decoder.decode(value, { stream: true })
           const parts = buffer.split('\n\n')
@@ -82,17 +106,28 @@ export function NotificationBell() {
               }
             }
           }
-          return pump()
-        })
+        }
+      }
 
-      pump().catch(() => {
-        if (!cancelled) setTimeout(connect, 5000)
-      })
+      try {
+        await pump()
+        // Server closed gracefully — reconnect unless unmounted/logged out.
+        if (!cancelled) reconnectTimer = window.setTimeout(() => void connect(), 5000)
+      } finally {
+        const idx = cleanupFns.indexOf(onCleanup)
+        if (idx >= 0) cleanupFns.splice(idx, 1)
+      }
     }
 
-    connect()
+    connect().catch(() => {
+      if (!cancelled) reconnectTimer = window.setTimeout(() => void connect(), 5000)
+    })
+
     return () => {
       cancelled = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      for (const fn of cleanupFns) fn() // abort any in-flight stream fetch
+      cleanupFns.length = 0
     }
   }, [user, queryClient])
 
