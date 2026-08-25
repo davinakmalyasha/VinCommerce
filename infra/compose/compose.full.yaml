@@ -6,8 +6,10 @@ services:
       POSTGRES_USER: vincom
       POSTGRES_PASSWORD: vincom_dev
       POSTGRES_DB: vincom
-    ports: ["5432:5432"]
+    # Bind to loopback only — never expose the dev database to the LAN.
+    ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vincom"]
       interval: 5s
@@ -16,7 +18,10 @@ services:
 
   redis:
     image: redis:8
-    ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -25,7 +30,10 @@ services:
 
   mailpit:
     image: axllent/mailpit:v1.29
-    ports: ["1025:1025", "8025:8025"]
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
 
   api:
     build: { context: ., dockerfile: backend/Dockerfile }
@@ -41,12 +49,15 @@ services:
       APP_BASE_URL: http://localhost:8080
       WEB_URL: http://localhost:5173
       CORS_ALLOW_ORIGINS: http://localhost:5173,http://localhost
+      UPLOAD_DIR: /data/uploads
       # Override with a strong value outside local development!
       JWT_SECRET: ${JWT_SECRET:-local-dev-secret-please-change-me-32chars}
       MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
       MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:-}
       MIDTRANS_ENV: ${MIDTRANS_ENV:-sandbox}
     ports: ["8080:8080"]
+    volumes: [uploads:/data/uploads]
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -59,6 +70,7 @@ services:
       DB_PASSWORD: vincom_dev
       DB_NAME: vincom
       REDIS_ADDR: redis:6379
+    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -66,7 +78,10 @@ services:
   web:
     build: { context: ., dockerfile: web/Dockerfile }
     ports: ["5173:80"]
+    restart: unless-stopped
     depends_on: [api]
 
 volumes:
   pgdata:
+  redisdata:
+  uploads:

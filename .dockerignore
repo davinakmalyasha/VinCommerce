@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+**/.git
+**/.github
+**/data
+**/test-results
+**/playwright-report
+*.md
+docs/
+infra/

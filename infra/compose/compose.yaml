@@ -8,20 +8,27 @@ services:
       POSTGRES_PASSWORD: vincom_dev
       POSTGRES_DB: vincom
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
 
   redis:
     image: redis:8
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
 
   mailpit:
     image: axllent/mailpit:v1.29
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  redisdata:
