@@ -7,6 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "size": "node scripts/measure-bundle.cjs",
+    "check:nginx": "node scripts/check-nginx.mjs",
+    "test:nginx": "node scripts/check-nginx.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -24,9 +31,12 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "@vitest/coverage-v8": "^5.0.2",
+    "jsdom": "^30.1.1",
     "oxlint": "^1.75.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "vite": "^8.2.0"
+    "vite": "^8.2.0",
+    "vitest": "^5.0.2"
   }
 }
