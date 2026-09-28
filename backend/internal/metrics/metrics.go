@@ -1,12 +1,16 @@
 package metrics
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -21,8 +25,8 @@ type Registry struct {
 // New creates the metrics registry with default + application collectors.
 func New() *Registry {
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(prometheus.NewGoCollector())
-	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	r := &Registry{
 		reg: reg,
@@ -42,14 +46,61 @@ func New() *Registry {
 }
 
 // statusRecorder captures the response code for instrumentation.
+//
+// It deliberately forwards the optional http.ResponseWriter capabilities
+// (Flusher, Hijacker, Pusher, ReaderFrom). Embedding the http.ResponseWriter
+// *interface* only promotes Header/Write/WriteHeader, so without these
+// methods a `w.(http.Flusher)` assertion inside a handler fails and any
+// streaming endpoint (SSE) degrades to a 500. See /stream handlers.
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *statusRecorder) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
 	w.status = code
+	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusRecorder) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush implements http.Flusher, required for server-sent events.
+func (w *statusRecorder) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker for connection upgrades (websockets).
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Push implements http.Pusher for HTTP/2 server push.
+func (w *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // Middleware instruments every API request with latency/count metrics.
@@ -59,18 +110,39 @@ func (r *Registry) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		// Deferred so a panic is still accounted for as a 5xx rather than
+		// silently dropping the sample.
+		defer func() {
+			if !rec.wroteHeader {
+				// Nothing wrote a status: recoverer will emit 500 upstream.
+				rec.status = http.StatusInternalServerError
+			}
+			route := routeLabel(req)
+			status := strconv.Itoa(rec.status)
+
+			r.httpRequests.WithLabelValues(req.Method, route, status).Inc()
+			r.httpDuration.WithLabelValues(req.Method, route, status).
+				Observe(time.Since(start).Seconds())
+		}()
+
 		next.ServeHTTP(rec, req)
-
-		route := strings.TrimSuffix(req.URL.Path, "/")
-		if parts := splitPath(route); len(parts) > 0 {
-			route = normalizeRoute(parts)
-		}
-		status := strconv.Itoa(rec.status)
-
-		r.httpRequests.WithLabelValues(req.Method, route, status).Inc()
-		r.httpDuration.WithLabelValues(req.Method, route, status).
-			Observe(time.Since(start).Seconds())
 	})
+}
+
+// routeLabel prefers the chi route pattern (bounded cardinality) and falls
+// back to a masked URL path when routing has not resolved a pattern yet.
+func routeLabel(req *http.Request) string {
+	if rctx := chi.RouteContext(req.Context()); rctx != nil {
+		if pattern := rctx.RoutePattern(); pattern != "" {
+			return pattern
+		}
+	}
+	route := strings.TrimSuffix(req.URL.Path, "/")
+	if parts := splitPath(route); len(parts) > 0 {
+		return normalizeRoute(parts)
+	}
+	return route
 }
 
 func splitPath(p string) []string {
