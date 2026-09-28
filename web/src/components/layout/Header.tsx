@@ -6,6 +6,7 @@ import { useSession } from '../../stores/session'
 import type { CartLine } from '../../types'
 import { formatIDR } from '../../lib/format'
 import { NotificationBell } from './NotificationBell'
+import { Modal } from '../Modal'
 import { useTheme } from '../../stores/theme'
 
 interface Suggestion {
@@ -112,18 +113,26 @@ export function Header() {
           <Link to="/" className="text-xl font-extrabold tracking-tight text-white shrink-0">
             VinCommerce
           </Link>
-          <form onSubmit={submitSearch} className="flex-1 flex relative">
+          {/* `min-w-0` is load-bearing: a flex item defaults to
+              `min-width: auto`, so the input refused to shrink below its
+              intrinsic size and the 375px viewport grew a horizontal
+              scrollbar. Below `sm` the field collapses to an icon that
+              navigates to /search. */}
+          <form onSubmit={submitSearch} className="hidden sm:block flex-1 min-w-0 relative">
+            <label htmlFor="header-search" className="sr-only">Cari produk, brand, kategori</label>
             <input
+              id="header-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => setShowRecent(true)}
               onBlur={() => setTimeout(() => setShowRecent(false), 150)}
               placeholder="Cari produk, brand, kategori..."
-              className="flex-1 h-10 px-4 rounded-l-lg outline-none text-sm"
+              className="w-full min-w-0 h-10 px-4 rounded-l-lg outline-none text-sm"
             />
-            <button className="h-10 px-5 bg-gray-900 text-white text-sm rounded-r-lg hover:bg-gray-800">
+            <button type="submit" className="h-10 px-5 bg-gray-900 text-white text-sm rounded-r-lg hover:bg-gray-800 shrink-0">
               Cari
             </button>
+
             {showRecent && (recent.length > 0 || saved.length > 0 || suggestions?.products.length || suggestions?.categories.length || suggestions?.brands.length) && (
               <div className="absolute left-0 top-11 w-full bg-white rounded-xl shadow-xl border border-gray-200 py-2 z-50 text-sm max-h-80 overflow-y-auto">
                 {suggestions && debounced.length >= 2 && (
@@ -134,7 +143,7 @@ export function Header() {
                       <p className="px-4 py-1 text-xs text-gray-400 uppercase">Saran</p>
                     )}
                     {suggestions.products.map((s) => (
-                      <button
+                      <button 
                         key={`p${s.slug}`}
                         type="button"
                         onClick={() => goProduct(s.slug)}
@@ -144,7 +153,7 @@ export function Header() {
                       </button>
                     ))}
                     {suggestions.categories.map((s) => (
-                      <button
+                      <button 
                         key={`c${s.slug}`}
                         type="button"
                         onClick={() => goCategory(s.slug)}
@@ -154,7 +163,7 @@ export function Header() {
                       </button>
                     ))}
                     {suggestions.brands.map((s) => (
-                      <button
+                      <button 
                         key={`b${s.slug}`}
                         type="button"
                         onClick={() => goBrand(s.name)}
@@ -199,6 +208,16 @@ export function Header() {
             )}
           </form>
           <nav className="flex items-center gap-2 text-sm text-white shrink-0">
+            {/* Mobile stand-in for the inline search field, which is hidden
+                below `sm` so the row can actually fit at 375px. */}
+            <Link
+              to="/search"
+              className="px-2.5 py-2 rounded-lg hover:bg-amber-600 sm:hidden"
+              title="Cari produk"
+              aria-label="Cari produk"
+            >
+              🔍
+            </Link>
             <Link to="/live" className="px-3 py-2 rounded-lg hover:bg-amber-600 hidden md:flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> Live
             </Link>
@@ -209,15 +228,19 @@ export function Header() {
               Bantuan
             </Link>
             <button
+              type="button"
               onClick={toggleDark}
               className="px-2.5 py-2 rounded-lg hover:bg-amber-600"
               title={dark ? 'Mode terang' : 'Mode gelap'}
+              aria-label={dark ? 'Aktifkan mode terang' : 'Aktifkan mode gelap'}
             >
               {dark ? '☀️' : '🌙'}
             </button>
             <button
+              type="button"
               onClick={() => setCartOpen(true)}
               className="px-3 py-2 rounded-lg hover:bg-amber-600 relative"
+              aria-haspopup="dialog"
             >
               Keranjang
               {cartCount > 0 && (
@@ -226,6 +249,7 @@ export function Header() {
                 </span>
               )}
             </button>
+
             {user ? (
               <div className="flex items-center gap-2">
                 <NotificationBell />
@@ -244,13 +268,14 @@ export function Header() {
                     Support
                   </Link>
                 )}
-                <Link to="/account" className="px-3 py-2 rounded-lg hover:bg-amber-600 flex items-center gap-2">
+                <Link to="/account" className="px-3 py-2 rounded-lg hover:bg-amber-600 flex items-center gap-2 max-w-32 sm:max-w-none">
                   {user.avatar_url ? (
                     <img src={user.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover bg-white/20" />
                   ) : null}
-                  {user.full_name.split(' ')[0]}
+                  <span className="truncate">{user.full_name.split(' ')[0]}</span>
                 </Link>
                 <button
+                  type="button"
                   onClick={async () => {
                     await logout()
                     navigate('/')
@@ -259,6 +284,7 @@ export function Header() {
                 >
                   Keluar
                 </button>
+
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -287,58 +313,61 @@ export function Header() {
 function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void }) {
   const total = lines.reduce((s, l) => s + l.subtotal, 0)
   return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-xs sm:w-96 bg-white shadow-xl flex flex-col">
-        <div className="p-4 border-b flex justify-between items-center">
-          <h2 className="font-bold">Keranjang ({lines.length})</h2>
-          <button type="button" aria-label="Tutup keranjang" onClick={onClose} className="text-gray-400 hover:text-gray-700">
-            ✕
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {lines.length === 0 && <p className="text-sm text-gray-500 text-center mt-10">Keranjang kosong</p>}
-          {lines.map((l) => (
-            <div key={l.variant_id} className="flex gap-3">
-              {l.image_url ? (
-                <img src={l.image_url} alt="" loading="lazy" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
-              ) : (
-                <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
-                  {l.product_name.slice(0, 8)}
+    <Modal
+      open
+      onClose={onClose}
+      title={`Keranjang (${lines.length})`}
+      variant="right"
+      hideCloseButton
+      panelClassName="!p-0"
+    >
+      <div className="h-full flex flex-col">
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {lines.length === 0 && <p className="text-sm text-gray-500 text-center mt-10">Keranjang kosong</p>}
+            {lines.map((l) => (
+              <div key={l.variant_id} className="flex gap-3">
+                {l.image_url ? (
+                  <img src={l.image_url} alt="" loading="lazy" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
+                ) : (
+                  <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+                    {l.product_name.slice(0, 8)}
+                  </div>
+                )}
+                <div className="flex-1 text-sm min-w-0">
+                  <p className="line-clamp-1">{l.product_name}</p>
+                  <p className="text-gray-500 text-xs">
+                    {l.variant_name} × {l.quantity}
+                  </p>
+                  <p className="text-amber-600 font-medium">{formatIDR(l.subtotal)}</p>
                 </div>
-              )}
-              <div className="flex-1 text-sm">
-                <p className="line-clamp-1">{l.product_name}</p>
-                <p className="text-gray-500 text-xs">
-                  {l.variant_name} × {l.quantity}
-                </p>
-                <p className="text-amber-600 font-medium">{formatIDR(l.subtotal)}</p>
               </div>
-            </div>
-          ))}
-        </div>
-        <div className="p-4 border-t space-y-3">
-          <div className="flex justify-between font-bold">
-            <span>Total</span>
-            <span className="text-amber-600">{formatIDR(total)}</span>
+            ))}
           </div>
-          <Link
-            to="/checkout"
-            onClick={onClose}
-            className="block text-center py-3 rounded-lg bg-amber-500 text-white font-medium hover:bg-amber-600"
-          >
-            Checkout
-          </Link>
-          <Link
-            to="/cart"
-            onClick={onClose}
-            className="block text-center py-3 rounded-lg border border-gray-300 hover:bg-gray-50"
-          >
-            Lihat Keranjang
-          </Link>
+          <div className="p-4 border-t space-y-3">
+            <div className="flex justify-between font-bold">
+              <span>Total</span>
+              <span className="text-amber-600">{formatIDR(total)}</span>
+            </div>
+            <Link
+              to="/checkout"
+              onClick={onClose}
+              className="block text-center py-3 rounded-lg bg-amber-500 text-white font-medium hover:bg-amber-600"
+            >
+              Checkout
+            </Link>
+            <Link
+              to="/cart"
+              onClick={onClose}
+              className="block text-center py-3 rounded-lg border border-gray-300 hover:bg-gray-50"
+            >
+              Lihat Keranjang
+            </Link>
+          </div>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
+
 

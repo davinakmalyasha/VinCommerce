@@ -27,7 +27,7 @@ export function RootLayout() {
           <p>
             🎭 Mode impersonasi: kamu login sebagai <b>{impersonating.name}</b> ({impersonating.email}). Semua aksi tercatat di audit log.
           </p>
-          <button
+          <button type="button"
             onClick={async () => {
               await stopImpersonation()
               navigate('/admin/users')

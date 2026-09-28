@@ -5,6 +5,7 @@ import { api, getAccessToken, refreshAccessToken } from '../../lib/api'
 import { useSession } from '../../stores/session'
 import { formatDate } from '../../lib/format'
 import { notificationHref } from '../../lib/notifications'
+import { Modal } from '../Modal'
 
 interface Notification {
   id: number
@@ -20,8 +21,11 @@ export function NotificationBell() {
   const { user } = useSession()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
-  const [live, setLive] = useState(0)
 
+  // The server count is the single source of truth. A local `live` counter
+  // used to sit on top of it, so every streamed order event grew the badge by
+  // 2 (one from the local increment, one from the refetched server count that
+  // already included the event) and it never came back down.
   const { data: unread } = useQuery({
     queryKey: ['notif-unread'],
     queryFn: async () => (await api.get<{ unread: number }>('/notifications/unread-count')).data.unread,
@@ -29,19 +33,25 @@ export function NotificationBell() {
     refetchInterval: 30_000,
   })
 
-  const { data: notifications } = useQuery({
+  const notificationsQuery = useQuery({
     queryKey: ['notifications'],
     queryFn: async () => (await api.get<{ notifications: Notification[] }>('/notifications?limit=15')).data.notifications,
     enabled: !!user && open,
+    staleTime: 10_000,
   })
+  const notifications = notificationsQuery.data
 
+  // Scope the mark-read to the rows this dropdown actually renders. Posting
+  // with no body marked the ENTIRE account read, including notifications the
+  // user never saw.
   const markRead = useMutation({
-    mutationFn: async () => api.post('/notifications/read'),
+    mutationFn: async (ids: number[]) => api.post('/notifications/read', { ids }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notif-unread'] })
       queryClient.invalidateQueries({ queryKey: ['notifications'] })
     },
   })
+
 
   useEffect(() => {
     if (!user) return
@@ -88,7 +98,8 @@ export function NotificationBell() {
           buffer = parts.pop() ?? ''
           for (const part of parts) {
             if (part.includes('event: order') && part.includes('data:')) {
-              setLive((n) => n + 1)
+              // One invalidation only. The refetched server count already
+              // includes this event; the local bump was pure double counting.
               queryClient.invalidateQueries({ queryKey: ['notif-unread'] })
               // Repaint any open order views on realtime status changes.
               queryClient.invalidateQueries({ queryKey: ['orders'] })
@@ -133,18 +144,19 @@ export function NotificationBell() {
 
   if (!user) return null
 
-  const badge = (unread ?? 0) + live
+  const badge = unread ?? 0
+  // Only the rows the dropdown is about to show get marked read.
+  const visibleUnread = (notifications ?? []).filter((n) => !n.read_at).map((n) => n.id)
 
   return (
     <div className="relative">
       <button
-        onClick={() => {
-          setOpen(!open)
-          setLive(0)
-          if (badge > 0) markRead.mutate()
-        }}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
         className="px-3 py-2 rounded-lg hover:bg-amber-600 relative text-white"
         title="Notifikasi"
+        aria-haspopup="dialog"
+        aria-expanded={open}
       >
         🔔
         {badge > 0 && (
@@ -154,44 +166,72 @@ export function NotificationBell() {
         )}
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-12 z-50 w-96 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
-            <div className="p-4 border-b flex justify-between items-center">
-              <h3 className="font-bold text-sm">Notifikasi</h3>
-              <Link to="/notifications" className="text-xs text-amber-600 hover:underline" onClick={() => setOpen(false)}>
-                Semua
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Notifikasi"
+        variant="anchored"
+        hideCloseButton
+        panelClassName="!p-0"
+      >
+        <div className="p-4 border-b flex justify-between items-center">
+          <span className="text-xs text-gray-500">{badge} belum dibaca</span>
+          {visibleUnread.length > 0 && (
+            <button
+              type="button"
+              onClick={() => markRead.mutate(visibleUnread)}
+              disabled={markRead.isPending}
+              className="text-xs text-amber-600 hover:underline disabled:opacity-50"
+            >
+              Tandai dibaca
+            </button>
+          )}
+          <Link to="/notifications" className="text-xs text-amber-600 hover:underline" onClick={() => setOpen(false)}>
+            Semua
+          </Link>
+        </div>
+        <div className="max-h-96 overflow-y-auto">
+          {notificationsQuery.isLoading && (
+            <p className="text-sm text-gray-500 text-center py-10">Memuat notifikasi...</p>
+          )}
+          {notificationsQuery.isError && (
+            <div role="alert" className="p-4 text-center text-sm text-red-600">
+              <p>Gagal memuat notifikasi.</p>
+              <button
+                type="button"
+                onClick={() => void notificationsQuery.refetch()}
+                className="mt-2 underline"
+              >
+                Coba lagi
+              </button>
+            </div>
+          )}
+          {notifications?.length === 0 && (
+            <p className="text-sm text-gray-500 text-center py-10">Belum ada notifikasi.</p>
+          )}
+          {notifications?.map((n) => {
+            const href = notificationHref(n.data)
+            const item = (
+              <div className="px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <p className={`text-sm font-medium ${n.read_at ? '' : 'text-amber-700'}`}>{n.title}</p>
+                  <span className="text-xs text-gray-400 shrink-0">{formatDate(n.created_at)}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>
+              </div>
+            )
+            return href ? (
+              <Link key={n.id} to={href} onClick={() => setOpen(false)} className="block">
+                {item}
               </Link>
-            </div>
-            <div className="max-h-96 overflow-y-auto">
-              {notifications?.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-10">Belum ada notifikasi.</p>
-              )}
-              {notifications?.map((n) => {
-                const href = notificationHref(n.data)
-                const item = (
-                  <div className="px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-medium">{n.title}</p>
-                      <span className="text-xs text-gray-400">{formatDate(n.created_at)}</span>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>
-                  </div>
-                )
-                return href ? (
-                  <Link key={n.id} to={href} onClick={() => setOpen(false)}>
-                    {item}
-                  </Link>
-                ) : (
-                  <div key={n.id}>{item}</div>
-                )
-              })}
-            </div>
-          </div>
-        </>
-      )}
+            ) : (
+              <div key={n.id}>{item}</div>
+            )
+          })}
+        </div>
+      </Modal>
     </div>
   )
 }
+
 

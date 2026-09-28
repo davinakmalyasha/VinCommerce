@@ -34,8 +34,9 @@ export function OrderChat({ orderId, status }: { orderId: string; status: string
       queryClient.invalidateQueries({ queryKey: ['order-chat', orderId] })
       setOpen(true)
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal membuka percakapan'),
   })
+  const [error, setError] = useState('')
 
   const { data: thread } = useQuery({
     queryKey: ['order-chat-messages', existing?.id],
@@ -51,7 +52,7 @@ export function OrderChat({ orderId, status }: { orderId: string; status: string
       setBody('')
       queryClient.invalidateQueries({ queryKey: ['order-chat-messages', existing?.id] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mengirim pesan'),
   })
 
   useEffect(() => {
@@ -69,6 +70,11 @@ export function OrderChat({ orderId, status }: { orderId: string; status: string
 
       {open && (
         <div className="mt-3">
+          {error && (
+            <p role="alert" className="mb-2 text-xs text-red-600 bg-red-50 dark:bg-red-950/40 rounded-lg p-2">
+              {error}
+            </p>
+          )}
           {!existing ? (
             <button
               type="button"
@@ -106,12 +112,14 @@ export function OrderChat({ orderId, status }: { orderId: string; status: string
                 }}
                 className="flex gap-2 mt-2"
               >
+                <label htmlFor={`order-chat-input-${orderId}`} className="sr-only">Pesan</label>
                 <input
+                  id={`order-chat-input-${orderId}`}
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
                   placeholder="Tulis pesan..."
                   maxLength={2000}
-                  className="flex-1 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                  className="flex-1 min-w-0 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
                 />
                 <button
                   type="submit"

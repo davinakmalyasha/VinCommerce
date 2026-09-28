@@ -25,7 +25,7 @@ export function VerifyEmailBanner() {
         </p>
         <div className="flex items-center gap-3 shrink-0">
           {!sent && (
-            <button
+            <button type="button"
               onClick={() => resend.mutate()}
               disabled={resend.isPending}
               className="text-amber-800 dark:text-amber-200 underline hover:no-underline disabled:opacity-50"
@@ -33,7 +33,7 @@ export function VerifyEmailBanner() {
               {resend.isPending ? 'Mengirim...' : 'Kirim ulang'}
             </button>
           )}
-          <button
+          <button type="button"
             onClick={() => {
               localStorage.setItem('vc_verify_dismissed', '1')
               setHidden(true)
