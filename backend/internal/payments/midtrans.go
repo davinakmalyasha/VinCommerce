@@ -3,6 +3,7 @@ package payments
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
@@ -160,7 +161,17 @@ func (g *MidtransGateway) VerifyWebhook(_ context.Context, payload []byte, _ str
 		return false, nil
 	}
 	expected := SignatureKey(n.OrderID, n.StatusCode, n.GrossAmount, g.serverKey)
-	return strings.EqualFold(expected, n.SignatureKey), nil
+	// Constant-time compare. The previous strings.EqualFold short-circuited on
+	// the first differing byte, which is a (weak) timing oracle on the
+	// signature; the sandbox adapter already used hmac.Equal, so this also
+	// removes an inconsistency between two implementations of one check.
+	//
+	// Both sides are lowercased first: SHA-512 hex is lowercase in practice,
+	// but Midtrans has been observed sending the digest in either case, and
+	// normalising before the compare keeps that tolerance without giving up
+	// constant time (EqualFold on the raw values is what leaked the timing).
+	got := strings.ToLower(strings.TrimSpace(n.SignatureKey))
+	return hmac.Equal([]byte(expected), []byte(got)), nil
 }
 
 // ParseWebhook normalizes a verified notification into gateway events.
@@ -172,7 +183,13 @@ func (g *MidtransGateway) ParseWebhook(payload []byte) (*GatewayEvent, error) {
 	if n.OrderID == "" {
 		return nil, fmt.Errorf("webhook missing order_id")
 	}
-	amount, _ := strconv.ParseFloat(n.GrossAmount, 64)
+	// A malformed gross_amount silently became 0.0, which the handler then
+	// rejected as AMOUNT_REQUIRED. Fails closed, but the swallowed error made
+	// gateway misbehaviour undiagnosable — surface it instead.
+	amount, err := strconv.ParseFloat(n.GrossAmount, 64)
+	if err != nil {
+		return nil, fmt.Errorf("webhook gross_amount %q: %w", n.GrossAmount, err)
+	}
 	ev := &GatewayEvent{
 		Type:      mapStatus(n.TransactionStatus, n.FraudStatus),
 		Reference: n.OrderID,
@@ -203,27 +220,35 @@ func SignatureKey(orderID, statusCode, grossAmount, serverKey string) string {
 }
 
 // mapStatus translates Midtrans states onto normalized payment events.
+//
+// partial_refund is deliberately a DISTINCT event from refund. Mapping both
+// onto one "fully refunded" event meant a Rp 10 partial refund at the gateway
+// triggered a credit of the entire order amount to the buyer's wallet, and it
+// flipped the intent to `refunded` so a later legitimate refund could never
+// be applied at all.
 func mapStatus(status, fraud string) string {
 	switch status {
 	case "settlement":
-		return "payment.paid"
+		return EventPaid
 	case "capture":
 		switch fraud {
 		case "accept":
-			return "payment.paid"
+			return EventPaid
 		case "deny":
-			return "payment.failed"
+			return EventFailed
 		default: // challenge etc: wait for the next notification
-			return "payment.pending"
+			return EventPending
 		}
 	case "pending":
-		return "payment.pending"
+		return EventPending
 	case "deny", "cancel", "expire":
-		return "payment.failed"
-	case "refund", "partial_refund":
-		return "payment.refunded"
+		return EventFailed
+	case "partial_refund":
+		return EventPartiallyRefunded
+	case "refund":
+		return EventRefunded
 	default:
-		return "payment.pending"
+		return EventPending
 	}
 }
 

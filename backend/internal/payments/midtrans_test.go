@@ -71,17 +71,22 @@ func TestParseWebhookStatusMatrix(t *testing.T) {
 	cases := []struct {
 		status, fraud, want string
 	}{
-		{"settlement", "", "payment.paid"},
-		{"capture", "accept", "payment.paid"},
-		{"capture", "deny", "payment.failed"},
-		{"capture", "challenge", "payment.pending"},
-		{"pending", "", "payment.pending"},
-		{"deny", "", "payment.failed"},
-		{"cancel", "", "payment.failed"},
-		{"expire", "", "payment.failed"},
-		{"refund", "", "payment.refunded"},
-		{"partial_refund", "", "payment.refunded"},
-		{"something_new", "", "payment.pending"},
+		{"settlement", "", EventPaid},
+		{"capture", "accept", EventPaid},
+		{"capture", "deny", EventFailed},
+		{"capture", "challenge", EventPending},
+		{"pending", "", EventPending},
+		{"deny", "", EventFailed},
+		{"cancel", "", EventFailed},
+		{"expire", "", EventFailed},
+		{"refund", "", EventRefunded},
+		// A partial refund is a DISTINCT event. This row used to assert
+		// `partial_refund -> payment.refunded`, which is precisely the bug:
+		// a Rp 10 refund at the gateway triggered a credit of the entire
+		// order amount to the buyer's wallet, and flipped the intent to
+		// `refunded` so a later legitimate refund could never be applied.
+		{"partial_refund", "", EventPartiallyRefunded},
+		{"something_new", "", EventPending},
 	}
 	g := NewMidtransGateway("k", "sandbox", nil)
 	for _, tc := range cases {
@@ -105,6 +110,67 @@ func TestParseWebhookStatusMatrix(t *testing.T) {
 	ev, err := g.ParseWebhook([]byte(`{"transaction_status":"settlement"}`))
 	if err == nil || ev != nil {
 		t.Fatal("missing order_id should error")
+	}
+}
+
+// TestPartialRefundCarriesItsOwnAmount pins the contract that makes the
+// Rp-10-refunds-Rp-100.000 bug impossible: a partial_refund notification
+// produces a distinct event type, and the amount on the event is the REFUNDED
+// amount so the caller can credit exactly that and no more.
+func TestPartialRefundCarriesItsOwnAmount(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+
+	full := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
+		TransactionStatus: "refund", TransactionID: "tx-1", PaymentType: "qris",
+	}
+	partial := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "10.00",
+		TransactionStatus: "partial_refund", TransactionID: "tx-1", PaymentType: "qris",
+	}
+
+	evFull, err := g.ParseWebhook(notificationJSON(t, full))
+	if err != nil {
+		t.Fatalf("full refund: %v", err)
+	}
+	if evFull.Type != EventRefunded {
+		t.Fatalf("full refund type = %q, want %q", evFull.Type, EventRefunded)
+	}
+	if evFull.Amount != 100000 {
+		t.Fatalf("full refund amount = %v, want 100000", evFull.Amount)
+	}
+
+	evPartial, err := g.ParseWebhook(notificationJSON(t, partial))
+	if err != nil {
+		t.Fatalf("partial refund: %v", err)
+	}
+	if evPartial.Type != EventPartiallyRefunded {
+		t.Fatalf("partial refund type = %q, want %q (a full-refund event here is the bug)",
+			evPartial.Type, EventPartiallyRefunded)
+	}
+	// The whole point: the handler must be able to tell these apart and must
+	// see 10, not 100000.
+	if evPartial.Amount != 10 {
+		t.Fatalf("partial refund amount = %v, want 10", evPartial.Amount)
+	}
+	if evPartial.Type == evFull.Type {
+		t.Fatal("partial and full refunds must not produce the same event type")
+	}
+}
+
+// TestParseWebhookRejectsMalformedAmount proves a bad gross_amount is a
+// hard error rather than a silent 0.0, which the handler then reported as
+// AMOUNT_REQUIRED with no hint of the real cause.
+func TestParseWebhookRejectsMalformedAmount(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+	for _, bad := range []string{"", "abc", "1.2.3", "12,000.00"} {
+		n := snapNotification{
+			OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: bad,
+			TransactionStatus: "settlement", TransactionID: "tx-1", PaymentType: "qris",
+		}
+		if _, err := g.ParseWebhook(notificationJSON(t, n)); err == nil {
+			t.Errorf("gross_amount %q was accepted; want error", bad)
+		}
 	}
 }
 

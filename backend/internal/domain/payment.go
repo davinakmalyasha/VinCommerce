@@ -10,6 +10,7 @@ const (
 	IntentReleased          = "released"
 	IntentRefunded          = "refunded"
 	IntentPartiallyRefunded = "partially_refunded"
+	IntentDisputedSplit     = "disputed_split"
 	IntentFailed            = "failed"
 	IntentExpired           = "expired"
 )

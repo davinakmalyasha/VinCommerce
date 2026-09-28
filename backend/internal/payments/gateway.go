@@ -43,13 +43,25 @@ type GatewayPayment struct {
 	Status      string // pending | paid | failed
 }
 
+// Gateway event types.
+const (
+	EventPaid              = "payment.paid"
+	EventPending           = "payment.pending"
+	EventFailed            = "payment.failed"
+	EventRefunded          = "payment.refunded"
+	EventPartiallyRefunded = "payment.partially_refunded"
+)
+
 // GatewayEvent is a normalized webhook event.
 type GatewayEvent struct {
-	Type      string // payment.paid | payment.failed | payment.refunded
+	Type      string // see the Event* constants
 	Reference string
-	Amount    float64
-	Currency  string
-	Raw       map[string]any
+	// Amount is the amount the notification is about. For a partial refund
+	// this is the REFUNDED amount, not the original charge, so the handler
+	// must not treat it as the order total.
+	Amount   float64
+	Currency string
+	Raw      map[string]any
 }
 
 // NewGateway selects the configured adapter. Unknown names fail closed
