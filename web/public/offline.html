@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offline — VinCommerce</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 2rem 1.5rem;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        background: #ffffff;
+        color: #111827;
+        text-align: center;
+        line-height: 1.6;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0b1120; color: #e5e7eb; }
+        .card { background: #111827 !important; border-color: #1f2937 !important; }
+        .muted { color: #9ca3af; }
+        button { background: #f59e0b !important; }
+      }
+      .card {
+        max-width: 30rem;
+        padding: 2.5rem 2rem;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 1rem;
+      }
+      .badge {
+        display: inline-grid;
+        place-items: center;
+        width: 4rem;
+        height: 4rem;
+        margin-bottom: 1.25rem;
+        border-radius: 9999px;
+        background: #f59e0b;
+        color: #ffffff;
+        font-size: 1.75rem;
+        font-weight: 700;
+      }
+      h1 { margin: 0 0 0.5rem; font-size: 1.375rem; font-weight: 700; }
+      p { margin: 0 0 1.5rem; }
+      .muted { color: #6b7280; font-size: 0.9375rem; }
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6875rem 1.25rem;
+        border: 0;
+        border-radius: 0.5rem;
+        background: #f59e0b;
+        color: #111827;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(0.95); }
+      button:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main class="card" role="main">
+      <div class="badge" aria-hidden="true">!</div>
+      <h1>You're offline</h1>
+      <p class="muted">
+        Koneksi ke server terputus. Halaman yang sudah kamu buka tetap bisa
+        dibaca, tapi transaksi baru butuh koneksi.
+      </p>
+      <button type="button" onclick="location.reload()">Coba lagi</button>
+    </main>
+    <script>
+      // Auto-retry as soon as connectivity returns so the user does not have
+      // to keep pressing the button.
+      window.addEventListener('online', () => location.reload())
+    </script>
+  </body>
+</html>
