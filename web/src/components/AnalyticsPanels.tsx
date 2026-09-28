@@ -43,7 +43,7 @@ export function FunnelPanel({ funnel }: { funnel?: FunnelStep[] }) {
             </div>
             <p className="text-xs text-gray-500 mt-2">{f.label}</p>
             <p className="text-[10px] text-gray-400">
-              {i === 0 ? '100%' : `${f.rate.toFixed(2)}%`}
+              {i === 0 ? '100%' : `${(f.rate ?? 0).toFixed(2)}%`}
             </p>
           </div>
         ))}

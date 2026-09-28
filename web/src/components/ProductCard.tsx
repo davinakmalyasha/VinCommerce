@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { memo, useEffect, useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Product } from '../types'
 import { formatIDR } from '../lib/format'
@@ -7,8 +7,9 @@ import { Rating } from './Rating'
 import { useSession } from '../stores/session'
 import { api } from '../lib/api'
 import { useActiveFlashSale } from '../lib/flashSale'
+import { addCompareItem, compareIds, readCompareCount, subscribeCompare } from '../lib/compare'
 
-export function ProductCard({ product }: { product: Product }) {
+function ProductCardImpl({ product }: { product: Product }) {
   const { user } = useSession()
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState(false)
@@ -38,17 +39,15 @@ export function ProductCard({ product }: { product: Product }) {
   })
 
   const addCompare = () => {
-    const list = JSON.parse(localStorage.getItem('vc_compare') ?? '[]') as { id: string }[]
-    if (list.some((i) => i.id === product.id)) {
+    if (compareIds().includes(product.id)) {
       setCompareMsg('Sudah ada')
       return
     }
-    if (list.length >= 4) {
+    if (compareIds().length >= 4) {
       setCompareMsg('Penuh (maks 4)')
       return
     }
-    list.push({ ...product, compared_at: Date.now() } as never)
-    localStorage.setItem('vc_compare', JSON.stringify(list))
+    addCompareItem(product)
     setCompareMsg('Ditambahkan ✓')
   }
 
@@ -109,6 +108,39 @@ export function ProductCard({ product }: { product: Product }) {
       >
         ⚖ Bandingkan{compareMsg ? ` · ${compareMsg}` : ''}
       </button>
+    </div>
+  )
+}
+
+/**
+ * Memoised so an unrelated parent re-render — a countdown tick, a parent
+ * state change — does not re-render every card in a 20-item grid.
+ */
+export const ProductCard = memo(ProductCardImpl)
+
+/**
+ * Floating shortcut to /compare. Compare wrote to localStorage but nothing
+ * ever linked to the route, so the comparison table was unreachable.
+ */
+export function CompareBar() {
+  const [count, setCount] = useState(() => readCompareCount())
+  const { pathname } = useLocation()
+
+  useEffect(() => subscribeCompare(setCount), [])
+
+  if (count === 0 || pathname === '/compare') return null
+
+  return (
+    <div
+      role="status"
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-full bg-gray-900 dark:bg-gray-100 px-4 py-2.5 text-sm text-white dark:text-gray-900 shadow-lg"
+    >
+      <span>
+        ⚖ {count} produk dipilih
+      </span>
+      <Link to="/compare" className="rounded-full bg-amber-500 px-3 py-1 text-xs font-semibold text-white">
+        Bandingkan ({count})
+      </Link>
     </div>
   )
 }

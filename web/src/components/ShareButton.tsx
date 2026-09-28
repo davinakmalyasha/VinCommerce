@@ -35,7 +35,7 @@ export function ShareButton({
   }
 
   return (
-    <button
+    <button type="button"
       onClick={share}
       className={className}
       title="Bagikan"

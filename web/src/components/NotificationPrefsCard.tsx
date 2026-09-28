@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 
@@ -36,7 +37,10 @@ export function NotificationPrefsCard() {
         email: p.email ?? false,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notif-prefs'] }),
+    onError: (e: Error) => setError(e.message || 'Gagal menyimpan preferensi.'),
   })
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState('')
 
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 space-y-2">
@@ -45,37 +49,58 @@ export function NotificationPrefsCard() {
         Atur notifikasi in-app dan email per kategori. Email transaksional
         (reset password, verifikasi, status pesanan) tetap terkirim.
       </p>
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
+      <p role="status" className="sr-only">{status}</p>
       <div className="divide-y divide-gray-100 dark:divide-gray-800">
         <div className="flex items-center justify-between py-2 text-[11px] uppercase tracking-wide text-gray-400 font-medium">
-          <span>Kategori</span>
-          <span className="flex gap-6 pr-1">
+          <span id="notif-prefs-head">Kategori</span>
+          <span className="flex gap-6 pr-1" aria-hidden="true">
             <span>In-app</span>
             <span>Email</span>
           </span>
         </div>
-        {(data ?? []).map((p) => (
-          <div key={p.category} className="flex items-center justify-between py-2.5 text-sm">
-            <span>{LABELS[p.category] ?? p.category}</span>
-            <span className="flex items-center gap-6 pr-1">
-              <input
-                type="checkbox"
-                aria-label={`Notifikasi in-app ${LABELS[p.category] ?? p.category}`}
-                checked={p.in_app}
-                onChange={(e) => update.mutate({ category: p.category, inApp: e.target.checked, email: p.email })}
-                disabled={update.isPending}
-                className="accent-amber-500 w-4 h-4"
-              />
-              <input
-                type="checkbox"
-                aria-label={`Email ${LABELS[p.category] ?? p.category}`}
-                checked={p.email}
-                onChange={(e) => update.mutate({ category: p.category, inApp: p.in_app, email: e.target.checked })}
-                disabled={update.isPending}
-                className="accent-amber-500 w-4 h-4"
-              />
-            </span>
-          </div>
-        ))}
+        {(data ?? []).map((p) => {
+          const label = LABELS[p.category] ?? p.category
+          return (
+            <div key={p.category} className="flex items-center justify-between py-2.5 text-sm">
+              <span id={`notif-pref-${p.category}`}>{label}</span>
+              <span className="flex items-center gap-6 pr-1">
+                <input
+                  id={`notif-pref-${p.category}-inapp`}
+                  type="checkbox"
+                  aria-labelledby={`notif-pref-${p.category}`}
+                  aria-label={`Notifikasi in-app ${label}`}
+                  checked={p.in_app}
+                  onChange={(e) => {
+                    setError('')
+                    update.mutate(
+                      { category: p.category, inApp: e.target.checked, email: p.email },
+                      { onSuccess: () => setStatus(`Preferensi ${label} disimpan.`) },
+                    )
+                  }}
+                  disabled={update.isPending}
+                  className="accent-amber-500 w-4 h-4"
+                />
+                <input
+                  id={`notif-pref-${p.category}-email`}
+                  type="checkbox"
+                  aria-labelledby={`notif-pref-${p.category}`}
+                  aria-label={`Email ${label}`}
+                  checked={p.email}
+                  onChange={(e) => {
+                    setError('')
+                    update.mutate(
+                      { category: p.category, inApp: p.in_app, email: e.target.checked },
+                      { onSuccess: () => setStatus(`Preferensi ${label} disimpan.`) },
+                    )
+                  }}
+                  disabled={update.isPending}
+                  className="accent-amber-500 w-4 h-4"
+                />
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
