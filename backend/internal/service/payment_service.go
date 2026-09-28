@@ -34,6 +34,7 @@ type PaymentService struct {
 	webURL          string
 	sandboxAutoSend bool // dev-only: instantly mark payouts sent (simulated transfer)
 	payoutGuard     func(ctx context.Context, userID string) error
+	disputes        *repository.DisputeRepository
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -51,6 +52,11 @@ func NewPaymentService(payRepo *repository.PaymentRepository, orders *repository
 
 // SetUsers enables buyer lookup for transactional emails.
 func (s *PaymentService) SetUsers(u *repository.UserRepository) { s.users = u }
+
+// SetDisputes lets a money-moving dispute decision claim the dispute row
+// inside its own transaction, so the claim and the wallet movements commit
+// or roll back together.
+func (s *PaymentService) SetDisputes(d *repository.DisputeRepository) { s.disputes = d }
 
 // SetMailer enables transactional payment emails.
 func (s *PaymentService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
@@ -339,7 +345,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 	}
 
 	switch ev.Type {
-	case "payment.paid":
+	case payments.EventPaid:
 		// Never capture when the provider amount is missing or disagrees with
 		// the intent — a webhook without an amount must not move money.
 		if ev.Amount <= 0 {
@@ -351,9 +357,25 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 				fmt.Sprintf("webhook amount %.2f does not match intent amount %.2f", ev.Amount, intent.Amount))
 		}
 		return s.onPaid(ctx, intent)
-	case "payment.refunded":
-		return s.onRefunded(ctx, intent)
-	case "payment.failed":
+	case payments.EventRefunded:
+		return s.onRefunded(ctx, intent, intent.Amount)
+	case payments.EventPartiallyRefunded:
+		// A partial refund carries the REFUNDED amount, not the charge total.
+		// Routing it through onRefunded credited the whole order to the buyer:
+		// a Rp 10 refund at the gateway paid out Rp 100.000.
+		amount := ev.Amount
+		if amount <= 0 {
+			// Fail closed rather than guessing. Guessing "the whole thing" is
+			// exactly the bug this branch exists to prevent.
+			return domain.E(domain.KindInvalid, "REFUND_AMOUNT_REQUIRED",
+				"partial refund notification did not include a refunded amount")
+		}
+		if amount > intent.Amount+0.01 {
+			return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
+				fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
+		}
+		return s.onRefunded(ctx, intent, amount)
+	case payments.EventFailed:
 		// Never downgrade financial state: once money has been captured (or
 		// moved on) a late cancel/deny/expire notification must not mark the
 		// intent failed. Surface for manual review instead.
@@ -373,6 +395,46 @@ func absDiff(a, b float64) float64 {
 		return a - b
 	}
 	return b - a
+}
+
+// moneyRound rounds to 2 decimal places, half away from zero.
+//
+// The schema stores money as NUMERIC(14,2) but the Go layer is float64, so
+// every value that reaches SQL is silently re-rounded by Postgres. Rounding
+// in Go first makes the value the application logs, compares and stores all
+// agree, instead of differing by a sen in a way nobody can see. A proper
+// fix is a decimal type end to end; this is the interim that removes the
+// worst of the drift.
+func moneyRound(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+// refundedTotal sums the refund legs already written to the ledger for an
+// order.
+//
+// The intent status cannot answer this: a `partially_refunded` intent does not
+// record how much has already gone back, so two individually-valid partial
+// refunds could together exceed the charge. The ledger is the only source
+// that is guaranteed to agree with the money that actually moved.
+func (s *PaymentService) refundedTotal(ctx context.Context, orderID string) (float64, error) {
+	var total float64
+	err := s.payments.SumRefundedByOrder(ctx, orderID, &total)
+	if err != nil {
+		return 0, err
+	}
+	return moneyRound(total), nil
+}
+
+// escrowWasReleased reports whether this order's escrow was ever paid out to
+// the seller, read from the ledger rather than the intent status. A
+// partially_refunded intent has lost that bit of information.
+func (s *PaymentService) escrowWasReleased(ctx context.Context, tx pgx.Tx, orderID string) (bool, error) {
+	var released bool
+	err := s.payments.HasEscrowRelease(ctx, tx, orderID, &released)
+	if err != nil {
+		return false, err
+	}
+	return released, nil
 }
 
 // onPaid captures escrow and moves the order to paid.
@@ -548,14 +610,40 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	return nil
 }
 
-// RefundOrder refunds an order fully (escrow -> buyer wallet, or seller wallet -> buyer).
-// The intent transition is guarded so a refund can only ever execute once.
-func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason string, refundToBuyer bool) error {
+// RefundOrder moves money back to the buyer.
+//
+// amount <= 0 means "refund the full charge". A partial refund is supported
+// and is what a gateway partial_refund notification produces.
+//
+// Three defects this replaces:
+//
+//  1. It ignored order.Status entirely. On a CANCELLED order whose intent was
+//     still captured, an admin could release the escrow (+seller) and then
+//     refund it (-seller, +buyer) — the seller's net was zero but their wallet
+//     balance and payout eligibility had both grown, and a withdrawal in
+//     between turned the mint into real bank cash.
+//
+//  2. It debited the SELLER the gross amount after a release, where the seller
+//     had only ever been credited the net (amount - fee). The platform kept its
+//     commission on a fully refunded order and the seller paid the fee out of
+//     unrelated balance.
+//
+//  3. It marked the intent `refunded` and the order `refunded` even for a
+//     partial refund, so a second legitimate refund could never be applied.
+func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason string, refundToBuyer bool, amount float64) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
 		return err
 	}
-	if intent.Status != domain.IntentCaptured && intent.Status != domain.IntentReleased {
+	// partially_refunded MUST be accepted here, otherwise a partially-refunded
+	// intent can never be refunded again — not for the remainder, not at all.
+	// The first version excluded it, which made the partial-refund branches
+	// below unreachable dead code and left a buyer who received a 30% gateway
+	// refund permanently stuck at 30% with no admin path either.
+	switch intent.Status {
+	case domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded:
+		// refundable
+	default:
 		return domain.E(domain.KindConflict, "NOT_REFUNDABLE",
 			"only captured or released payments can be refunded")
 	}
@@ -564,8 +652,37 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 		return err
 	}
 
-	amount := intent.Amount
-	wasReleased := intent.Status == domain.IntentReleased
+	// Refuse to move money against a cancelled order. A cancellation that
+	// happens after capture has to be reconciled explicitly by an operator,
+	// not silently turned into a seller credit plus a buyer credit.
+	if order.Status == domain.OrderCancelled {
+		return domain.E(domain.KindConflict, "ORDER_CANCELLED",
+			"order is cancelled; reconcile the escrow with an operator before refunding")
+	}
+
+	if amount <= 0 {
+		amount = intent.Amount
+	}
+	// The cumulative refunded total is derived from the wallet ledger rather
+	// than a column, because that is the only thing guaranteed to be
+	// consistent with the money that actually moved. Without it, two
+	// successive partial refunds could each be individually valid and together
+	// refund more than was charged.
+	alreadyRefunded, err := s.refundedTotal(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	remaining := moneyRound(intent.Amount - alreadyRefunded)
+	if remaining <= 0 {
+		return domain.E(domain.KindConflict, "ALREADY_REFUNDED",
+			"this order has already been fully refunded")
+	}
+	if amount > remaining+0.01 {
+		return domain.E(domain.KindConflict, "REFUND_EXCEEDS_REMAINING",
+			fmt.Sprintf("refund %.2f exceeds the remaining refundable %.2f of %.2f charged",
+				amount, remaining, intent.Amount))
+	}
+	partial := absDiff(amount, remaining) > 0.01
 
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
@@ -573,17 +690,75 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 	}
 	defer tx.Rollback(ctx)
 
-	// Guarded in SQL: the first refund wins; replays conflict here and never
-	// reach the ledger writes below (no infinite money minting).
+	// Whether the escrow was ever released. Derived from the ledger rather than
+	// the intent status, because a partially_refunded intent has lost that
+	// bit: it could have been released before the first partial refund, or
+	// still held in escrow.
+	wasReleased, err := s.escrowWasReleased(ctx, tx.PgTx(), orderID)
+	if err != nil {
+		return err
+	}
+
+	// The fee actually applied to this intent, so the reversal is exact.
+	// Falls back to the configured rate for intents that predate the snapshot.
+	fee := intent.FeeAmount
+	sellerAmount := intent.SellerAmount
+	if wasReleased && fee == 0 {
+		if cfg, ferr := s.payments.ActiveFeeTx(ctx, tx.PgTx()); ferr == nil {
+			fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
+		}
+	}
+	if fee < 0 {
+		fee = 0
+	}
+	if sellerAmount < 0 {
+		sellerAmount = 0
+	}
+
+	// Scale both legs to THIS refund's share of the charge, then make the
+	// seller's leg the residual so the debit and the credit sum to `amount` by
+	// construction. Independently rounding two scaled values drifted by a sen
+	// per partial refund (100.00 charge, 2.50 fee, 33.33 refunded -> 32.49 +
+	// 0.83 debited vs 33.33 credited), and the drift is permanent because it
+	// accumulates in the wallet balances.
+	refundFee := 0.0
+	refundSeller := 0.0
+	if wasReleased && intent.Amount > 0 {
+		ratio := amount / intent.Amount
+		refundFee = moneyRound(fee * ratio)
+		refundSeller = moneyRound(amount - refundFee)
+		if refundSeller < 0 {
+			refundSeller = 0
+		}
+	}
+
+	next := domain.IntentPartiallyRefunded
+	if !partial {
+		next = domain.IntentRefunded
+	}
+
+	// Guarded in SQL: a concurrent second refund loses here and never reaches
+	// the ledger writes below, so two simultaneous refunds cannot both pay out.
+	// The cumulative total is re-derived inside the caller, but the row lock
+	// this UPDATE takes is what actually serialises them.
 	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
-		[]string{domain.IntentCaptured, domain.IntentReleased}, domain.IntentRefunded); err != nil {
+		[]string{domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded}, next); err != nil {
 		return err
 	}
 
 	if wasReleased {
-		// funds already with seller: debit seller wallet, credit buyer wallet
-		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "debit", domain.TxReasonRefund, amount, orderID); err != nil {
-			return err
+		// Debit only what the seller actually received, and reverse the
+		// platform's commission so a refunded sale earns no commission. The
+		// two legs are derived so they sum to exactly `amount`.
+		if refundSeller > 0 {
+			if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "debit", domain.TxReasonRefund, refundSeller, orderID); err != nil {
+				return err
+			}
+		}
+		if refundFee > 0 {
+			if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, refundFee, orderID); err != nil {
+				return err
+			}
 		}
 	}
 	if refundToBuyer {
@@ -592,30 +767,81 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 		}
 	}
 
-	if err := tx.SetPaymentStatus(ctx, orderID, domain.PaymentRefunded); err != nil {
+	payStatus := domain.PaymentRefunded
+	if partial {
+		payStatus = domain.PaymentPartiallyRefunded
+	}
+	if err := tx.SetPaymentStatus(ctx, orderID, payStatus); err != nil {
 		return err
+	}
+	note := "refund: " + reason
+	if partial {
+		note = fmt.Sprintf("partial refund: %s (Rp %.2f, Rp %.2f still refundable of Rp %.2f charged)",
+			reason, amount, moneyRound(remaining-amount), intent.Amount)
 	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: orderID, FromStatus: order.Status, ToStatus: order.Status,
-		ActorID: nil, Note: "refund: " + reason,
+		ActorID: nil, Note: note,
 	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// onRefunded processes gateway-initiated refunds.
-func (s *PaymentService) onRefunded(ctx context.Context, intent *domain.PaymentIntent) error {
-	if intent.Status == domain.IntentRefunded || intent.Status == domain.IntentPartiallyRefunded {
+// onRefunded processes a gateway-initiated refund of a specific amount.
+//
+// amount is the REFUNDED amount, which equals intent.Amount for a full refund
+// and is smaller for a partial one. Passing the total unconditionally is what
+// turned a Rp 10 partial refund into a Rp 100.000 credit.
+func (s *PaymentService) onRefunded(ctx context.Context, intent *domain.PaymentIntent, amount float64) error {
+	// Already terminal: a replayed refund notification is a no-op, not an
+	// error. Returning an error here makes the gateway retry forever.
+	//
+	// partially_refunded is deliberately NOT in this list: a second partial
+	// refund is legitimate and must be applied. Idempotency comes from the
+	// cumulative-total check in RefundOrder plus the guarded intent UPDATE, not
+	// from refusing the call.
+	if intent.Status == domain.IntentRefunded || intent.Status == domain.IntentDisputedSplit {
 		return nil
 	}
-	return s.RefundOrder(ctx, intent.OrderID, "gateway refund", true)
+	if amount <= 0 {
+		return domain.E(domain.KindInvalid, "REFUND_AMOUNT_REQUIRED",
+			"refund amount must be positive")
+	}
+	if amount > intent.Amount+0.01 {
+		return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
+			fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
+	}
+	refundToBuyer := true
+	return s.RefundOrder(ctx, intent.OrderID, "gateway refund", refundToBuyer, amount)
+}
+
+// IntentByOrder exposes the escrow record for an order. Used by the order
+// service to decide whether a cancellation would orphan captured funds.
+func (s *PaymentService) IntentByOrder(ctx context.Context, orderID string) (*domain.PaymentIntent, error) {
+	return s.payments.IntentByOrder(ctx, orderID)
 }
 
 // DisputeSplitCredit settles a "split" dispute: the platform mediates by
-// crediting the buyer HALF the paid amount out of the platform wallet.
-// Escrow keeps its normal lifecycle (the seller's side resolves at release).
-func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID string) error {
+// crediting the buyer a share out of the platform wallet.
+//
+// Three things this function must do, and previously did not:
+//
+//  1. Record a settlement, so a replay cannot pay twice. It used to only READ
+//     intent.Status and write money, so calling it repeatedly debited the
+//     platform wallet and credited the buyer every single time. The only
+//     backstop was wallets.balance >= 0, so one order could drain the entire
+//     commission pool accumulated from every other seller.
+//
+//  2. Bound the payout by what the platform actually earned on this order.
+//     The old formula paid intent.Amount/2, which on a Rp 500.000 order with a
+//     2% fee meant paying Rp 250.000 out of a commission that was only ever
+//     going to be Rp 10.000 — a ~25x amplification of a single dispute.
+//
+//  3. Run the wallet movements and the settlement record in ONE transaction, so
+//     a crash cannot leave money moved with no marker (or a marker with no
+//     money).
+func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disputeID, adminID, note string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
 		return err
@@ -623,26 +849,73 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID string)
 	if intent.Status != domain.IntentCaptured && intent.Status != domain.IntentReleased {
 		return domain.E(domain.KindConflict, "ESCROW_NOT_HELD", "no settled payment to split")
 	}
-	half := math.Floor(intent.Amount/2*100) / 100
-	if half <= 0 {
+
+	// The platform may only give back what it took. Prefer the fee actually
+	// applied to this intent; fall back to the configured rate when the intent
+	// predates the fee snapshot.
+	maxCredit := intent.FeeAmount
+	if maxCredit <= 0 {
+		cfg, err := s.payments.ActiveFee(ctx)
+		if err == nil {
+			fee, _ := repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
+			maxCredit = fee
+		}
+	}
+	if maxCredit <= 0 {
+		return domain.E(domain.KindConflict, "NO_COMMISSION_TO_OFFSET",
+			"platform earned no commission on this order, so there is nothing to credit from")
+	}
+
+	// Median-style split of the commission actually earned, rounded down to a
+	// whole sen. Never more than the commission, never negative.
+	credit := math.Floor(maxCredit/2*100) / 100
+	if credit <= 0 {
 		return nil
 	}
+
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	// Platform absorbs its mediation share — debited from the platform wallet
-	// so the ledger stays balanced (no money minted).
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, half, orderID); err != nil {
+
+	// Claim the dispute in the same transaction. RowsAffected == 0 means
+	// someone else already resolved it, so we must not move money.
+	claimed, err := s.disputes.ClaimForResolution(ctx, tx.PgTx(), disputeID, "split", note)
+	if err != nil {
 		return err
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, half, orderID); err != nil {
+	if !claimed {
+		return domain.E(domain.KindConflict, "DISPUTE_ALREADY_RESOLVED",
+			"dispute has already been resolved")
+	}
+
+	// Debit the platform wallet first: WalletTxOn enforces balance >= 0, so if
+	// the platform cannot cover it the whole transaction (including the claim)
+	// rolls back and the dispute stays open for a human to retry.
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, credit, orderID); err != nil {
 		return err
 	}
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, credit, orderID); err != nil {
+		return err
+	}
+
+	// Record the settlement on the payment intent. This is what makes a
+	// replay conflict on the next call even if the dispute row were somehow
+	// re-opened.
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
+		[]string{domain.IntentCaptured, domain.IntentReleased}, domain.IntentDisputedSplit); err != nil {
+		return err
+	}
+
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
-		OrderID: orderID, FromStatus: "", ToStatus: domain.OrderPaid,
-		ActorID: nil, Note: fmt.Sprintf("dispute split settlement: Rp %.0f credited to buyer", half),
+		OrderID:    orderID,
+		FromStatus: domain.OrderPaid,
+		ToStatus:   domain.OrderPaid,
+		ActorID:    &adminID,
+		Note: fmt.Sprintf("dispute %s resolved as split: Rp %.0f credited to buyer "+
+			"(capped at the platform commission of Rp %.0f earned on this order)",
+			disputeID, credit, maxCredit),
 	}); err != nil {
 		return err
 	}

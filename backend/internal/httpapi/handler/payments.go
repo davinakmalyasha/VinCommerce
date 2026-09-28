@@ -85,7 +85,7 @@ func (h *Payments) Refund(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	if err := h.svc.RefundOrder(r.Context(), chi.URLParam(r, "orderId"), req.Reason, true); err != nil {
+	if err := h.svc.RefundOrder(r.Context(), chi.URLParam(r, "orderId"), req.Reason, true, 0); err != nil {
 		writeErr(w, r, err)
 		return
 	}

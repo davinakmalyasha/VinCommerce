@@ -135,6 +135,44 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, tx pgx
 	return setIntentStatusGuardedOn(tx, ctx, intentID, expected, to)
 }
 
+// SumRefundedByOrder totals the refund credits already posted for an order, so
+// a second partial refund can be bounded by what is actually left.
+//
+// Derived from the ledger rather than from a column on payment_intents,
+// because a `partially_refunded` intent does not record how much has already
+// gone back, and the ledger is the only record guaranteed to agree with the
+// money that actually moved.
+func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, orderID string, out *float64) error {
+	var total float64
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount), 0)::float8
+		FROM wallet_transactions
+		WHERE ref_id = $1 AND reason = $2 AND kind = 'credit'`,
+		orderID, domain.TxReasonRefund).Scan(&total)
+	if err != nil {
+		return err
+	}
+	*out = total
+	return nil
+}
+
+// HasEscrowRelease reports whether escrow was ever paid out for an order. A
+// partially_refunded intent no longer records that, so it is read from the
+// ledger row the release wrote.
+func (r *PaymentRepository) HasEscrowRelease(ctx context.Context, tx pgx.Tx, orderID string, out *bool) error {
+	var exists bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM wallet_transactions
+			WHERE ref_id = $1 AND reason = $2 AND kind = 'credit'
+		)`, orderID, domain.TxReasonEscrowRelease).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	*out = exists
+	return nil
+}
+
 func intentStatusUpdate(expected []string) string {
 	q := `
 		UPDATE payment_intents SET status = $3::varchar, updated_at = now(),
