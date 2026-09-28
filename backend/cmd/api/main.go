@@ -38,10 +38,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// config.Load already enforces production guards (JWT secret strength,
-	// sslmode, gateway policy) for every binary; keep a belt-and-braces check.
-	if cfg.Environment == "production" && (len(cfg.Auth.JWTSecret) < 32 || cfg.Auth.JWTSecret == "dev-secret-change-me") {
-		return fmt.Errorf("refusing to start: JWT_SECRET must be a strong unique value (32+ chars) in production")
+	// config.Load already enforces the production guards (JWT secret strength,
+	// sslmode, gateway policy) for every binary and normalises APP_ENV; this
+	// is a belt-and-braces re-check of the single highest-impact guard.
+	if cfg.IsProd() && config.IsWeakSecret(cfg.Auth.JWTSecret) {
+		return fmt.Errorf("refusing to start: JWT_SECRET must be a strong unique value (32+ chars, high entropy) in %s", cfg.Environment)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
