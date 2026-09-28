@@ -378,6 +378,14 @@ func (s *MarketService) MyReferralCode(ctx context.Context, userID string) (stri
 }
 
 // RedeemReferral applies a referral code during registration: both parties earn points.
+//
+// Guarded against farming. The previous version was a bare pair of ledger
+// inserts with no one-redeem-per-user check, so calling it in a loop granted
+// unlimited points — and points are worth Rp 100 each at checkout, so a
+// 500-point bonus converted into an unbounded discount. Three layers now stop
+// it: a per-user rate limit on the route, the unique index added in migration
+// 00040 on (user_id, reason) WHERE reason = 'referral_bonus', and the
+// existence check below.
 func (s *MarketService) RedeemReferral(ctx context.Context, newUserID, code string) error {
 	referrer, err := s.loyalty.ReferralByCode(ctx, code)
 	if err != nil {
@@ -386,6 +394,19 @@ func (s *MarketService) RedeemReferral(ctx context.Context, newUserID, code stri
 	if referrer == newUserID {
 		return domain.E(domain.KindInvalid, "SELF_REFERRAL", "cannot use your own code")
 	}
+
+	// One referral bonus per user, ever. Checked before the write so the caller
+	// gets a clear conflict instead of a raw unique-violation error; the index
+	// is what actually makes it safe under concurrency.
+	already, err := s.loyalty.HasLedgerEntry(ctx, newUserID, "referral_bonus")
+	if err != nil {
+		return err
+	}
+	if already {
+		return domain.E(domain.KindConflict, "REFERRAL_ALREADY_USED",
+			"you have already used a referral code")
+	}
+
 	if err := s.loyalty.Add(ctx, newUserID, 500, "referral_bonus", referrer); err != nil {
 		return err
 	}
@@ -426,32 +447,84 @@ func (s *MarketService) Disputes(ctx context.Context, status string) ([]*domain.
 
 // ResolveDispute decides a dispute (admin). Decisions carry REAL money
 // effects: "buyer" triggers a full refund through the escrow pipeline;
-// "split" credits the buyer half from the platform wallet; "seller"/"none"
+// "split" credits the buyer from the platform commission; "seller"/"none"
 // move nothing.
-func (s *MarketService) ResolveDispute(ctx context.Context, disputeID, decision, note string) error {
+//
+// Concurrency and failure are handled differently per decision, because the
+// two differ in where the money actually moves:
+//
+//   - "split" is claimed and paid inside ONE transaction (see
+//     DisputeSplitCredit), so a rollback takes the claim with it.
+//   - "buyer" runs the refund in its own transaction, so the dispute is first
+//     moved to the NON-TERMINAL 'under_review' state, then refunded, then
+//     marked 'resolved'. The previous version marked it resolved first, which
+//     meant a refund failure (seller has withdrawn, order already cancelled,
+//     intent not refundable) left the dispute permanently 'resolved' with the
+//     buyer's money unmoved and no retry path — the guarded intent UPDATE
+//     prevents a double refund, it does nothing for a stranded claim.
+//   - "seller"/"none" move no money, so a single guarded update is enough.
+func (s *MarketService) ResolveDispute(ctx context.Context, disputeID, decision, note, adminID string) error {
 	switch decision {
 	case "buyer", "seller", "split", "none":
 	default:
 		return domain.E(domain.KindInvalid, "BAD_DECISION", "decision must be buyer, seller, split or none")
 	}
+	if s.payments == nil {
+		return domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
+			"payment processing is not wired; cannot resolve a money decision")
+	}
+
 	d, err := s.disputes.DisputeByID(ctx, disputeID)
 	if err != nil {
 		return err
 	}
+
+	// "split" claims the dispute inside the payment transaction.
+	if decision == "split" {
+		if err := s.payments.DisputeSplitCredit(ctx, d.OrderID, disputeID, adminID, note); err != nil {
+			return err
+		}
+		s.emailDisputeOutcome(ctx, disputeID, decision)
+		return nil
+	}
+
+	// "buyer": claim without settling, so a concurrent resolve loses here.
+	if decision == "buyer" {
+		claimed, err := s.disputes.ClaimForReview(ctx, disputeID, note)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return domain.E(domain.KindConflict, "DISPUTE_ALREADY_RESOLVED",
+				"dispute is already being resolved or has been resolved")
+		}
+		if err := s.payments.RefundOrder(ctx, d.OrderID, "dispute resolution: buyer wins ("+disputeID+")", true, 0); err != nil {
+			// Release the claim so an operator can retry once the underlying
+			// problem is fixed. The refund failing is the common case here, not
+			// the exceptional one, so leaving it claimed would be the worse
+			// failure mode.
+			if rerr := s.disputes.ReleaseToOpen(ctx, disputeID); rerr != nil {
+				return domain.E(domain.KindConflict, "REFUND_FAILED_AND_CLAIM_STUCK",
+					"refund failed ("+err.Error()+") and the dispute could not be reopened ("+rerr.Error()+
+						"); it needs manual resolution")
+			}
+			return err
+		}
+		// Money has moved; now the claim becomes the settlement.
+		if err := s.disputes.Resolve(ctx, disputeID, decision, note); err != nil {
+			// The refund is durable. Leave the dispute under_review and let an
+			// operator finish the paperwork rather than pretending it failed.
+			return domain.E(domain.KindConflict, "REFUND_OK_DISPUTE_UNSETTLED",
+				"the refund was applied but the dispute could not be marked resolved; "+
+					"it needs manual resolution")
+		}
+		s.emailDisputeOutcome(ctx, disputeID, decision)
+		return nil
+	}
+
+	// "seller" and "none" move no money.
 	if err := s.disputes.Resolve(ctx, disputeID, decision, note); err != nil {
 		return err
-	}
-	if s.payments != nil {
-		switch decision {
-		case "buyer":
-			if err := s.payments.RefundOrder(ctx, d.OrderID, "dispute resolution: buyer wins ("+disputeID+")", true); err != nil {
-				return err
-			}
-		case "split":
-			if err := s.payments.DisputeSplitCredit(ctx, d.OrderID); err != nil {
-				return err
-			}
-		}
 	}
 	s.emailDisputeOutcome(ctx, disputeID, decision)
 	return nil

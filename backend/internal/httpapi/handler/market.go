@@ -413,7 +413,13 @@ func (h *Market) ResolveDispute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	if err := h.svc.ResolveDispute(r.Context(), chi.URLParam(r, "id"), req.Decision, req.Note); err != nil {
+	// Attribute the money movement to the admin who made the decision so the
+	// order event timeline and the audit trail both name a person.
+	adminID := ""
+	if u := middleware.UserFrom(r.Context()); u != nil {
+		adminID = u.ID
+	}
+	if err := h.svc.ResolveDispute(r.Context(), chi.URLParam(r, "id"), req.Decision, req.Note, adminID); err != nil {
 		writeErr(w, r, err)
 		return
 	}

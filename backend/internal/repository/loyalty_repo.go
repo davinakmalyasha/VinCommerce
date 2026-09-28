@@ -35,24 +35,69 @@ func (r *LoyaltyRepository) Add(ctx context.Context, userID string, change int, 
 	return err
 }
 
+// HasLedgerEntry reports whether the user already has a ledger row for a
+// reason. Used to enforce one-bonus-per-user invariants with a clear error
+// instead of a raw unique-violation from the database.
+func (r *LoyaltyRepository) HasLedgerEntry(ctx context.Context, userID, reason string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM loyalty_ledger WHERE user_id = $1 AND reason = $2)`,
+		userID, reason).Scan(&exists)
+	return exists, err
+}
+
 // Spend atomically debits points only when the balance covers it.
-// Returns ErrInsufficientPoints-style conflict when it does not.
+//
+// The check-and-insert runs in ONE statement against a row lock on the user's
+// ledger, so two concurrent redemptions cannot both observe the same
+// pre-existing balance and both succeed. The previous form put the SUM in the
+// WHERE clause of a plain INSERT, which under READ COMMITTED is evaluated once
+// at statement start with no lock: two concurrent checkouts each spent points
+// the user only had once, driving the balance negative. Points are worth
+// Rp 100 each at checkout, so that is a directly redeemable discount.
+//
+// concurrent spends for this user. A transaction-scoped advisory lock keyed
+// on the user id is the cheapest correct option here: it needs no schema
+// change and does not lock the whole ledger.
 func (r *LoyaltyRepository) Spend(ctx context.Context, userID string, points int, reason, refID string) error {
 	if points <= 0 {
 		return domain.E(domain.KindInvalid, "BAD_POINTS", "points must be positive")
 	}
-	tag, err := r.pool.Exec(ctx, `
-		INSERT INTO loyalty_ledger (user_id, change, reason, ref_id)
-		SELECT $1, $2, $3, NULLIF($4, '')
-		WHERE (SELECT COALESCE(SUM(change), 0)::int FROM loyalty_ledger WHERE user_id = $1) >= $2`,
-		userID, -points, reason, refID)
+
+	// Serialise concurrent spends for this user. A transaction-scoped advisory
+	// lock keyed on the user id is the cheapest correct option here: it needs
+	// no schema change and does not lock the whole ledger.
+	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return err
+	}
+
+	var balance int
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(change), 0)::int FROM loyalty_ledger WHERE user_id = $1`, userID).Scan(&balance); err != nil {
+		return err
+	}
+	if balance < points {
 		return domain.E(domain.KindConflict, "INSUFFICIENT_POINTS", "not enough loyalty points")
 	}
-	return nil
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO loyalty_ledger (user_id, change, reason, ref_id) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+		userID, -points, reason, refID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Ledger lists the user's point history.
@@ -176,10 +221,63 @@ func (r *DisputeRepository) ListByStatus(ctx context.Context, status string) ([]
 	return items, rows.Err()
 }
 
-// Resolve decides a dispute (admin).
+// ClaimForResolution atomically transitions an open dispute to resolved and
+// returns the pre-resolution status, so the caller can prove it won the race
+// before it moves any money.
+//
+// The previous implementation was an unguarded `UPDATE ... WHERE id = $1`
+// with RowsAffected discarded. Because a "split" decision credits the buyer
+// from the platform wallet, repeatedly resolving the same dispute paid the
+// buyer over and over, funded by commission collected from every other seller
+// on the platform. The only backstop was the wallets.balance >= 0 CHECK, so
+// one order could drain the entire accumulated commission pool.
+func (r *DisputeRepository) ClaimForResolution(ctx context.Context, querier Querier, disputeID, decision, note string) (bool, error) {
+	tag, err := querier.Exec(ctx, `
+		UPDATE disputes
+		SET status = 'resolved', decision = $2, admin_note = NULLIF($3, ''), resolved_at = now()
+		WHERE id = $1 AND status IN ('open', 'under_review')`, disputeID, decision, note)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// Resolve decides a dispute (admin) outside any caller transaction.
+// Prefer ClaimForResolution when the decision moves money.
 func (r *DisputeRepository) Resolve(ctx context.Context, disputeID, decision, note string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE disputes SET status = 'resolved', decision = $2, admin_note = NULLIF($3, ''), resolved_at = now()
-		WHERE id = $1`, disputeID, decision, note)
+	claimed, err := r.ClaimForResolution(ctx, r.pool, disputeID, decision, note)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return domain.E(domain.KindConflict, "DISPUTE_ALREADY_RESOLVED",
+			"dispute has already been resolved")
+	}
+	return nil
+}
+
+// ClaimForReview takes a dispute out of the queue without settling it.
+//
+// Used by the "buyer wins" path, which runs its refund in a SEPARATE
+// transaction: the dispute is marked under_review first so a concurrent admin
+// loses the race, then refunded, then marked resolved. Marking it resolved up
+// front would strand the claim permanently if the refund failed.
+func (r *DisputeRepository) ClaimForReview(ctx context.Context, disputeID, note string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE disputes
+		SET status = 'under_review',
+		    admin_note = COALESCE(NULLIF($2, ''), admin_note)
+		WHERE id = $1 AND status = 'open'`, disputeID, note)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReleaseToOpen returns a claimed dispute to the open queue so a failed
+// settlement can be retried.
+func (r *DisputeRepository) ReleaseToOpen(ctx context.Context, disputeID string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE disputes SET status = 'open' WHERE id = $1 AND status = 'under_review'`, disputeID)
 	return err
 }
