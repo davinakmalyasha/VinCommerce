@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -30,6 +32,7 @@ type OrderService struct {
 	mailer        *mail.Client
 	webURL        string
 	insurancePct  float64
+	logger        *slog.Logger
 }
 
 // NewOrderService creates an OrderService.
@@ -75,6 +78,11 @@ func (s *OrderService) SetNotificationService(n *NotificationService) { s.notifi
 
 // SetMailer enables transactional order emails.
 func (s *OrderService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
+
+// SetLogger attaches a structured logger. Required for the post-commit paths
+// (loyalty debit, email failures) where the work is already durable and the
+// only remaining obligation is to make the failure visible.
+func (s *OrderService) SetLogger(l *slog.Logger) { s.logger = l }
 
 func (s *OrderService) emailFor(ctx context.Context, orderID string, templateName, subject string, data map[string]any) {
 	if s.mailer == nil || s.users == nil {
@@ -785,15 +793,30 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 		return nil, err
 	}
 
-	// Debit redeemed points after the order commits (atomic guarded spend).
+	// Debit redeemed points after the order commits.
+	//
+	// The order is already durable at this point, so a failed debit cannot be
+	// rolled back — but it MUST NOT be silent. The previous code used
+	// fmt.Println, which on a structured-logging service means the failure
+	// appears on stdout as plain text, is invisible to every log index and
+	// alert rule, and leaves the buyer holding a discount they never paid for
+	// in points. Escalate loudly so it becomes an alertable event.
 	if quote.PointsRedeemed > 0 && s.loyalty != nil {
 		refID := ""
 		if len(placed.Orders) > 0 {
 			refID = placed.Orders[0].ID
 		}
 		if err := s.loyalty.Spend(ctx, in.UserID, quote.PointsRedeemed, "redemption", refID); err != nil {
-			// The discount was already granted; keep the order and log the miss.
-			fmt.Println("loyalty redemption debit failed:", err)
+			if s.logger != nil {
+				s.logger.Error("loyalty redemption debit failed after order commit; "+
+					"buyer holds an uncharged discount and needs manual reconciliation",
+					"user_id", in.UserID, "order_id", refID,
+					"points", quote.PointsRedeemed, "error", err.Error())
+			}
+			// Still emit the order-confirmation email: the order exists and the
+			// buyer is waiting. Swallowing the error here (rather than
+			// returning it) is deliberate — returning would tell the buyer the
+			// order failed when it was in fact placed.
 		}
 	}
 
@@ -876,7 +899,18 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 	return nil
 }
 
-// CancelOrder cancels a pending order and releases its stock.
+// CancelOrder cancels an order and releases its stock.
+//
+// A paid order is NOT silently cancellable. The old version accepted
+// OrderPaid, restocked the inventory, and never touched the payment intent:
+// for a wallet payment the buyer's money had already left their balance with
+// no return path, and for a gateway payment it sat at the provider with no
+// return path. The seller also lost the sale while the stock went back on sale.
+//
+// Money movement is the payments service's job, so a paid order is refused
+// here with an explicit reason and the caller refunds first. That also closes
+// the release+refund mint: ReleaseEscrow and RefundOrder now both reject a
+// cancelled order.
 func (s *OrderService) CancelOrder(ctx context.Context, orderID string, actorID *string, note string) error {
 	o, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
@@ -885,6 +919,37 @@ func (s *OrderService) CancelOrder(ctx context.Context, orderID string, actorID 
 	if o.Status != domain.OrderPending && o.Status != domain.OrderPaid {
 		return domain.E(domain.KindConflict, "INVALID_TRANSITION", "only pending or paid orders can be cancelled")
 	}
+
+	// A paid order has captured money. Require an explicit refund first rather
+	// than orphaning the funds.
+	//
+	// This MUST fail closed. The first version treated any error from the
+	// intent lookup the same as "there is no escrow", so a slow or saturated
+	// pool (or a statement timeout) silently disabled the guard and let a
+	// paid order be cancelled with its money already gone — the exact bug the
+	// guard exists to prevent, reachable by making Postgres slow.
+	if o.PaymentStatus == domain.PaymentPaid && s.payments != nil {
+		intent, ierr := s.payments.IntentByOrder(ctx, orderID)
+		switch {
+		case ierr == nil && (intent.Status == domain.IntentCaptured ||
+			intent.Status == domain.IntentReleased ||
+			intent.Status == domain.IntentPartiallyRefunded):
+			return domain.E(domain.KindConflict, "REFUND_BEFORE_CANCEL",
+				"payment is already captured; refund the order before cancelling it")
+
+		case ierr != nil && !errors.Is(ierr, domain.ErrNotFound):
+			// Not "no such intent" — a real failure. Refuse: the cost of a
+			// spurious refusal is one retry, the cost of a false "safe" is the
+			// buyer's money.
+			return ierr
+
+		default:
+			// Genuinely no intent (an externally-paid order that never created
+			// one, or one predating the escrow column). There is no captured
+			// escrow to protect, so cancellation is safe.
+		}
+	}
+
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
 		return err
@@ -894,15 +959,20 @@ func (s *OrderService) CancelOrder(ctx context.Context, orderID string, actorID 
 	if err := tx.ReleaseReservation(ctx, orderID); err != nil {
 		return err
 	}
+	// Status change goes in the SAME transaction as the restock. Previously it
+	// was a separate unguarded statement after the commit, so a crash in
+	// between left the order live with its stock already back on sale
+	// (oversell), and a second sweeper could release the same reservation
+	// twice (inflating stock).
+	if err := tx.SetStatusGuarded(ctx, orderID, o.Status, domain.OrderCancelled); err != nil {
+		return err
+	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: orderID, FromStatus: o.Status, ToStatus: domain.OrderCancelled, ActorID: actorID, Note: note,
 	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if err := s.orders.SetStatus(ctx, orderID, domain.OrderCancelled); err != nil {
 		return err
 	}
 	s.publishOrderEvent(ctx, orderID, o.Status, domain.OrderCancelled)
@@ -935,16 +1005,35 @@ func (s *OrderService) publishOrderEvent(ctx context.Context, orderID, from, to 
 }
 
 // CancelExpired cancels pending orders past the payment deadline, releasing stock.
+//
+// Per-order failures are counted and logged rather than dropped. The previous
+// version discarded every error and returned (0, nil), so asynq recorded the
+// task as SUCCESS and a sweeper failing 100% of the time was indistinguishable
+// from a healthy idle one — the exact failure this job exists to prevent going
+// unnoticed.
 func (s *OrderService) CancelExpired(ctx context.Context, limit int) (int, error) {
 	ids, err := s.orders.ExpiredPendingOrders(ctx, time.Now().UTC().Add(-ReservationHold), limit)
 	if err != nil {
 		return 0, err
 	}
-	cancelled := 0
+	cancelled, failed := 0, 0
 	for _, id := range ids {
-		if err := s.CancelOrder(ctx, id, nil, "payment timeout"); err == nil {
-			cancelled++
+		if err := s.CancelOrder(ctx, id, nil, "payment timeout"); err != nil {
+			failed++
+			if s.logger != nil {
+				s.logger.Warn("failed to cancel expired order",
+					"order_id", id, "error", err.Error())
+			}
+			continue
 		}
+		cancelled++
+	}
+	if failed > 0 {
+		// Return an error so the task is retried and shows up in the queue
+		// metrics. The successful cancellations are already committed
+		// individually, so a retry is safe: the guarded status transition
+		// makes a second attempt a no-op.
+		return cancelled, fmt.Errorf("cancelled %d of %d expired orders; %d failed", cancelled, len(ids), failed)
 	}
 	return cancelled, nil
 }
