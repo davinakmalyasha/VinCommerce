@@ -1,0 +1,75 @@
+# CODEOWNERS — review gating for the paths where a mistake is either a
+# security hole or invisible in review.
+#
+# Set @OWNERS to a real team slug or handle. A CODEOWNERS entry pointing at a
+# team that does not exist is a silent no-op that reads like coverage, so this
+# is deliberately not left as a placeholder: if you fork this repo, replace
+# the handle with your own or with your org's team slug.
+#
+# Syntax: a trailing `/` on a directory pattern means "this directory and
+# everything under it"; without it the pattern matches only the entry itself.
+
+# ── Default: everything needs one review ────────────────────────────────────
+*                              @davinakmalyasha
+
+# ── HTTP surface ───────────────────────────────────────────────────────────
+# Every route, middleware chain, CORS/cookie decision and rate limit. A
+# missing auth middleware or a wrong middleware ORDER is invisible in a diff
+# review: the metrics-widdleware bug that 500'd every SSE endpoint looked
+# correct in the diff and was wrong in production.
+backend/internal/httpapi/            @davinakmalyasha
+backend/internal/httpapi/handler/    @davinakmalyasha
+backend/internal/httpapi/middleware/ @davinakmalyasha
+
+# ── Money ──────────────────────────────────────────────────────────────────
+# Webhook signature verification, capture/refund/dispute state transitions,
+# idempotency, the commission split and the gateway adapters. A regression
+# here is a financial incident, not a bug, and it does not look obviously
+# wrong in a diff.
+backend/internal/payments/           @davinakmalyasha
+backend/internal/service/payment_service.go  @davinakmalyasha
+backend/internal/service/order_service.go    @davinakmalyasha
+backend/internal/repository/payment_repo.go  @davinakmalyasha
+
+# ── Schema ─────────────────────────────────────────────────────────────────
+# Migrations are applied by version and are effectively irreversible in
+# practice: goose will not re-run a file, and a wrong index or a dropped
+# column cannot be undone by reverting the commit. This is the one directory
+# where "it looked fine" is not a sufficient review.
+backend/internal/db/migrations/      @davinakmalyasha
+
+# ── Auth & config ──────────────────────────────────────────────────────────
+# Session/refresh handling, RBAC, the production guards and the secret
+# deny-list.
+backend/internal/config/             @davinakmalyasha
+backend/internal/service/auth_service.go    @davinakmalyasha
+backend/internal/service/token.go          @davinakmalyasha
+backend/internal/service/oauth_service.go  @davinakmalyasha
+
+# ── Background jobs ────────────────────────────────────────────────────────
+# Order timeouts and sweeps move money and release inventory.
+backend/internal/worker/             @davinakmalyasha
+backend/cmd/                         @davinakmalyasha
+
+# ── Client shared code ─────────────────────────────────────────────────────
+# axios interceptors, the token/refresh single-flight, the HTML sanitizer, the
+# SSE clients and the money formatting helpers. Everything else in web/src
+# consumes these, so a change here has a blast radius far larger than the
+# diff suggests.
+web/src/lib/                         @davinakmalyasha
+web/src/stores/                      @davinakmalyasha
+
+# ── Infrastructure & CI ────────────────────────────────────────────────────
+infra/                               @davinakmalyasha
+.github/                             @davinakmalyasha
+.gitleaks.toml                       @davinakmalyasha
+
+# ── Container & proxy config ───────────────────────────────────────────────
+# nginx `add_header` is NOT inherited into a location block that defines its
+# own, so a header added at server level silently disappears on the HTML
+# document. nginx.conf and the included header files are review-gated for that
+# reason.
+**/Dockerfile*                       @davinakmalyasha
+web/nginx.conf                       @davinakmalyasha
+web/nginx-brotli.conf                @davinakmalyasha
+web/security-headers.conf            @davinakmalyasha

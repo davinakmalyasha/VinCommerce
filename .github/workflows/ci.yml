@@ -9,17 +9,47 @@ on:
 permissions:
   contents: read
 
+# Every job is bounded. Without a timeout, a hung Postgres container or an
+# npm/golang registry that never responds burns a full 6 hours of runner time
+# and reports nothing useful.
+env:
+  # Pinned by digest in the Dockerfiles and compose files; these are the same
+  # digests, mirrored here for the CI service containers, which do not go
+  # through the build.
+  POSTGRES_IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+  REDIS_IMAGE: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ── Secrets ──────────────────────────────────────────────────────────────
+  # Runs first and alone. A committed credential must fail in seconds, not
+  # after the 12 minutes it takes to build three images and run a browser
+  # suite. gitleaks scans the whole history, not just the diff, because a key
+  # added and removed in one PR never appears in a diff-based check.
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # gitleaks-action v2.3.9
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        with:
+          args: detect --redact --verbose --source .
+          # The action needs a token to clone private history; public repos do
+          # not, and a forked PR gets an auto-generated read-only token.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ── Backend ──────────────────────────────────────────────────────────────
   backend:
     name: Backend lint, vet, test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17
+        image: ${{ env.POSTGRES_IMAGE }}
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
@@ -29,7 +59,7 @@ jobs:
           --health-cmd "pg_isready -U vincom"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:8
+        image: ${{ env.REDIS_IMAGE }}
         ports: ["6379:6379"]
 
     defaults:
@@ -37,9 +67,17 @@ jobs:
         working-directory: backend
 
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # govulncheck resolves advisories from vuln.go.dev; without the full
+          # history it cannot see a module that a previous commit introduced and
+          # this one removed. Also the precondition for any real depth-limited
+          # analysis.
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      # actions/setup-go v5.6.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: "1.26"
           cache-dependency-path: backend/go.sum
@@ -56,43 +94,122 @@ jobs:
       - name: Unit tests
         run: go test ./internal/... -count=1 -race
 
+      - name: Dependency vulnerabilities
+        # govulncheck reports only vulnerabilities on code paths that are
+        # actually reachable from the built binary, which is the difference
+        # between an actionable signal and a wall of unreachable CVEs.
+        #
+        # This step needs the module proxy, so GOPROXY is set back to the
+        # default for the install and the scan. Every other step inherits the
+        # repository's off-line defaults, where a proxy call would hang.
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
       - name: Migrate + seed smoke test
         env:
           DB_PASSWORD: vincom_dev
           REDIS_ADDR: 127.0.0.1:6379
         run: |
+          set -euo pipefail
           go run ./cmd/seed
           go run ./cmd/api &
           API_PID=$!
+          trap 'kill $API_PID 2>/dev/null || true' EXIT
           # Poll instead of a fixed sleep: robust on slow runners, fast on good ones.
           curl --retry 30 --retry-delay 1 --retry-connrefused -sf http://localhost:8080/api/v1/health/ready
-          kill $API_PID
 
+  # ── Web ──────────────────────────────────────────────────────────────────
   web:
-    name: Web build
+    name: Web lint, typecheck, test, build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
+      - name: Install dependencies
+        # --prefer-offline uses the cache actions/setup-node restored and only
+        # revalidates; --no-audit defers the audit to its own explicit step
+        # below, where a high-severity advisory is reported but does not fail
+        # the build.
+        run: npm ci --prefer-offline --no-audit
+
       - name: Lint
         run: npx oxlint --config .oxlintrc.json src
-      - run: npm run build
 
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        # BEFORE the build. The sanitizer is a security control with its own
+        # regression suite; running it first means a sanitizer regression fails
+        # in seconds rather than after a full typecheck + production bundle.
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Report initial payload
+        # The entry chunk was a single 371 KB file containing react-dom, the
+        # router, react-query, zustand, axios AND the app code, so any app
+        # change invalidated vendor code in every visitor's cache. Printing the
+        # real number makes a regression visible here rather than in the field.
+        run: npm run size
+
+      - name: Validate the newest migration
+        # Goose has no dry-run and no "validate" mode, so a migration that
+        # cannot be applied — or cannot be rolled back — is only discovered at
+        # deploy time, on the live database, while the API is refusing to boot
+        # (DB_MIGRATE_ON_START defaults to true). This catches the static
+        # classes of that: unbalanced plpgsql blocks, a variable declared and
+        # never used, an index created in Up that Down never drops, and a CHECK
+        # added in Up that Down never removes.
+        run: node ../scripts/check-migration.mjs
+
+      - name: Validate nginx config structurally
+        # `nginx -t` needs the binary and runs in the docker job below. This
+        # catches the failure modes that are structural and silent — an
+        # add_header block that discards the server-level security headers, a
+        # privileged port under USER nginx, a proxied location that drops Host
+        # or the client IP, SSE without proxy_buffering off.
+        run: npm run check:nginx
+
+      - name: Prove the nginx check actually detects regressions
+        # A validator that cannot fail is worse than no validator. This
+        # reintroduces each bug the checker claims to catch and asserts it is
+        # reported, so a future "simplification" of the checker cannot silently
+        # turn it into a no-op that always passes.
+        run: npm run test:nginx
+
+      - name: Audit dependencies
+        # Report, do not block. A transitive advisory in an unmaintained
+        # package should not be able to hold a security fix for a real
+        # vulnerability hostage, and dependabot already opens the upgrade PR.
+        # A high/critical finding is still visible in the job summary.
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+  # ── End-to-end ───────────────────────────────────────────────────────────
   e2e:
     name: Playwright smoke
     runs-on: ubuntu-latest
     needs: [backend]
+    timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17
+        image: ${{ env.POSTGRES_IMAGE }}
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
@@ -102,46 +219,266 @@ jobs:
           --health-cmd "pg_isready -U vincom"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:8
+        image: ${{ env.REDIS_IMAGE }}
         ports: ["6379:6379"]
     defaults:
       run:
         working-directory: web
+    env:
+      DB_PASSWORD: vincom_dev
+      REDIS_ADDR: 127.0.0.1:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: actions/setup-go@v5
+      # actions/setup-go v5.6.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: "1.26"
           cache-dependency-path: backend/go.sum
+
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        # actions/cache v4.3.0
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.cache/ms-playwright
+          # The OS is in the key: the downloaded browser builds are per-platform
+          # binaries, and a key without it would restore a Linux cache onto a
+          # Windows runner (or a macOS one) and fail at launch.
           key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: Start backend + web
-        env:
-          DB_PASSWORD: vincom_dev
-          REDIS_ADDR: 127.0.0.1:6379
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Install Playwright browser + OS packages
+        # `install-deps` (the old `--with-deps`) re-runs apt-get on every
+        # single build even when nothing changed; the OS package set is
+        # already a GitHub runner image feature, and only the browser binaries
+        # are actually missing. This runs apt only when the cache missed.
         run: |
-          cd ../backend && go run ./cmd/seed &
-          cd ../backend && go run ./cmd/api &
-          curl --retry 40 --retry-delay 2 --retry-connrefused -sf http://localhost:8080/api/v1/health/ready
-          npm run dev -- --port 5173 --strictPort &
-          curl --retry 30 --retry-delay 1 --retry-connrefused -sf http://localhost:5173/
-      - run: npx playwright test
+          set -euo pipefail
+          if [ ! -d "$HOME/.cache/ms-playwright" ] || [ -z "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]; then
+            npx playwright install --with-deps chromium
+          else
+            echo "Playwright browsers restored from cache; skipping --with-deps"
+          fi
+
+      # No manual "go run ./cmd/seed &" / "go run ./cmd/api &" / "npm run dev &"
+      # step any more. That step backgrounded three processes inside one shell
+      # and relied on them surviving into the next step, and it never waited for
+      # the seed — so the suite could run against a half-seeded database. All of
+      # it now lives in webServer in web/playwright.config.ts, which starts the
+      # entries in order and blocks on each readiness URL.
+      - name: Run Playwright suite
+        run: npx playwright test
+
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: playwright-report
           path: |
             web/playwright-report
             web/test-results
           retention-days: 7
+
+  # ── Containers ───────────────────────────────────────────────────────────
+  docker:
+    name: Compose + image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # A compose file that does not parse is a broken deployment, and `config -q`
+      # is the cheapest possible way to find out: it resolves the merge keys,
+      # the anchors and every ${VAR:?...} guard without pulling a single image
+      # or starting a container.
+      - name: Validate compose file
+        # JWT_SECRET has no default on purpose (see infra/compose/compose.full.yaml),
+        # so `config` must be run with it set or it fails on the guard itself.
+        # Deliberately short and obviously fake: the gitleaks
+        # `go-env-secret-assignment` rule flags any 24+ character literal in a
+        # *_SECRET assignment, and a CI-only value must never be shaped like a
+        # credential.
+        env:
+          JWT_SECRET: ci-check-1
+        run: docker compose -f infra/compose/compose.full.yaml config -q
+
+      - name: Validate the lightweight compose file too
+        run: docker compose -f infra/compose/compose.yaml config -q
+
+      # Plain `docker buildx build` rather than docker/build-push-action: buildx
+      # and the GHA cache backend are already on the runner, and this keeps the
+      # job's action surface to the two actions the task actually needs.
+      #
+      # `--load` is required: without it buildx's result stays in the builder's
+      # cache and `docker run` in the next step finds no image. `context: .` is
+      # the repository root because every Dockerfile copies `backend/` and
+      # `web/` from it.
+      - name: Build API image
+        run: |
+          docker buildx build \
+            --file backend/Dockerfile \
+            --tag vc-api:${{ github.sha }} \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --load \
+            .
+
+      - name: Build worker image
+        run: |
+          docker buildx build \
+            --file backend/Dockerfile.worker \
+            --tag vc-worker:${{ github.sha }} \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --load \
+            .
+
+      - name: Build web image
+        run: |
+          docker buildx build \
+            --file web/Dockerfile \
+            --tag vc-web:${{ github.sha }} \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --load \
+            .
+
+      # The web image is the one whose config is generated rather than
+      # hand-written, and the failure mode is silent until runtime: a bad
+      # directive means a container that exits immediately with no port open.
+      # web/Dockerfile already runs `nginx -t` at build time, but only with the
+      # upstream host swapped, so this re-checks the real config.
+      #
+      # `--add-host api:127.0.0.1` is required: nginx resolves every proxy_pass
+      # upstream at config-parse time, and `api` does not exist outside the
+      # compose network, so `nginx -t` would fail on DNS rather than on config.
+      - name: Assert the web image serves a valid nginx config
+        run: |
+          docker run --rm --add-host api:127.0.0.1 vc-web:${{ github.sha }} \
+            sh -c 'nginx -t && nginx -V 2>&1 | head -1'
+
+      # The HEALTHCHECK is part of the container's contract, so prove it rather
+      # than trusting it: run the image and wait for Docker itself to call the
+      # container healthy. A failure here means the non-root nginx cannot write
+      # its temp/pid paths, or cannot bind 8080.
+      - name: Assert the web container becomes healthy and serves hardened headers
+        run: |
+          set -euo pipefail
+          docker run -d --name vc-web-probe -p 8080:8080 --add-host api:127.0.0.1 \
+            vc-web:${{ github.sha }}
+          cleanup() { docker logs vc-web-probe 2>/dev/null || true; docker rm -f vc-web-probe >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' vc-web-probe 2>/dev/null || echo starting)
+            if [ "$status" = "healthy" ]; then
+              echo "container reported healthy"
+              curl -fsS -o /dev/null -w 'GET / -> %{http_code}\n' http://127.0.0.1:8080/
+              # The security headers were previously dropped from the HTML
+              # document and from every hashed asset, because each of those
+              # locations defined its own add_header — and nginx's add_header
+              # is NOT inherited into a block that defines one.
+              curl -fsSI http://127.0.0.1:8080/ | grep -i '^content-security-policy:'
+              curl -fsSI http://127.0.0.1:8080/ | grep -i '^strict-transport-security:'
+              curl -fsSI http://127.0.0.1:8080/ | grep -i '^x-content-type-options:'
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              echo "container reported unhealthy" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "container never became healthy within 60s" >&2
+          exit 1
+
+  # ── Worker health probe ──────────────────────────────────────────────────
+  # The worker has no HTTP listener, so its liveness is the `worker --healthcheck`
+  # probe added to cmd/worker. Without this job the probe compiles but is never
+  # exercised: an unrunnable probe makes Docker mark a perfectly healthy worker
+  # unhealthy, which is worse than having no HEALTHCHECK at all.
+  worker-healthcheck:
+    name: Worker health probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: ${{ env.REDIS_IMAGE }}
+        ports: ["6379:6379"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-go v5.6.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+      - name: Probe exits non-zero when the queue is unreachable
+        # REDIS_ADDR points at a closed port on loopback. Exit 1 here is the
+        # correct answer; a probe that exits 0 here is a lie the container would
+        # repeat forever.
+        env:
+          REDIS_ADDR: 127.0.0.1:1
+        run: |
+          set -euo pipefail
+          go build -o /tmp/worker ./cmd/worker
+          if /tmp/worker --healthcheck; then
+            echo "healthcheck exited 0 against an unreachable queue" >&2
+            exit 1
+          fi
+          echo "healthcheck correctly reported an unreachable queue"
+      - name: Probe exits zero when the queue is reachable
+        # A freshly-created Redis has no asynq queues yet, and that is healthy:
+        # the scheduler creates them on its first tick. The probe must not fail
+        # here or every freshly-deployed worker would be marked unhealthy and
+        # then flap.
+        env:
+          REDIS_ADDR: 127.0.0.1:6379
+        run: |
+          set -euo pipefail
+          /tmp/worker --healthcheck
+          echo "healthcheck reported a reachable queue"
+      - name: Probe honours a bounded deadline against a blackholed Redis
+        run: |
+          set -euo pipefail
+          # A TCP listener that accepts and never replies: the shape of a
+          # firewall DROP. The probe must give up on its own 8s budget rather
+          # than hanging until Docker's --timeout=10s SIGKILLs it.
+          python3 -c "
+          import socket, threading
+          s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1', 6399)); s.listen(16)
+          held = []
+          while True:
+              c, _ = s.accept(); held.append(c)
+          " &
+          BLACKHOLE=$!
+          sleep 1
+          start=$(date +%s)
+          if REDIS_ADDR=127.0.0.1:6399 /tmp/worker --healthcheck; then
+            echo "healthcheck exited 0 against a blackholed Redis" >&2
+            exit 1
+          fi
+          elapsed=$(( $(date +%s) - start ))
+          kill $BLACKHOLE || true
+          if [ "$elapsed" -gt 20 ]; then
+            echo "healthcheck took ${elapsed}s; its own deadline is not being enforced" >&2
+            exit 1
+          fi
+          echo "healthcheck gave up after ${elapsed}s, as designed"

@@ -1,0 +1,119 @@
+# gitleaks configuration.
+#
+# This file is TOML, not YAML — gitleaks parses it with a TOML loader, so the
+# `'''...'''` literals below are TOML multi-line literal strings (in which a
+# single `'` is legal) and a YAML-style quoted string would not work here.
+#
+# gitleaks scans the full git history, not the diff: a credential added and
+# removed inside one pull request never appears in any diff-based check.
+#
+# The allow-list is deliberately narrow and every entry is a value that is
+# already published in this repository, so a reviewer can verify each one in the
+# file that contains it. Do NOT add a value "to make CI green": every entry here
+# is a permanent statement that the value is not a secret, and the next person to
+# reuse that password in a real environment inherits that statement.
+
+title = "VinCommerce gitleaks policy"
+
+[extend]
+# The upstream default ruleset. Extended, not replaced.
+useDefault = true
+
+# Global allow-list: applies to every rule, including the two custom ones below.
+# Written as [[allowlists]] rather than the legacy [allowlist] table, which
+# gitleaks still accepts but now warns about.
+#
+# This file is TOML, not YAML — gitleaks parses it with a TOML loader, so the
+# `'''...'''` literals are TOML multi-line literal strings (in which a single `'`
+# is legal) and a YAML-style quoted string would not work here.
+#
+# gitleaks scans the full git history, not the diff: a credential added and
+# removed inside one pull request never appears in any diff-based check.
+#
+# The allow-list is deliberately narrow and every entry is a value that is
+# already published in this repository, so a reviewer can verify each one in the
+# file that contains it. Do NOT add a value "to make CI green": every entry here
+# is a permanent statement that the value is not a secret, and the next person to
+# reuse that password in a real environment inherits that statement.
+
+[[allowlists]]
+description = "Demo-only credentials already published in this repository, plus the dev-only JWT keys the config package refuses at runtime."
+
+# Value-shaped allowances. Each is anchored to the specific demo data it covers.
+regexTarget = "match"
+regexes = [
+  # ── Seeded demo account passwords ──────────────────────────────────────────
+  # README.md's credential table and web/e2e/* use these. gitleaks' generic
+  # password rule fires on any `"password": "..."` / `key=value` pair whose value
+  # is 8+ chars ending in !@#$_-*, which is exactly the shape of a strong demo
+  # password, so the allow-list has to be value-specific rather than a blanket
+  # "ignore anything in e2e".
+  '''(?i)(Buyer|Seller|Admin)Pass123!''',
+  # Same values, but only in the shapes they actually appear in, so a random
+  # other string containing "Pass123!" is not silently waved through.
+  '''(?i)["']?(pass(word)?)["']?\s*[:=]\s*["']?(Buyer|Seller|Admin)Pass123!''',
+  '''(?i)buyer\.sample@vincommerce\.com''',
+  '''(?i)seller\.elektro@vincommerce\.com''',
+  '''(?i)admin@vincommerce\.com''',
+
+  # ── Development database password ─────────────────────────────────────────
+  # "vincom_dev" appears in infra/compose/*.yaml, .github/workflows/ci.yml,
+  # backend/.env.example, and backend/internal/config/config.go's
+  # knownPublicSecrets deny-list. All four must keep naming it — the config
+  # package refuses to start in production with it — so it cannot be removed.
+  '''vincom_dev''',
+
+  # ── Dev-only JWT signing keys ─────────────────────────────────────────────
+  # These exist in the source ONLY so backend/internal/config can reject them.
+  # A gitleaks allow-list for them is the same kind of statement the deny-list
+  # makes, and the two are kept adjacent on purpose.
+  '''(?i)(dev-secret-change-me|local-dev-secret-please-change-me-32chars|vincommerce-dev-secret-change-me|super-secret-jwt-key-change-in-production|changeme|sandbox-webhook-secret)''',
+]
+
+# Path-shaped allowances, for files that are safe to skip entirely rather than
+# merely safe in specific lines.
+#
+# Deliberately minimal. `backend/internal/config/config.go`,
+# `backend/.env.example` and `infra/compose/` are NOT listed here: the regexes
+# above already cover every published value in them, and exempting a whole
+# directory from every rule would mean the `midtrans-server-key` and
+# `go-env-secret-assignment` rules below could never fire on a compose file —
+# which is exactly where a real leaked key would be committed.
+paths = [
+  # The allow-list itself, which necessarily contains the demo passwords.
+  '''^\.gitleaks\.toml$''',
+]
+
+# The same demo credentials, expressed as whole-file path rules rather than
+# content rules. `path` only ever applies to the file path, so these do not
+# weaken the content rules above — they just document the intent, and let the
+# whole file be skipped if that is ever the desired blast radius.
+[[allowlists]]
+description = "Files that are allowed to contain seeded demo credentials."
+paths = [
+  '''^README\.md$''',
+  '''^web/e2e/''',
+  '''^infra/compose/''',
+  '''^\.github/workflows/ci\.yml$''',
+]
+regexes = [
+  '''(?i)(Buyer|Seller|Admin)Pass123!''',
+  '''vincom_dev''',
+]
+
+# ── Extra rules ─────────────────────────────────────────────────────────────
+# gitleaks' defaults are good but generic. These pin the two secret shapes this
+# repo is most likely to commit by accident, and would not be caught by a
+# default rule: a Midtrans server key and a Go-style env var assignment.
+
+[[rules]]
+id = "midtrans-server-key"
+description = "Midtrans server key. Only the CLIENT key is ever public (it is compiled into the web bundle); the server key must never be committed."
+regex = '''(?i)MIDTRANS_SERVER_KEY\s*[:=]\s*["']?[A-Za-z0-9+/]{32,}'''
+keywords = ["midtrans_server_key"]
+
+[[rules]]
+id = "go-env-secret-assignment"
+description = "A *_SECRET / *_PASSWORD / *_TOKEN env assignment in Go or YAML source with a literal high-entropy-looking value."
+regex = '''(?i)(JWT_SECRET|REDIS_PASSWORD|SMTP_PASSWORD|AI_API_KEY|GOOGLE_CLIENT_SECRET)\s*[:=]\s*["']?[A-Za-z0-9+/_-]{24,}'''
+keywords = ["jwt_secret", "redis_password", "smtp_password", "ai_api_key", "google_client_secret"]

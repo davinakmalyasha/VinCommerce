@@ -1,0 +1,156 @@
+# Weekly, not daily: a `gomod` or `npm` bump touches go.sum / package-lock.json,
+# which invalidates every cache in CI and re-downloads the whole module and npm
+# trees. Five times that a week trains people to ignore the bot.
+version: 2
+
+updates:
+  # ── Go ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # Grouped so one PR bumps a coherent set: a chi bump and a golang.org/x
+    # bump in the same PR is reviewable; twenty separate PRs is not.
+    open-pull-requests-limit: 5
+    groups:
+      go-x:
+        patterns:
+          - "golang.org/x/*"
+      go-toolchain:
+        patterns:
+          - "go"
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "build(deps)"
+    # The base images in backend/Dockerfile are digest-pinned to
+    # golang:1.26-alpine and alpine:3.21; a toolchain bump has to move those
+    # digests in the same PR or CI builds with one Go and the image with another.
+    ignore:
+      # Testing-only tooling. Bumping it changes nothing that ships.
+      - dependency-name: "*test*"
+
+  # ── Node ──────────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      # React, react-dom and react-router-dom move together: a react-dom bump
+      # alone is a guaranteed type error, and splitting them means the tree is
+      # broken between PRs.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "react-router-dom"
+      # Everything the build depends on, so a Vite major bump is reviewable on
+      # its own rather than arriving as an unexplained build failure.
+      build-tooling:
+        patterns:
+          - "vite"
+          - "vitest"
+          - "@vitejs/plugin-react"
+          - "tailwindcss"
+          - "@tailwindcss/vite"
+          - "typescript"
+    labels:
+      - dependencies
+      - web
+    commit-message:
+      prefix: "build(deps)"
+
+  # ── Containers ────────────────────────────────────────────────────────────
+  # Every base image in this repo is pinned by digest, in
+  # backend/Dockerfile, backend/Dockerfile.worker, web/Dockerfile and both
+  # compose files. Dependabot is what keeps those digests current: a pinned
+  # digest is only an improvement if something watches it. Without this
+  # ecosystem the pins would freeze at whatever they were on the day they were
+  # written and silently rot — which is strictly worse than a floating tag,
+  # because a floating tag at least gets security updates.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+      - backend
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: docker
+    directory: /web
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+      - web
+    commit-message:
+      prefix: "build(deps)"
+
+  # infra/compose references postgres:17, redis:8 and axllent/mailpit:v1.29
+  # directly, outside any build context, so there is no Dockerfile for the
+  # `docker` ecosystem to read. Dependabot has a separate `docker-compose`
+  # ecosystem for exactly this, and pointing `docker` at this directory would
+  # find nothing. A missed security patch in Postgres or Redis is a missed
+  # security patch, so the entry has to be here.
+  #
+  # Known limitation: dependabot does not resolve ${VAR} interpolation, so it
+  # will not touch an `image:` value built from an environment variable. Every
+  # image in these two files is a literal, so that does not apply today — but a
+  # future commit that interpolates one would silently stop being covered, and
+  # the digest in ci.yml's `env:` block would then drift.
+  - package-ecosystem: docker-compose
+    directory: /infra/compose
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+      - infra
+    commit-message:
+      prefix: "build(deps)"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  # Every action in ci.yml is pinned to a commit SHA, which is the only way to
+  # stop a compromised tag from executing in this repo. That protection is
+  # undone the moment the pinned SHA stops receiving security fixes, and nothing
+  # in a SHA pin reminds anyone to look. This is the reminder.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "06:00"
+      timezone: Etc/UTC
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "build(deps)"
