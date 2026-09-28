@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import type { HelpArticle, HelpCategory } from '../../types'
+import { Modal } from '../../components/Modal'
 
 export function AdminArticles() {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<HelpArticle | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [error, setError] = useState('')
 
   const { data } = useQuery({
     queryKey: ['admin-articles'],
@@ -21,6 +23,7 @@ export function AdminArticles() {
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/admin/articles/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-articles'] }),
+    onError: (e: Error) => setError(e.message || 'Gagal menghapus artikel.'),
   })
 
   return (
@@ -28,6 +31,7 @@ export function AdminArticles() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Editor Artikel ({data?.length ?? 0})</h1>
         <button
+          type="button"
           onClick={() => {
             setEditing(null)
             setShowForm(true)
@@ -38,11 +42,15 @@ export function AdminArticles() {
         </button>
       </div>
 
+      {error && (
+        <p role="alert" className="text-sm text-red-600 bg-red-50 dark:bg-red-950/40 rounded-lg p-2.5">{error}</p>
+      )}
+
       <div className="space-y-2">
         {data?.map((a) => (
-          <div key={a.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
+          <div key={a.id} className="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <p className="font-medium text-sm">{a.title}</p>
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">{a.section}</span>
                 <span className={`px-2 py-0.5 rounded-full text-xs ${a.is_published ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>
@@ -54,6 +62,7 @@ export function AdminArticles() {
             </div>
             <div className="flex gap-3">
               <button
+                type="button"
                 onClick={() => {
                   setEditing(a)
                   setShowForm(true)
@@ -62,7 +71,12 @@ export function AdminArticles() {
               >
                 Edit
               </button>
-              <button onClick={() => remove.mutate(a.id)} className="text-xs text-red-500 hover:underline">
+              <button
+                type="button"
+                onClick={() => remove.mutate(a.id)}
+                disabled={remove.isPending}
+                className="text-xs text-red-500 hover:underline disabled:opacity-50"
+              >
                 Hapus
               </button>
             </div>
@@ -129,54 +143,83 @@ function ArticleForm({
   })
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative mx-auto my-8 max-w-2xl bg-white rounded-2xl shadow-xl p-6">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="font-bold text-lg">{article ? 'Edit Artikel' : 'Artikel Baru'}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700">✕</button>
-        </div>
+    <Modal
+      open
+      onClose={onClose}
+      title={article ? 'Edit Artikel' : 'Artikel Baru'}
+      variant="page"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={() => save.mutate()}
+            disabled={save.isPending || !form.title || !form.content}
+            className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-semibold disabled:opacity-50"
+          >
+            {save.isPending ? 'Menyimpan...' : 'Simpan'}
+          </button>
+          <button type="button" onClick={onClose} className="px-6 py-3 rounded-xl border text-sm">Batal</button>
+        </>
+      }
+    >
         <div className="space-y-3">
-          <input
-            placeholder="Judul"
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-            className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <select
-              value={form.section}
-              onChange={(e) => setForm({ ...form, section: e.target.value })}
-              className="px-4 py-3 border rounded-xl text-sm outline-none"
-            >
-              <option value="help">Bantuan</option>
-              <option value="docs">Dokumentasi</option>
-              <option value="legal">Legal</option>
-            </select>
-            <select
-              value={form.category_id}
-              onChange={(e) => setForm({ ...form, category_id: e.target.value })}
-              className="px-4 py-3 border rounded-xl text-sm outline-none"
-            >
-              <option value="">Tanpa kategori</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+          <div>
+            <label htmlFor="aa-title" className="block text-sm font-medium mb-1">Judul</label>
+            <input
+              id="aa-title"
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+            />
           </div>
-          <input
-            placeholder="Ringkasan (excerpt)"
-            value={form.excerpt}
-            onChange={(e) => setForm({ ...form, excerpt: e.target.value })}
-            className="w-full px-4 py-3 border rounded-xl text-sm outline-none"
-          />
-          <textarea
-            placeholder="Konten (HTML)"
-            rows={8}
-            value={form.content}
-            onChange={(e) => setForm({ ...form, content: e.target.value })}
-            className="w-full px-4 py-3 border rounded-xl text-sm font-mono outline-none focus:border-amber-400"
-          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="aa-section" className="block text-sm font-medium mb-1">Bagian</label>
+              <select
+                id="aa-section"
+                value={form.section}
+                onChange={(e) => setForm({ ...form, section: e.target.value })}
+                className="w-full px-4 py-3 border rounded-xl text-sm outline-none"
+              >
+                <option value="help">Bantuan</option>
+                <option value="docs">Dokumentasi</option>
+                <option value="legal">Legal</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="aa-category" className="block text-sm font-medium mb-1">Kategori</label>
+              <select
+                id="aa-category"
+                value={form.category_id}
+                onChange={(e) => setForm({ ...form, category_id: e.target.value })}
+                className="w-full px-4 py-3 border rounded-xl text-sm outline-none"
+              >
+                <option value="">Tanpa kategori</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label htmlFor="aa-excerpt" className="block text-sm font-medium mb-1">Ringkasan</label>
+            <input
+              id="aa-excerpt"
+              value={form.excerpt}
+              onChange={(e) => setForm({ ...form, excerpt: e.target.value })}
+              className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+            />
+          </div>
+          <div>
+            <label htmlFor="aa-content" className="block text-sm font-medium mb-1">Konten (HTML)</label>
+            <textarea
+              id="aa-content"
+              rows={8}
+              value={form.content}
+              onChange={(e) => setForm({ ...form, content: e.target.value })}
+              className="w-full px-4 py-3 border rounded-xl text-sm font-mono outline-none focus:border-amber-400"
+            />
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -185,19 +228,9 @@ function ArticleForm({
             />
             Terbitkan
           </label>
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <div className="flex gap-2">
-            <button
-              onClick={() => save.mutate()}
-              disabled={save.isPending || !form.title || !form.content}
-              className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-semibold disabled:opacity-50"
-            >
-              {save.isPending ? 'Menyimpan...' : 'Simpan'}
-            </button>
-            <button onClick={onClose} className="px-6 py-3 rounded-xl border text-sm">Batal</button>
-          </div>
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
+

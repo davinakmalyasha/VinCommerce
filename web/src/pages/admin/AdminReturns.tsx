@@ -68,7 +68,7 @@ export function AdminReturns() {
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{r.description}</p>
             {r.status === 'approved' && (
-              <button
+              <button type="button"
                 onClick={() => refund.mutate(r.id)}
                 disabled={refund.isPending}
                 className="mt-3 px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"

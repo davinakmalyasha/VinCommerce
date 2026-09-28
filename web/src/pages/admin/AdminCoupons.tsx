@@ -57,7 +57,7 @@ export function AdminCoupons() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Manajemen Kupon</h1>
-        <button
+        <button type="button"
           onClick={() => setShowForm(!showForm)}
           className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600"
         >
@@ -77,7 +77,7 @@ export function AdminCoupons() {
           <input placeholder="Batas pemakaian total (0 = tak terbatas)" type="number" value={form.usage_limit} onChange={(e) => setForm({ ...form, usage_limit: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none" />
           <input placeholder="Batas per user" type="number" value={form.per_user_limit} onChange={(e) => setForm({ ...form, per_user_limit: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none" />
           <input placeholder="Masa berlaku (hari)" type="number" value={form.valid_days} onChange={(e) => setForm({ ...form, valid_days: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none" />
-          <button
+          <button type="button"
             onClick={() => create.mutate()}
             disabled={create.isPending || !form.code || !form.value}
             className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm disabled:opacity-50"
@@ -87,8 +87,8 @@ export function AdminCoupons() {
         </div>
       )}
 
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[44rem] text-sm">
           <thead className="bg-gray-50 text-left text-xs text-gray-500">
             <tr>
               <th className="px-4 py-3">Kode</th>
@@ -116,7 +116,7 @@ export function AdminCoupons() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <button
+                  <button type="button"
                     onClick={() => toggle.mutate({ id: c.id, active: !c.is_active })}
                     className="text-xs text-amber-600 hover:underline"
                   >

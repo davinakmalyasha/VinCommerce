@@ -80,6 +80,7 @@ export function SupportConsole() {
 function TicketQueue() {
   const queryClient = useQueryClient()
   const [openId, setOpenId] = useState<string | null>(null)
+  const [error, setError] = useState('')
 
   const { data: tickets } = useQuery({
     queryKey: ['support-tickets'],
@@ -91,13 +92,13 @@ function TicketQueue() {
     mutationFn: async ({ id, status }: { id: string; status: string }) =>
       api.post(`/support/tickets/${id}/status`, { status }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['support-tickets'] }),
-    onError: () => alert('Gagal mengubah status tiket'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengubah status tiket'),
   })
 
   const assignToMe = useMutation({
     mutationFn: async (id: string) => api.post(`/support/tickets/${id}/assign`, { agent_id: null }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['support-tickets'] }),
-    onError: () => alert('Gagal mengambil tiket'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengambil tiket'),
   })
 
   if (!tickets?.length) {
@@ -106,6 +107,12 @@ function TicketQueue() {
 
   return (
     <div className="space-y-3">
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
       {tickets.map((t) => (
         <div key={t.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
           <div className="flex items-start justify-between gap-3">
@@ -134,9 +141,14 @@ function TicketQueue() {
                   Ambil
                 </button>
               )}
+              <label htmlFor={`ticket-status-${t.id}`} className="sr-only">Status tiket {t.ticket_number}</label>
               <select
+                id={`ticket-status-${t.id}`}
                 value={t.status}
-                onChange={(e) => setStatus.mutate({ id: t.id, status: e.target.value })}
+                onChange={(e) => {
+                  setError('')
+                  setStatus.mutate({ id: t.id, status: e.target.value })
+                }}
                 className="border rounded-lg px-2 py-1.5 text-xs bg-transparent"
               >
                 {['open', 'in_progress', 'resolved', 'closed'].map((s) => (
@@ -175,8 +187,9 @@ function TicketReply({ ticketId }: { ticketId: string }) {
       setBody('')
       queryClient.invalidateQueries({ queryKey: ['ticket-detail', ticketId] })
     },
-    onError: () => alert('Gagal mengirim balasan'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengirim balasan'),
   })
+  const [error, setError] = useState('')
 
   return (
     <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 space-y-2">
@@ -188,13 +201,18 @@ function TicketReply({ ticketId }: { ticketId: string }) {
           </p>
         </div>
       ))}
+      <label htmlFor={`ticket-reply-${ticketId}`} className="sr-only">Tulis balasan</label>
       <textarea
+        id={`ticket-reply-${ticketId}`}
         value={body}
         onChange={(e) => setBody(e.target.value)}
         rows={2}
         placeholder="Tulis balasan..."
         className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
       />
+      {error && (
+        <p role="alert" className="text-xs text-red-600">{error}</p>
+      )}
       <div className="flex items-center justify-between">
         <label className="flex items-center gap-1.5 text-xs text-gray-500">
           <input type="checkbox" checked={internal} onChange={(e) => setInternal(e.target.checked)} className="accent-amber-500" />
@@ -226,11 +244,18 @@ function ChatQueue() {
   const claim = useMutation({
     mutationFn: async (id: string) => api.post(`/support/chat/sessions/${id}/claim`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-queue'] }),
-    onError: () => alert('Gagal mengambil sesi chat'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengambil sesi chat'),
   })
+  const [error, setError] = useState('')
 
   return (
     <div className="space-y-3">
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
       {!sessions?.length && (
         <p className="text-sm text-gray-500 py-10 text-center">Belum ada sesi chat terbuka.</p>
       )}
@@ -287,12 +312,16 @@ function StaffChatRoom({ sessionId }: { sessionId: string }) {
       setBody('')
       queryClient.invalidateQueries({ queryKey: ['staff-chat', sessionId] })
     },
-    onError: () => alert('Gagal mengirim pesan'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengirim pesan'),
   })
+  const [error, setError] = useState('')
 
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4 space-y-3">
       <h3 className="font-bold text-sm">💬 Sesi {sessionId.slice(0, 8)}</h3>
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-xs text-red-700">{error}</p>
+      )}
       <div className="max-h-72 overflow-y-auto space-y-1.5 text-sm">
         {(data?.messages ?? []).map((m) => (
           <p key={m.id}>
@@ -310,11 +339,13 @@ function StaffChatRoom({ sessionId }: { sessionId: string }) {
         }}
         className="flex gap-2"
       >
+        <label htmlFor={`staff-chat-${sessionId}`} className="sr-only">Balas sebagai agen</label>
         <input
+          id={`staff-chat-${sessionId}`}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           placeholder="Balas sebagai agen..."
-          className="flex-1 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+          className="flex-1 min-w-0 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
         />
         <button
           type="submit"

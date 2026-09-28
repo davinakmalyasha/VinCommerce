@@ -4,10 +4,13 @@ import { Link, NavLink, Outlet } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useSession } from '../../stores/session'
 import { formatIDR } from '../../lib/format'
+import { Modal } from '../../components/Modal'
 
 export function SellerLayout() {
   const { user } = useSession()
-  const [showOnboard, setShowOnboard] = useState(false)
+  const [openOnboard, setOpenOnboard] = useState(false)
+  const [storeName, setStoreName] = useState('')
+  const [error, setError] = useState('')
 
   const { data: store } = useQuery({
     queryKey: ['my-store'],
@@ -19,6 +22,19 @@ export function SellerLayout() {
       }
     },
     enabled: !!user,
+  })
+
+  // A prompt() cannot be styled, labelled or validated, and its text is lost
+  // on failure. Creating a store now goes through a real form.
+  const createStore = useMutation({
+    mutationFn: async (name: string) => {
+      await api.post('/seller/store', { name })
+    },
+    onSuccess: () => {
+      // Re-mints the access token so the fresh seller role is in the claims.
+      window.location.reload()
+    },
+    onError: (e: Error) => setError(e.message || 'Gagal membuat toko.'),
   })
 
   // Access model:
@@ -52,24 +68,64 @@ export function SellerLayout() {
         </p>
       )}
       <button
-        onClick={async () => {
-          const name = prompt('Nama toko:')
-          if (!name) return
-          setShowOnboard(true)
-          try {
-            await api.post('/seller/store', { name })
-            window.location.reload() // re-mints access token with fresh roles
-          } finally {
-            setShowOnboard(false)
-          }
+        type="button"
+        onClick={() => {
+          setError('')
+          setOpenOnboard(true)
         }}
-        disabled={showOnboard}
+        disabled={createStore.isPending}
         className="px-8 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
       >
-        {showOnboard ? 'Membuat...' : 'Buka Toko Sekarang'}
+        {createStore.isPending ? 'Membuat...' : 'Buka Toko Sekarang'}
       </button>
+
+      <Modal
+        open={openOnboard}
+        onClose={() => setOpenOnboard(false)}
+        title="Buka Toko"
+        description="Pilih nama toko yang akan tampil di halaman produkmu."
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => createStore.mutate(storeName.trim())}
+              disabled={!storeName.trim() || createStore.isPending}
+              className="px-6 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {createStore.isPending ? 'Membuat...' : 'Buat Toko'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpenOnboard(false)}
+              className="px-4 py-2.5 rounded-xl border text-sm"
+            >
+              Batal
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <label htmlFor="store-name" className="block text-sm font-medium">Nama toko</label>
+          <input
+            id="store-name"
+            value={storeName}
+            onChange={(e) => setStoreName(e.target.value)}
+            placeholder="mis. Toko Berkah"
+            minLength={3}
+            maxLength={60}
+            required
+            aria-invalid={!!error}
+            aria-describedby={error ? 'store-name-error' : undefined}
+            className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+          />
+          {error && (
+            <p id="store-name-error" role="alert" className="text-sm text-red-600">{error}</p>
+          )}
+        </div>
+      </Modal>
     </div>
   )
+
 
   if (!store) return onboarding
   if (!isSellerRole) {
@@ -227,8 +283,9 @@ function SellerQAInbox({
       setText('')
       queryClient.invalidateQueries({ queryKey: ['seller-questions'] })
     },
-    onError: () => alert('Gagal mengirim jawaban'),
+    onError: (e: Error) => setError(e.message || 'Gagal mengirim jawaban'),
   })
+  const [error, setError] = useState('')
 
   const pending = questions.filter(unanswered)
 
@@ -237,6 +294,9 @@ function SellerQAInbox({
       <h2 className="font-bold text-sm mb-3">
         ❓ Tanya Jawab Produk {pending.length > 0 && <span className="text-amber-600">({pending.length} belum dijawab)</span>}
       </h2>
+      {error && (
+        <p role="alert" className="text-sm text-red-600 mb-2 bg-red-50 dark:bg-red-950/40 rounded-lg p-2.5">{error}</p>
+      )}
       <div className="space-y-3">
         {questions.slice(0, 8).map((q) => (
           <div key={q.id} className="border-b border-gray-100 dark:border-gray-800 pb-3 last:border-0 last:pb-0">
@@ -249,15 +309,20 @@ function SellerQAInbox({
               <p className="text-xs text-green-700 dark:text-green-400 mt-1">✓ {q.answer}</p>
             ) : answerFor === q.id ? (
               <div className="mt-2 flex gap-2">
+                <label htmlFor={`qa-${q.id}`} className="sr-only">Jawaban untuk {q.product_name ?? 'produk'}</label>
                 <input
+                  id={`qa-${q.id}`}
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   placeholder="Tulis jawaban..."
-                  className="flex-1 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                  className="flex-1 min-w-0 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
                 />
                 <button
                   type="button"
-                  onClick={() => text.trim() && answer.mutate({ id: q.id, body: text.trim() })}
+                  onClick={() => {
+                    setError('')
+                    if (text.trim()) answer.mutate({ id: q.id, body: text.trim() })
+                  }}
                   disabled={answer.isPending || !text.trim()}
                   className="px-4 py-2 rounded-lg bg-amber-500 text-white text-xs font-medium disabled:opacity-50"
                 >

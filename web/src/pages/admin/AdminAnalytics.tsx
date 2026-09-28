@@ -42,7 +42,7 @@ export function AdminAnalytics() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Analitik Platform</h1>
-        <button
+        <button type="button"
           onClick={() => downloadFile('/admin/analytics/export.csv', 'analitik-platform.csv')}
           className="text-sm text-amber-600 hover:underline"
         >

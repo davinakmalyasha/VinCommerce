@@ -70,8 +70,9 @@ export function SellerBundles() {
       setPicked({})
       queryClient.invalidateQueries({ queryKey: ['seller-bundles'] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal membuat bundling'),
   })
+  const [error, setError] = useState('')
 
   const toggleVariant = (id: string, price: number) => {
     setPicked((prev) => {
@@ -85,9 +86,14 @@ export function SellerBundles() {
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 space-y-4">
       <div>
-        <h2 className="font-bold text-sm">📦 Bundling Produk</h2>
+        <h2 className="font-bold text-sm">🎁 Bundling Produk</h2>
         <p className="text-xs text-gray-500">Jual beberapa produk sebagai satu paket dengan harga spesial.</p>
       </div>
+
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-xs text-red-700">{error}</p>
+      )}
+
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <input

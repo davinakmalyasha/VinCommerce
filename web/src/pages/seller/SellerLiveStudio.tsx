@@ -42,15 +42,16 @@ export function SellerLiveStudio() {
       setVideoId('')
       queryClient.invalidateQueries({ queryKey: ['seller-live'] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal membuat sesi live'),
   })
 
   const transition = useMutation({
     mutationFn: async ({ id, to }: { id: string; to: string }) =>
       api.post(`/seller/live/${id}/transition`, { to }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['seller-live'] }),
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mengubah status sesi'),
   })
+  const [error, setError] = useState('')
 
   return (
     <div className="space-y-6">
@@ -59,20 +60,31 @@ export function SellerLiveStudio() {
         <span className="text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">Live Commerce</span>
       </div>
 
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
+
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label htmlFor="live-title" className="sr-only">Judul siaran</label>
         <input
+          id="live-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Judul siaran (mis. Flash Sale Skincare!)"
           className="px-3 py-2 border rounded-lg text-sm outline-none"
         />
+        <label htmlFor="live-video" className="sr-only">YouTube video ID</label>
         <input
+          id="live-video"
           value={videoId}
           onChange={(e) => setVideoId(e.target.value.trim())}
           placeholder="YouTube video ID (untuk stream)"
           className="px-3 py-2 border rounded-lg text-sm outline-none"
         />
-        <button
+        <button type="button"
           onClick={() => create.mutate()}
           disabled={create.isPending || title.trim().length < 3}
           className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium disabled:opacity-50"
@@ -99,19 +111,19 @@ export function SellerLiveStudio() {
               </div>
               <div className="flex gap-2">
                 {s.status === 'scheduled' && (
-                  <button onClick={() => transition.mutate({ id: s.id, to: 'live' })} disabled={transition.isPending}
+                  <button type="button" onClick={() => transition.mutate({ id: s.id, to: 'live' })} disabled={transition.isPending}
                     className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium disabled:opacity-50">
                     🔴 Go Live
                   </button>
                 )}
                 {s.status === 'live' && (
-                  <button onClick={() => transition.mutate({ id: s.id, to: 'ended' })} disabled={transition.isPending}
+                  <button type="button" onClick={() => transition.mutate({ id: s.id, to: 'ended' })} disabled={transition.isPending}
                     className="px-4 py-2 rounded-lg border border-gray-300 text-sm disabled:opacity-50">
                     Akhiri Siaran
                   </button>
                 )}
                 {s.status !== 'ended' && (
-                  <button onClick={() => setManaging(managing === s.id ? null : s.id)}
+                  <button type="button" onClick={() => setManaging(managing === s.id ? null : s.id)}
                     className="px-4 py-2 rounded-lg border text-sm hover:border-amber-400">
                     {managing === s.id ? 'Tutup' : 'Kelola Produk'}
                   </button>
@@ -145,15 +157,16 @@ function StudioProducts({ sessionId }: { sessionId: string }) {
     mutationFn: async (variantIds: string[]) =>
       api.put(`/seller/live/${sessionId}/products`, { variant_ids: variantIds }),
     onSuccess: () => refetch(),
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal menempel produk'),
   })
 
   const togglePin = useMutation({
     mutationFn: async ({ variantId, pinned }: { variantId: string; pinned: boolean }) =>
       api.post(`/seller/live/${sessionId}/pin`, { variant_id: variantId, pinned }),
     onSuccess: () => refetch(),
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mengubah status sematan'),
   })
+  const [error, setError] = useState('')
 
   const attachedIds = new Set((attached ?? []).map((p) => p.variant_id))
 
@@ -167,6 +180,9 @@ function StudioProducts({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="border-t pt-3 space-y-4">
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-xs text-red-700">{error}</p>
+      )}
       <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
         {(attached ?? []).map((row) => (
           <div key={row.variant_id} className={`flex items-center gap-3 border rounded-xl p-2.5 ${isPinned(row) ? 'border-red-300 bg-red-50 dark:bg-red-900/20' : ''}`}>
@@ -174,7 +190,7 @@ function StudioProducts({ sessionId }: { sessionId: string }) {
               <p className="text-sm line-clamp-1">{row.product_name}</p>
               <p className="text-xs text-gray-500">{row.variant_name} · {formatIDR(row.regular_price)} · stok {row.stock}</p>
             </div>
-            <button
+            <button type="button"
               onClick={() => togglePin.mutate({ variantId: row.variant_id, pinned: !isPinned(row) })}
               disabled={togglePin.isPending}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
@@ -196,7 +212,7 @@ function StudioProducts({ sessionId }: { sessionId: string }) {
               <p className="font-medium mb-1">{p.name}</p>
               <div className="flex flex-wrap gap-1.5">
                 {(p.variants ?? []).map((v) => (
-                  <button key={v.id} onClick={() => pickVariant(p, v)} disabled={attachedIds.has(v.id)}
+                  <button type="button" key={v.id} onClick={() => pickVariant(p, v)} disabled={attachedIds.has(v.id)}
                     className="px-2 py-1 rounded-full border hover:border-amber-400 disabled:opacity-40">
                     {v.name}
                   </button>

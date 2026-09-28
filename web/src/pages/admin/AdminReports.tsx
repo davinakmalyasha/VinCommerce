@@ -109,14 +109,14 @@ function ResolveRow({ onResolve, busy }: { onResolve: (note: string, takedown: b
         placeholder="Catatan admin (opsional)"
         className="flex-1 min-w-40 px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
       />
-      <button
+      <button type="button"
         onClick={() => onResolve(note, false)}
         disabled={busy}
         className="px-4 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50 disabled:opacity-50"
       >
         Tutup (tidak ada tindakan)
       </button>
-      <button
+      <button type="button"
         onClick={() => onResolve(note, true)}
         disabled={busy}
         className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm disabled:opacity-50"

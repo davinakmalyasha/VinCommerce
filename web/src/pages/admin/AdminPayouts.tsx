@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api } from '../../lib/api'
 import { formatIDR, formatDate } from '../../lib/format'
+import { Modal } from '../../components/Modal'
 
 interface AdminPayout {
   id: string
@@ -16,6 +17,8 @@ interface AdminPayout {
   requested_at: string
   processed_at?: string | null
 }
+
+type Payout = AdminPayout
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
@@ -47,8 +50,10 @@ export function AdminPayouts() {
         setStatus('pending')
       }
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal memproses penarikan'),
   })
+  const [error, setError] = useState('')
+  const [rejectFor, setRejectFor] = useState<Payout | null>(null)
 
   return (
     <div className="space-y-4">
@@ -59,7 +64,9 @@ export function AdminPayouts() {
             Verifikasi transfer manual ke rekening penjual. "Gagal" otomatis mengembalikan saldo.
           </p>
         </div>
+        <label htmlFor="payout-status" className="sr-only">Status penarikan</label>
         <select
+          id="payout-status"
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm bg-transparent"
@@ -93,7 +100,9 @@ export function AdminPayouts() {
             {p.status === 'pending' && (
               refFor === p.id ? (
                 <div className="flex gap-2 pt-1">
+                  <label htmlFor={`payout-ref-${p.id}`} className="sr-only">No. referensi transfer</label>
                   <input
+                    id={`payout-ref-${p.id}`}
                     value={ref}
                     onChange={(e) => setRef(e.target.value)}
                     placeholder="No. referensi transfer bank"
@@ -125,7 +134,7 @@ export function AdminPayouts() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => window.confirm('Tolak penarikan dan kembalikan saldo ke penjual?') && process.mutate({ id: p.id, action: 'failed' })}
+                    onClick={() => setRejectFor(p)}
                     disabled={process.isPending}
                     className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-xs hover:bg-red-50 disabled:opacity-50"
                   >
@@ -137,6 +146,38 @@ export function AdminPayouts() {
           </div>
         ))}
       </div>
+
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">{error}</p>
+      )}
+
+      <Modal
+        open={!!rejectFor}
+        onClose={() => setRejectFor(null)}
+        title="Tolak penarikan"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                if (rejectFor) process.mutate({ id: rejectFor.id, action: 'failed' })
+                setRejectFor(null)
+              }}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm"
+            >
+              Ya, tolak
+            </button>
+            <button type="button" onClick={() => setRejectFor(null)} className="px-4 py-2 rounded-lg border text-sm">
+              Batal
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          Tolak penarikan {rejectFor ? <b>{formatIDR(rejectFor.amount)}</b> : ''} dan kembalikan saldo ke
+          penjual?
+        </p>
+      </Modal>
     </div>
   )
 }

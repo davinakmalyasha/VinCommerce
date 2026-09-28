@@ -51,7 +51,7 @@ export function AdminShipping() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Metode Pengiriman</h1>
-        <button
+        <button type="button"
           onClick={() => setShowForm(!showForm)}
           className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600"
         >
@@ -67,7 +67,7 @@ export function AdminShipping() {
           <input placeholder="Biaya per kg (Rp)" type="number" value={form.per_kg_fee} onChange={(e) => setForm({ ...form, per_kg_fee: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
           <input placeholder="Min hari" type="number" value={form.min_days} onChange={(e) => setForm({ ...form, min_days: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
           <input placeholder="Max hari" type="number" value={form.max_days} onChange={(e) => setForm({ ...form, max_days: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <button
+          <button type="button"
             onClick={() => create.mutate()}
             disabled={create.isPending || !form.code || !form.name}
             className="px-4 py-2 rounded-lg bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm disabled:opacity-50"
@@ -77,8 +77,8 @@ export function AdminShipping() {
         </div>
       )}
 
-      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[40rem] text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs text-gray-500">
             <tr>
               <th className="px-4 py-3">Kurir</th>
@@ -105,7 +105,7 @@ export function AdminShipping() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <button
+                  <button type="button"
                     onClick={() => toggle.mutate({ id: m.id, active: !m.is_active })}
                     className="text-xs text-amber-600 hover:underline"
                   >

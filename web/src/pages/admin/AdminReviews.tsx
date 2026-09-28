@@ -43,13 +43,13 @@ export function AdminReviews() {
             {r.title && <p className="text-sm font-medium mt-2">{r.title}</p>}
             <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{r.content}</p>
             <div className="flex gap-2 mt-3">
-              <button
+              <button type="button"
                 onClick={() => moderate.mutate({ id: r.id, status: 'approved' })}
                 className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700"
               >
                 Setujui
               </button>
-              <button
+              <button type="button"
                 onClick={() => moderate.mutate({ id: r.id, status: 'rejected' })}
                 className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm hover:bg-red-50"
               >

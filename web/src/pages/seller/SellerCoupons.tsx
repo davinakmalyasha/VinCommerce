@@ -53,7 +53,7 @@ export function SellerCoupons() {
         <input placeholder="Nilai" type="number" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
         <input placeholder="Min. subtotal (Rp)" type="number" value={form.min_subtotal} onChange={(e) => setForm({ ...form, min_subtotal: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
         <input placeholder="Masa berlaku (hari)" type="number" value={form.valid_days} onChange={(e) => setForm({ ...form, valid_days: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-        <button
+        <button type="button"
           onClick={() => create.mutate()}
           disabled={create.isPending || !form.code || !form.value}
           className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm disabled:opacity-50"
@@ -62,8 +62,8 @@ export function SellerCoupons() {
         </button>
       </div>
 
-      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[36rem] text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs text-gray-500">
             <tr>
               <th className="px-4 py-3">Kode</th>

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { formatIDR, formatDate } from '../../lib/format'
+import { Modal } from '../../components/Modal'
 
 interface PendingStore {
   id: string
@@ -27,6 +28,8 @@ interface KycSubmission {
 
 export function AdminStores() {
   const queryClient = useQueryClient()
+  const [rejectFor, setRejectFor] = useState<PendingStore | null>(null)
+  const [error, setError] = useState('')
 
   const { data } = useQuery({
     queryKey: ['admin-stores'],
@@ -37,17 +40,20 @@ export function AdminStores() {
     mutationFn: async ({ id, decision }: { id: string; decision: string }) =>
       api.post(`/admin/stores/${id}/decide`, { decision }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-stores'] }),
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal memproses keputusan'),
   })
 
   return (
     <div className="space-y-8">
       <div className="space-y-4">
         <h1 className="text-xl font-bold">Persetujuan Toko ({data?.length ?? 0})</h1>
+        {error && (
+          <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">{error}</p>
+        )}
         <div className="space-y-3">
           {data?.length === 0 && <p className="text-gray-500 text-sm">Tidak ada toko menunggu persetujuan.</p>}
           {data?.map((s) => (
-            <div key={s.id} className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between">
+            <div key={s.id} className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <p className="font-medium">{s.name}</p>
                 <p className="text-xs text-gray-500">
@@ -55,17 +61,15 @@ export function AdminStores() {
                 </p>
               </div>
               <div className="flex gap-2">
-                <button
+                <button type="button"
                   onClick={() => decide.mutate({ id: s.id, decision: 'approve' })}
                   disabled={decide.isPending}
                   className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"
                 >
                   Setujui
                 </button>
-                <button
-                  onClick={() => {
-                    if (confirm(`Tolak toko "${s.name}"?`)) decide.mutate({ id: s.id, decision: 'reject' })
-                  }}
+                <button type="button"
+                  onClick={() => setRejectFor(s)}
                   disabled={decide.isPending}
                   className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50"
                 >
@@ -76,6 +80,34 @@ export function AdminStores() {
           ))}
         </div>
       </div>
+
+      <Modal
+        open={!!rejectFor}
+        onClose={() => setRejectFor(null)}
+        title="Tolak toko"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                if (rejectFor) decide.mutate({ id: rejectFor.id, decision: 'reject' })
+                setRejectFor(null)
+              }}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm"
+            >
+              Ya, tolak
+            </button>
+            <button type="button" onClick={() => setRejectFor(null)} className="px-4 py-2 rounded-lg border text-sm">
+              Batal
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          Tolak toko <b>{rejectFor?.name}</b>? Pemilik akan melihat penolakan ini dan bisa mengajukan ulang.
+        </p>
+      </Modal>
+
       <KYCQueue />
     </div>
   )
@@ -100,11 +132,13 @@ function KYCQueue() {
       setNote('')
       queryClient.invalidateQueries({ queryKey: ['admin-kyc'] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal memproses KYC'),
   })
+  const [error, setError] = useState('')
 
   const submitDecision = (storeId: string) => {
     if (pendingDecision === 'reject' && !note.trim()) return
+    setError('')
     decideKyc.mutate({ storeId, decision: pendingDecision, note: note || undefined })
   }
 
@@ -114,6 +148,9 @@ function KYCQueue() {
       <p className="text-xs text-gray-500 -mt-2">
         Seller tidak bisa menarik dana sebelum KYC disetujui.
       </p>
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">{error}</p>
+      )}
       <div className="space-y-3">
         {data?.length === 0 && <p className="text-gray-500 text-sm">Tidak ada pengajuan KYC menunggu review.</p>}
         {data?.map((k) => (
@@ -150,14 +187,18 @@ function KYCQueue() {
             </div>
             {noteFor === k.id ? (
               <div className="space-y-2">
+                <label htmlFor={`kyc-note-${k.id}`} className="sr-only">
+                  {pendingDecision === 'reject' ? 'Alasan penolakan' : 'Catatan'}
+                </label>
                 <input
+                  id={`kyc-note-${k.id}`}
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   placeholder={pendingDecision === 'reject' ? 'Alasan penolakan (wajib)' : 'Catatan (opsional)'}
                   className="w-full px-3 py-2 border rounded-lg text-sm outline-none"
                 />
                 <div className="flex gap-2">
-                  <button
+                  <button type="button"
                     onClick={() => submitDecision(k.store_id)}
                     disabled={decideKyc.isPending || (pendingDecision === 'reject' && !note.trim())}
                     className={`px-4 py-2 rounded-lg text-white text-sm disabled:opacity-50 ${
@@ -166,14 +207,14 @@ function KYCQueue() {
                   >
                     {decideKyc.isPending ? 'Memproses...' : pendingDecision === 'approve' ? 'Konfirmasi Setujui' : 'Konfirmasi Tolak'}
                   </button>
-                  <button onClick={() => setNoteFor(null)} className="px-4 py-2 rounded-lg border text-sm">
+                  <button type="button" onClick={() => setNoteFor(null)} className="px-4 py-2 rounded-lg border text-sm">
                     Batal
                   </button>
                 </div>
               </div>
             ) : (
               <div className="flex gap-2">
-                <button
+                <button type="button"
                   onClick={() => {
                     setPendingDecision('approve')
                     setNoteFor(k.id)
@@ -183,7 +224,7 @@ function KYCQueue() {
                 >
                   Setujui KYC
                 </button>
-                <button
+                <button type="button"
                   onClick={() => {
                     setPendingDecision('reject')
                     setNoteFor(k.id)

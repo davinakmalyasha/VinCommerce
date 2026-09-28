@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useSession } from '../../stores/session'
 import { formatDate } from '../../lib/format'
+import { Modal } from '../../components/Modal'
 
 interface AdminUser {
   id: string
@@ -37,11 +38,13 @@ export function AdminUsers() {
     mutationFn: async ({ id, status }: { id: string; status: string }) =>
       api.post(`/admin/users/${id}/status`, { status }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-users'] }),
+    onError: (e: Error) => setError(e.message || 'Gagal mengubah status akun'),
   })
 
   const grantSeller = useMutation({
     mutationFn: async (id: string) => api.post(`/admin/users/${id}/grant-seller`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-users'] }),
+    onError: (e: Error) => setError(e.message || 'Gagal memberikan peran penjual'),
   })
 
   // Role revocation with per-row role picker.
@@ -54,7 +57,7 @@ export function AdminUsers() {
       setRevokeFor(null)
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mencabut peran'),
   })
 
   const impersonate = useMutation({
@@ -64,8 +67,11 @@ export function AdminUsers() {
       startImpersonation(res.access_token, res.user as never)
       navigate('/')
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal masuk sebagai pengguna'),
   })
+
+  const [error, setError] = useState('')
+  const [confirmFor, setConfirmFor] = useState<{ text: string; run: () => void } | null>(null)
 
   const visible = (data?.users ?? []).filter((u) =>
     search ? u.full_name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()) : true,
@@ -84,8 +90,11 @@ export function AdminUsers() {
           className="px-3 py-2 border rounded-lg text-sm outline-none w-56 dark:bg-gray-800"
         />
       </div>
-      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+      {/* `overflow-hidden` CLIPPED the wide table on narrow screens: the
+          action buttons were simply unreachable. Scroll instead, and give the
+          table a floor width so columns keep their spacing. */}
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[52rem] text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs text-gray-500">
             <tr>
               <th className="px-4 py-3">Pengguna</th>
@@ -125,7 +134,7 @@ export function AdminUsers() {
                 </td>
                 <td className="px-4 py-3 flex flex-wrap gap-2">
                   {!u.roles.includes('admin') && u.status === 'active' && (
-                    <button
+                    <button type="button"
                       onClick={() => impersonate.mutate(u.id)}
                       disabled={impersonate.isPending}
                       className="text-xs text-indigo-600 hover:underline disabled:opacity-50"
@@ -135,7 +144,7 @@ export function AdminUsers() {
                     </button>
                   )}
                   {!u.roles.includes('seller') && (
-                    <button
+                    <button type="button"
                       onClick={() => grantSeller.mutate(u.id)}
                       className="text-xs text-blue-600 hover:underline"
                     >
@@ -154,23 +163,25 @@ export function AdminUsers() {
                             <option key={r} value={r}>{r}</option>
                           ))}
                         </select>
-                        <button
-                          onClick={() => {
-                            if (confirm(`Cabut peran "${revokeRole}" dari ${u.email}?`)) {
-                              revoke.mutate({ id: u.id, role: revokeRole })
-                            }
-                          }}
+                        <button type="button"
+                          aria-label={`Cabut peran ${revokeRole} dari ${u.email}`}
+                          onClick={() =>
+                            setConfirmFor({
+                              text: `Cabut peran "${revokeRole}" dari ${u.email}?`,
+                              run: () => revoke.mutate({ id: u.id, role: revokeRole }),
+                            })
+                          }
                           disabled={revoke.isPending}
                           className="text-xs text-red-600 hover:underline disabled:opacity-50"
                         >
                           ✓
                         </button>
-                        <button onClick={() => setRevokeFor(null)} className="text-xs text-gray-400 hover:underline">
+                        <button type="button" onClick={() => setRevokeFor(null)} className="text-xs text-gray-400 hover:underline">
                           ✕
                         </button>
                       </span>
                     ) : (
-                      <button
+                      <button type="button"
                         onClick={() => {
                           setRevokeFor(u.id)
                           setRevokeRole(u.roles.find((r) => r !== 'buyer') ?? 'seller')
@@ -183,16 +194,19 @@ export function AdminUsers() {
                     )
                   )}
                   {u.status === 'active' ? (
-                    <button
-                      onClick={() => {
-                        if (confirm(`Suspensi akun ${u.email}?`)) setStatus.mutate({ id: u.id, status: 'suspended' })
-                      }}
+                    <button type="button"
+                      onClick={() =>
+                        setConfirmFor({
+                          text: `Suspensi akun ${u.email}?`,
+                          run: () => setStatus.mutate({ id: u.id, status: 'suspended' }),
+                        })
+                      }
                       className="text-xs text-orange-600 hover:underline"
                     >
                       Suspensi
                     </button>
                   ) : (
-                    <button
+                    <button type="button"
                       onClick={() => setStatus.mutate({ id: u.id, status: 'active' })}
                       className="text-xs text-green-600 hover:underline"
                     >
@@ -207,15 +221,48 @@ export function AdminUsers() {
       </div>
       {(data?.total ?? 0) > 20 && (
         <div className="flex items-center justify-center gap-3">
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
+          <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
             ← Sebelumnya
           </button>
           <span className="text-sm text-gray-500">Halaman {page} / {totalPages}</span>
-          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
+          <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40">
             Berikutnya →
           </button>
         </div>
       )}
+
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
+
+      {/* Replaces window.confirm: an unstyled, unlabelled browser dialog. */}
+      <Modal
+        open={!!confirmFor}
+        onClose={() => setConfirmFor(null)}
+        title="Konfirmasi"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                confirmFor?.run()
+                setConfirmFor(null)
+              }}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm"
+            >
+              Ya, lanjutkan
+            </button>
+            <button type="button" onClick={() => setConfirmFor(null)} className="px-4 py-2 rounded-lg border text-sm">
+              Batal
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-gray-600 dark:text-gray-300">{confirmFor?.text}</p>
+      </Modal>
     </div>
   )
 }

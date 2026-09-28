@@ -61,14 +61,14 @@ export function SellerReturns() {
               </div>
               {r.status === 'requested' && (
                 <div className="flex gap-2 ml-4">
-                  <button
+                  <button type="button"
                     onClick={() => decide.mutate({ id: r.id, decision: 'approved', note: 'Disetujui, silakan kirim barang kembali' })}
                     disabled={decide.isPending}
                     className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"
                   >
                     Setujui
                   </button>
-                  <button
+                  <button type="button"
                     onClick={() => decide.mutate({ id: r.id, decision: 'rejected', note: 'Ditolak' })}
                     disabled={decide.isPending}
                     className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm hover:bg-red-50"

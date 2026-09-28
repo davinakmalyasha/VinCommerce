@@ -38,7 +38,7 @@ export function SellerOrders() {
     mutationFn: async ({ id, to }: { id: string; to: string }) =>
       api.post(`/seller/orders/${id}/transition`, { to }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['seller-orders'] }),
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mengubah status pesanan'),
   })
 
   const shipWithTracking = useMutation({
@@ -48,15 +48,18 @@ export function SellerOrders() {
       setTrackingFor(null)
       queryClient.invalidateQueries({ queryKey: ['seller-orders'] })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setError(e.message || 'Gagal mengirim pesanan'),
   })
+
+  const [error, setError] = useState('')
 
   const exportCsv = async () => {
     setExporting(true)
+    setError('')
     try {
       await downloadFile('/seller/orders/export.csv', 'pesanan-toko.csv')
     } catch {
-      alert('Gagal mengekspor CSV')
+      setError('Gagal mengekspor CSV')
     } finally {
       setExporting(false)
     }
@@ -68,13 +71,19 @@ export function SellerOrders() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Pesanan Masuk</h1>
-        <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
+        <button type="button" onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
           {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
         </button>
       </div>
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {STATUS_TABS.map((t) => (
-          <button
+          <button type="button"
             key={t.value}
             onClick={() => {
               setStatus(t.value)
@@ -121,7 +130,7 @@ export function SellerOrders() {
               </p>
               <div className="flex gap-2">
                 {(o.status === 'paid' || o.status === 'packed') && (
-                  <button
+                  <button type="button"
                     onClick={() => openDocument(`/orders/${o.id}/packing-slip`)}
                     className="text-xs text-indigo-600 hover:underline"
                     title="Cetak slip pengemasan"
@@ -130,7 +139,7 @@ export function SellerOrders() {
                   </button>
                 )}
                 {o.status === 'paid' && (
-                  <button
+                  <button type="button"
                     onClick={() => transition.mutate({ id: o.id, to: 'packed' })}
                     disabled={transition.isPending}
                     className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm hover:bg-indigo-700 disabled:opacity-50"
@@ -159,19 +168,19 @@ export function SellerOrders() {
                           onChange={(e) => setTracking({ ...tracking, number: e.target.value })}
                           className="px-2 py-2 border rounded-lg text-xs w-36"
                         />
-                        <button
+                        <button type="button"
                           onClick={() => shipWithTracking.mutate({ id: o.id })}
                           disabled={shipWithTracking.isPending || !tracking.number.trim()}
                           className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm hover:bg-purple-700 disabled:opacity-50"
                         >
                           Kirim
                         </button>
-                        <button onClick={() => setTrackingFor(null)} className="text-xs text-gray-400">
+                        <button type="button" onClick={() => setTrackingFor(null)} className="text-xs text-gray-400">
                           Batal
                         </button>
                       </>
                     ) : (
-                      <button
+                      <button type="button"
                         onClick={() => setTrackingFor(o.id)}
                         className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm hover:bg-purple-700"
                       >
@@ -187,7 +196,7 @@ export function SellerOrders() {
       </div>
       {(data?.total ?? 0) > 20 && (
         <div className="flex items-center justify-center gap-3 pt-2">
-          <button
+          <button type="button"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page <= 1}
             className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"
@@ -197,7 +206,7 @@ export function SellerOrders() {
           <span className="text-sm text-gray-500">
             Halaman {page} / {totalPages}
           </span>
-          <button
+          <button type="button"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page >= totalPages}
             className="px-3 py-1.5 rounded-lg border text-sm disabled:opacity-40"

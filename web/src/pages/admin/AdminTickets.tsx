@@ -90,7 +90,7 @@ export function AdminTickets() {
         <div className="space-y-2">
           {data?.length === 0 && <p className="text-gray-500 text-sm">Tidak ada tiket.</p>}
           {data?.map((t) => (
-            <button
+            <button type="button"
               key={t.id}
               onClick={() => setOpenId(t.id)}
               className={`w-full text-left bg-white border rounded-xl p-4 hover:border-amber-400 transition-colors ${
@@ -170,7 +170,7 @@ export function AdminTickets() {
                   placeholder={internal ? 'Catatan internal...' : 'Balas ke pelanggan...'}
                   className="w-full px-3 py-2 border rounded-lg text-sm outline-none"
                 />
-                <button
+                <button type="button"
                   onClick={() => sendReply.mutate()}
                   disabled={sendReply.isPending || !reply.trim()}
                   className="w-full py-2.5 rounded-lg bg-gray-900 text-white text-sm disabled:opacity-50"

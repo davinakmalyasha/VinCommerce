@@ -50,9 +50,9 @@ export function SellerAnalytics() {
           <span className="text-xs text-gray-400">s/d</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="px-2 py-1.5 border rounded-lg text-xs" />
           {(from || to) && (
-            <button onClick={() => { setFrom(''); setTo('') }} className="text-xs text-red-500 hover:underline">Reset</button>
+            <button type="button" onClick={() => { setFrom(''); setTo('') }} className="text-xs text-red-500 hover:underline">Reset</button>
           )}
-          <button onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
+          <button type="button" onClick={exportCsv} disabled={exporting} className="text-sm text-amber-600 hover:underline disabled:opacity-50">
             {exporting ? 'Mengekspor...' : '⬇ Ekspor CSV'}
           </button>
         </div>

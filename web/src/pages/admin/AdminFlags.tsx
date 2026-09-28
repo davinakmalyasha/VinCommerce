@@ -49,7 +49,7 @@ export function AdminFlags() {
               <p className="font-mono font-medium text-sm">{f.key}</p>
               <p className="text-xs text-gray-500 mt-0.5">{f.description}</p>
             </div>
-            <button
+            <button type="button"
               onClick={() => toggle.mutate({ key: f.key, enabled: !f.enabled })}
               className={`w-14 h-8 rounded-full relative transition-colors ${f.enabled ? 'bg-green-500' : 'bg-gray-300'}`}
               title={f.enabled ? 'Aktif' : 'Nonaktif'}
