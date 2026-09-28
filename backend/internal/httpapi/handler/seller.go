@@ -2,6 +2,9 @@ package handler
 
 import (
 	"encoding/csv"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -381,13 +384,37 @@ func (h *Seller) FollowedFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"products": products})
 }
 
+// Import row and body caps.
+//
+// The previous version called reader.ReadAll() on an unbounded multipart body
+// and then looped over every row, so a 5.000-row import held one HTTP request
+// open past the 60s request timeout (the client then retried, creating
+// duplicate products) and a large file could be buffered entirely in memory.
+const (
+	MaxImportBytes = 5 << 20 // 5 MiB of CSV
+	MaxImportRows  = 5_000
+)
+
 // ImportProducts handles POST /seller/products/import (CSV multipart).
 func (h *Seller) ImportProducts(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
-	if err := r.ParseMultipartForm(5 << 20); err != nil {
+
+	r.Body = http.MaxBytesReader(w, r.Body, MaxImportBytes)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		if strings.Contains(err.Error(), "too large") {
+			writeErr(w, r, domain.E(domain.KindInvalid, "FILE_TOO_LARGE",
+				"CSV exceeds the maximum upload size"))
+			return
+		}
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_MULTIPART", "unable to parse upload"))
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		writeErr(w, r, domain.E(domain.KindInvalid, "FILE_REQUIRED", "CSV file is required"))
@@ -397,11 +424,31 @@ func (h *Seller) ImportProducts(w http.ResponseWriter, r *http.Request) {
 
 	reader := csv.NewReader(file)
 	reader.FieldsPerRecord = -1
-	records, err := reader.ReadAll()
-	if err != nil {
-		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_CSV", "unable to parse CSV: "+err.Error()))
-		return
+	// NB: deliberately NOT setting ReuseRecord. It makes the reader reuse one
+	// backing slice across calls, so appending the records would retain N
+	// pointers to the same overwritten data.
+
+	// Stream the rows instead of ReadAll, and stop at a hard row cap. A
+	// rejected oversized import is a far better outcome than a duplicate
+	// catalogue after a client-side retry.
+	records := make([][]string, 0, 256)
+	for {
+		rec, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeErr(w, r, domain.E(domain.KindInvalid, "BAD_CSV", "unable to parse CSV: "+err.Error()))
+			return
+		}
+		records = append(records, rec)
+		if len(records) > MaxImportRows {
+			writeErr(w, r, domain.E(domain.KindInvalid, "TOO_MANY_ROWS",
+				fmt.Sprintf("import is limited to %d rows", MaxImportRows)))
+			return
+		}
 	}
+
 	if len(records) > 1 && strings.HasPrefix(strings.ToLower(records[0][0]), "name") {
 		records = records[1:] // skip header
 	}
