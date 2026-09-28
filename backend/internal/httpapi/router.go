@@ -1,7 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -11,7 +16,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/redis/go-redis/v9"
 	"github.com/vincommerce/backend/internal/ai"
 	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/config"
@@ -90,7 +94,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	// payment gateways: the sandbox adapter is DEV-ONLY (its webhook secret is
 	// public knowledge); Midtrans when keys configured. In production the
 	// sandbox gateway must never exist so forged webhooks fail closed.
-	isDev := cfg.Environment == "" || cfg.Environment == "development"
+	isDev := cfg.IsDev()
 	gateways := []payments.Gateway{}
 	if isDev {
 		if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", "", nil); err == nil {
@@ -170,9 +174,16 @@ func NewRouter(deps Dependencies) http.Handler {
 	orderSvc.SetNotificationService(notificationSvc)
 	orderSvc.SetUsers(users)
 	orderSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
+	// The order service has post-commit paths (loyalty debit, email send)
+	// where the work is already durable; the logger is the only way their
+	// failures stay visible.
+	orderSvc.SetLogger(logger)
 	paymentSvc.SetBroker(broker)
 	paymentSvc.SetNotificationService(notificationSvc)
 	paymentSvc.SetUsers(users)
+	// A "split" dispute decision moves real money, so the payment service must
+	// be able to claim the dispute row inside its own transaction.
+	paymentSvc.SetDisputes(disputeRepo)
 	paymentSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
 	marketSvc.SetPaymentService(paymentSvc)
 	sellerSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
@@ -213,7 +224,20 @@ func NewRouter(deps Dependencies) http.Handler {
 	rateLimiter := mw.NewRateLimiter(deps.Redis.Client)
 
 	r := chi.NewRouter()
-	r.Use(chimw.RealIP)
+	// Metrics is registered first so it is the OUTERMOST wrapper. chi's
+	// chain() applies the last-registered middleware innermost, so whichever
+	// recorder wraps the handler directly is the one a handler's
+	// `w.(http.Flusher)` assertion depends on. Keeping the response-writer
+	// instrumentation layers innermost means streaming endpoints work even
+	// if an outer wrapper forgets to forward the optional interfaces.
+	r.Use(metricsReg.Middleware)
+	// chi's RealIP is replaced by middleware.ClientIP. RealIP is documented as
+	// vulnerable to spoofing and unconditionally takes the leftmost
+	// X-Forwarded-For entry — i.e. whatever the client sent first. That value
+	// keyed every per-IP rate limiter, so a fresh forged header per request
+	// gave unlimited login attempts, unlimited registration, and unmetered LLM
+	// spend. See middleware/requestid.go.
+	mw.SetTrustedProxies(cfg.TrustedProxyCIDRs)
 	r.Use(timeoutExceptStreams(60 * time.Second))
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Compress(5))
@@ -227,11 +251,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	}))
 	r.Use(mw.RequestID)
 	r.Use(mw.Logging(logger))
-	r.Use(metricsReg.Middleware)
 
 	authMw := mw.Authenticate(tokens, mw.CachedVerChecker(users, 30*time.Second))
 	optionalAuthMw := mw.AuthenticateOptional(tokens, mw.CachedVerChecker(users, 30*time.Second))
-	auditMw := mw.AuditMiddleware(sessions)
+	auditMw := mw.AuditMiddleware(sessions, logger)
 	flagMw := adminOps.FeatureFlagMiddleware
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -268,7 +291,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Route("/auth", func(r chi.Router) {
 			r.With(rateLimiter.Limit(10, time.Minute, ipKey)).
 				Post("/register", auth.Register)
-			r.With(rateLimiter.Limit(10, time.Minute, ipKey)).
+			// Bucketed on (IP, email): see loginKey for why IP-only is not
+			// enough against a distributed credential attack.
+			r.With(rateLimiter.Limit(10, time.Minute, loginKey)).
 				Post("/login", auth.Login)
 			r.Get("/oauth/google/start", oauth.Start)
 			r.Post("/oauth/google/callback", oauth.Callback)
@@ -347,7 +372,7 @@ func NewRouter(deps Dependencies) http.Handler {
 					Post("/orders/{orderId}/refund", paymentsH.Refund)
 			})
 			// dev-only sandbox drivers (order owner or staff) — never in production.
-			if cfg.Environment == "" || cfg.Environment == "development" {
+			if cfg.IsDev() {
 				r.Group(func(r chi.Router) {
 					r.Use(authMw)
 					r.Post("/sandbox/orders/{orderId}/approve", paymentsH.SandboxApprove)
@@ -498,7 +523,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(authMw, flagMw("games")).Get("/engagement/checkin/status", marketH.CheckInStatus)
 		r.With(authMw, flagMw("loyalty_points")).Get("/loyalty", marketH.Loyalty)
 		r.With(authMw).Get("/referral/code", marketH.Referral)
-		r.With(authMw, flagMw("referrals")).Post("/referral/redeem", marketH.RedeemReferral)
+		// Rate limited per user, not just per IP. Without this, calling redeem
+		// in a loop granted unlimited loyalty points (worth unlimited checkout
+		// discount). The per-user unique index on loyalty_ledger
+		// (user_id, reason) is the durable guard added in migration 00040;
+		// this limiter keeps the endpoint from being a hot loop at all.
+		r.With(authMw, flagMw("referrals"), rateLimiter.Limit(5, time.Hour, userKey)).
+			Post("/referral/redeem", marketH.RedeemReferral)
 		r.Get("/vouchers", adminOps.Vouchers)
 		r.With(authMw).Get("/vouchers/claims", marketH.MyClaims)
 		r.With(authMw).Post("/vouchers/claim", marketH.ClaimVoucher)
@@ -544,7 +575,8 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Use(authMw)
 			// Uploads stay open to all authenticated users (buyer avatars,
 			// review photos) but are throttled per-user to prevent the
-			// endpoint becoming a free file host.
+			// endpoint becoming a free file host. The body itself is capped by
+			// handler.MaxUploadBytes via http.MaxBytesReader.
 			r.With(rateLimiter.Limit(20, time.Hour, userKey)).
 				Post("/upload", media.Upload)
 		})
@@ -617,7 +649,105 @@ func NewRouter(deps Dependencies) http.Handler {
 	return r
 }
 
-func ipKey(r *http.Request) string { return "ip:" + r.RemoteAddr }
+// ipKey produces the rate-limit bucket for an unauthenticated request.
+//
+// It uses the resolved client IP WITHOUT the port. The previous version used
+// r.RemoteAddr directly, which is "ip:port" whenever no proxy header is
+// present — and the source port is ephemeral, so every new connection landed
+// in a fresh bucket. A trivial client that opens one socket per request
+// defeated /auth/login, /auth/register and the webhook limiter completely.
+//
+// It also no longer trusts a client-supplied X-Forwarded-For: see
+// middleware.ClientIP, which only honours the header when the direct peer is
+// a configured trusted proxy.
+func ipKey(r *http.Request) string { return "ip:" + mw.ClientIP(r) }
+
+// loginKeyFn is the rate-limit key for credential endpoints. See loginKey.
+// loginKey buckets login attempts on (client IP, normalised email).
+//
+// IP-only limiting is not enough for credential attacks: a botnet spraying one
+// account from thousands of addresses gets 10 attempts per address, which is
+// effectively unlimited against a single account. Pairing the IP with the
+// target email bounds the per-account rate regardless of how the attempts are
+// distributed, while the IP component still bounds a single-source spray.
+//
+// The email is hashed rather than stored so an address is not recoverable from
+// a Redis key dump (KEYS * on a shared box is a data-exfiltration primitive).
+func loginKey(r *http.Request) string {
+	ip := ipKey(r)
+
+	email := peekEmail(r)
+	if email == "" {
+		return ip
+	}
+	sum := sha256.Sum256([]byte(email))
+	return ip + ":" + hex.EncodeToString(sum[:8])
+}
+
+// maxPeekBody bounds how much of a request body loginKey will read. Login
+// payloads are tiny; a larger body is not a login, so the peek stops and the
+// remainder is still forwarded intact.
+const maxPeekBody = 4 << 10
+
+// peekedBody re-joins a buffered prefix with the rest of the original stream.
+type peekedBody struct {
+	*bytes.Reader
+	rest  io.ReadCloser
+	close bool
+}
+
+func (p *peekedBody) Read(b []byte) (int, error) {
+	n, err := p.Reader.Read(b)
+	if err == io.EOF && p.rest != nil {
+		m, rerr := p.rest.Read(b[n:])
+		if m > 0 {
+			return n + m, rerr
+		}
+		return n, nil
+	}
+	return n, err
+}
+
+func (p *peekedBody) Close() error {
+	if p.close && p.rest != nil {
+		return p.rest.Close()
+	}
+	return nil
+}
+
+// peekEmail extracts the email from a JSON body WITHOUT consuming it.
+//
+// The previous version replaced r.Body with a reader over the capped prefix
+// only, so both failure paths truncated the request: a body over 4 KiB reached
+// the handler as its first 4097 bytes, and a mid-body read error delivered a
+// partial payload. Either way auth.Login failed with a JSON parse error rather
+// than the real 413/400 — and the doc comment claimed the opposite.
+//
+// Here the prefix is re-joined to the untouched remainder, so the handler
+// always sees the complete original body.
+func peekEmail(r *http.Request) string {
+	if r.Body == nil || r.Method != http.MethodPost {
+		return ""
+	}
+	orig := r.Body
+	prefix, err := io.ReadAll(io.LimitReader(orig, maxPeekBody))
+	// Always re-attach, including on error: a rate-limit key function must
+	// never break the request it is measuring.
+	r.Body = &peekedBody{Reader: bytes.NewReader(prefix), rest: orig, close: true}
+	if err != nil || len(prefix) == 0 {
+		return ""
+	}
+
+	var payload struct {
+		Email string `json:"email"`
+	}
+	// A body at or over the cap was truncated, so the JSON is incomplete and
+	// cannot be trusted to be the whole object. Fall back to the IP bucket.
+	if err := json.Unmarshal(prefix, &payload); err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(payload.Email))
+}
 
 // timeoutExceptStreams applies a request timeout to every route EXCEPT the
 // long-lived SSE streams, which would otherwise be killed mid-flight at the
@@ -639,7 +769,5 @@ func userKey(r *http.Request) string {
 	if u := mw.UserFrom(r.Context()); u != nil {
 		return "user:" + u.ID
 	}
-	return "ip:" + r.RemoteAddr
+	return ipKey(r)
 }
-
-var _ = redis.Nil
