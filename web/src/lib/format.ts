@@ -85,6 +85,25 @@ export function paymentDeadlineMs(placedAt: string): number {
   return new Date(placedAt).getTime() + RESERVATION_MINUTES * 60_000
 }
 
+/** Absolute payment deadline as epoch ms, or 0 when there is no order yet. */
+export function paymentDeadline(placedAt: string | undefined): number {
+  return placedAt ? paymentDeadlineMs(placedAt) : 0
+}
+
+export type DeadlinePhase = 'ok' | 'soon' | 'expired'
+
+/**
+ * Where a deadline sits right now, without subscribing to a clock. Callers
+ * that only need "is it too late to pay?" compute this once on mount and then
+ * let <Countdown> tell them when it flips.
+ */
+export function deadlinePhase(deadline: number, at: number = Date.now()): DeadlinePhase {
+  if (!deadline) return 'ok'
+  const remain = deadline - at
+  if (remain <= 0) return 'expired'
+  return remain < 2 * 60_000 ? 'soon' : 'ok'
+}
+
 const etaFmt = new Intl.DateTimeFormat('id-ID', { day: 'numeric', month: 'short' })
 
 // "Estimasi tiba 12–16 Agu" from a min/max day range starting today.

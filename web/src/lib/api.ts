@@ -76,6 +76,15 @@ export function guestSessionKey(): string {
   return key
 }
 
+// Firefox and Safari cancel an in-flight download when its object URL is
+// revoked in the same task as `click()`, so the file never arrives. Give the
+// navigation a task to start before releasing the blob.
+const REVOKE_DELAY_MS = 1000
+
+function revokeSoon(blobUrl: string) {
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), REVOKE_DELAY_MS)
+}
+
 // Downloads an authenticated file (e.g. CSV exports) as a blob — plain <a href>
 // links cannot send the Bearer header and would 401.
 export async function downloadFile(url: string, filename: string) {
@@ -85,7 +94,7 @@ export async function downloadFile(url: string, filename: string) {
   link.href = blobUrl
   link.download = filename
   link.click()
-  URL.revokeObjectURL(blobUrl)
+  revokeSoon(blobUrl)
 }
 
 // Opens an authenticated HTML document (invoice, packing slip) in a new tab.
@@ -95,6 +104,8 @@ export async function openDocument(url: string) {
     new Blob([res.data as Blob], { type: 'text/html' }),
   )
   window.open(blobUrl, '_blank')
+  // This one leaked a blob per invoice open — nothing ever revoked it.
+  revokeSoon(blobUrl)
 }
 
 api.interceptors.response.use(
