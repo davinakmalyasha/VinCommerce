@@ -1,15 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Product } from '../types'
-import { formatIDR, etaLabel } from '../lib/format'
+import { formatIDR, etaLabel, slugify } from '../lib/format'
 import { Rating } from '../components/Rating'
-import { ProductCard } from '../components/ProductCard'
+import { ProductCard, CompareBar } from '../components/ProductCard'
 import { ShareButton } from '../components/ShareButton'
 import { Seo } from '../components/Seo'
+import { Modal } from '../components/Modal'
+import { QueryState } from '../components/QueryState'
+import { Countdown } from '../components/Countdown'
 import { useSession } from '../stores/session'
 import { useActiveFlashSale } from '../lib/flashSale'
+
 
 interface Review {
   id: string
@@ -65,10 +69,12 @@ export function ProductPage() {
   const [reportReason, setReportReason] = useState('fake')
   const [reportDesc, setReportDesc] = useState('')
 
-  const { data } = useQuery({
+  const productQuery = useQuery({
     queryKey: ['product', slug],
     queryFn: async () => (await api.get<{ product: Product }>(`/products/${slug}`)).data.product,
   })
+  const { data } = productQuery
+
 
   const { data: related } = useQuery({
     queryKey: ['related', data?.id],
@@ -128,7 +134,7 @@ export function ProductPage() {
   }
   const markHelpful = useMutation({
     mutationFn: async (id: string) =>
-      (await api.post<{ helpful: boolean; helpful_count: number }>(`/reviews/${id}/helpful`)).data,
+      (await api.post<{ helpful: boolean; helpful_count: number }>(`/products/reviews/${id}/helpful`)).data,
     onSuccess: (d, id) => setHelpfulCounts((m) => ({ ...m, [id]: d.helpful_count })),
   })
 
@@ -196,14 +202,10 @@ export function ProductPage() {
   const [activeImage, setActiveImage] = useState(0)
   const [zoomOpen, setZoomOpen] = useState(false)
 
-  // Flash-sale countdown (hooks must run before any early return below).
+  // Flash-sale deadline. The ticking itself lives in <Countdown> so the rest
+  // of this 800-line page — and every ProductCard in "Produk Serupa" — no
+  // longer re-renders once per second.
   const endsAtMs = flashSale?.flash_sale.ends_at ? new Date(flashSale.flash_sale.ends_at).getTime() : 0
-  const [nowTs, setNowTs] = useState(Date.now())
-  useEffect(() => {
-    if (!endsAtMs) return
-    const t = setInterval(() => setNowTs(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [endsAtMs])
 
   const loadAiSummary = useMutation({
     mutationFn: async () =>
@@ -278,26 +280,33 @@ export function ProductPage() {
     onError: (e: Error) => setNotice(e.message),
   })
 
-  if (!data) {
-    return <div className="mx-auto max-w-7xl px-4 py-16 text-center text-gray-500">Memuat produk...</div>
+  // Derived values are computed BEFORE the early return: hooks must run
+  // unconditionally, and this page used to sit on the other side of one.
+  const product = data
+  const selected = product?.variants?.find((v) => v.id === variantId) ?? product?.variants?.[0]
+  // Memoised: this array was rebuilt on every render, so the flash-sale
+  // countdown's per-second tick turned into a full re-render of this 800-line
+  // page including every ProductCard in "Produk Serupa".
+  const gallery: string[] = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...(product?.images ?? []).map((im) => im.url), ...(selected?.image_url ? [selected.image_url] : [])].filter(Boolean),
+        ),
+      ),
+    [product?.images, selected?.image_url],
+  )
+  const image = gallery[Math.min(activeImage, Math.max(0, gallery.length - 1))]
+
+  if (!product) {
+    return <QueryState query={productQuery} label="produk" />
   }
 
-  const product = data
-  const selected = product.variants?.find((v) => v.id === variantId) ?? product.variants?.[0]
   const watching = !!selected && !!restockAlerts?.some((a) => a.variant_id === selected.id)
-  const gallery: string[] = Array.from(
-    new Set([...(product.images ?? []).map((im) => im.url), ...(selected?.image_url ? [selected.image_url] : [])].filter(Boolean)),
-  )
-  const image = gallery[Math.min(activeImage, gallery.length - 1)]
-
   const saleItem = selected ? flashSale?.items.find((i) => i.variant_id === selected.id) : undefined
   const salePrice = saleItem?.sale_price ?? selected?.price ?? 0
   const onSale = !!saleItem && saleItem.sale_price < (selected?.price ?? 0)
   const soldPct = saleItem && saleItem.initial_stock > 0 ? Math.min(100, Math.round((saleItem.sold_count / saleItem.initial_stock) * 100)) : 0
-  const remain = Math.max(0, endsAtMs - nowTs)
-  const hh = Math.floor(remain / 3_600_000)
-  const mm = Math.floor((remain % 3_600_000) / 60_000)
-  const ss = Math.floor((remain % 60_000) / 1000)
 
   return (
     <>
@@ -343,7 +352,7 @@ export function ProductPage() {
           {gallery.length > 1 && (
             <div className="absolute bottom-6 flex gap-2">
               {gallery.map((url, i) => (
-                <button
+                <button type="button"
                   key={url + i}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -358,7 +367,7 @@ export function ProductPage() {
               ))}
             </div>
           )}
-          <button
+          <button type="button"
             onClick={() => setZoomOpen(false)}
             aria-label="Tutup"
             className="absolute top-4 right-4 text-white text-3xl leading-none"
@@ -383,7 +392,7 @@ export function ProductPage() {
           {gallery.length > 1 && (
             <div className="flex gap-2 overflow-x-auto pb-1">
               {gallery.map((url, i) => (
-                <button
+                <button type="button"
                   key={url + i}
                   onClick={() => setActiveImage(i)}
                   className={`w-16 h-16 shrink-0 rounded-lg overflow-hidden border-2 transition-colors ${
@@ -406,7 +415,15 @@ export function ProductPage() {
               {product.brand && <span className="text-gray-500">{product.brand.name}</span>}
             </div>
             {product.seller && (
-              <Link to={`/search?category=${product.category?.name ?? ''}`} className="text-xs text-gray-500 mt-1 inline-block">
+              // `/search?category=` expects a SLUG. It was being handed
+              // `product.category?.name`, so the filter matched nothing and
+              // the page came back with 0 results. `slug` is optional on the
+              // API payload, so fall back to slugify(name) rather than
+              // producing an empty `?category=` that searches for "".
+              <Link
+                to={`/search?category=${encodeURIComponent(product.category?.slug ?? slugify(product.category?.name ?? ''))}`}
+                className="text-xs text-gray-500 mt-1 inline-block"
+              >
                 Dijual oleh <span className="text-amber-600">{product.seller.name}</span>
               </Link>
             )}
@@ -435,11 +452,7 @@ export function ProductPage() {
                   <span className="px-2 py-0.5 rounded-lg bg-red-600 text-white text-xs font-bold">
                     ⚡ Flash Sale
                   </span>
-                  {remain > 0 && (
-                    <span className="font-mono text-sm text-red-600 font-bold">
-                      {String(hh).padStart(2, '0')}:{String(mm).padStart(2, '0')}:{String(ss).padStart(2, '0')}
-                    </span>
-                  )}
+                  <Countdown to={endsAtMs} className="text-sm text-red-600 font-bold" />
                 </div>
                 <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                   <div className="h-full bg-red-500" style={{ width: `${soldPct}%` }} />
@@ -456,7 +469,7 @@ export function ProductPage() {
               <p className="text-sm font-medium mb-2">Pilih varian: {selected?.name}</p>
               <div className="flex flex-wrap gap-2">
                 {product.variants.map((v) => (
-                  <button
+                  <button type="button"
                     key={v.id}
                     onClick={() => setVariantId(v.id)}
                     disabled={!v.is_active || v.stock === 0}
@@ -499,14 +512,14 @@ export function ProductPage() {
             {selected?.stock === 0 ? (
               user ? (
                 watching ? (
-                  <button
+                  <button type="button"
                     disabled
                     className="flex-1 py-3 rounded-xl bg-green-100 text-green-700 font-semibold cursor-default"
                   >
                     ✓ Menunggu stok tersedia
                   </button>
                 ) : (
-                  <button
+                  <button type="button"
                     onClick={() => watchRestock.mutate()}
                     disabled={watchRestock.isPending}
                     className="flex-1 py-3 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white font-semibold hover:bg-gray-700 disabled:opacity-50"
@@ -524,7 +537,7 @@ export function ProductPage() {
               )
             ) : (
               <>
-                <button
+                <button type="button"
                   onClick={() => addToCart.mutate()}
                   disabled={!selected || addToCart.isPending}
                   className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-40"
@@ -532,7 +545,7 @@ export function ProductPage() {
                   + Keranjang
                 </button>
                 {user && (
-                  <button
+                  <button type="button"
                     onClick={() => buyNow.mutate()}
                     disabled={!selected || buyNow.isPending}
                     className="flex-1 py-3 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-40"
@@ -544,7 +557,7 @@ export function ProductPage() {
               </>
             )}
             {user && (
-              <button
+              <button type="button"
                 onClick={() => addToWishlist.mutate()}
                 className="px-4 py-3 rounded-xl border border-gray-300 hover:border-amber-400 hover:text-amber-600"
                 title="Simpan ke wishlist"
@@ -560,7 +573,7 @@ export function ProductPage() {
             </p>
           )}
           {user && user.id !== product.seller_id && (
-            <button
+            <button type="button"
               onClick={() => setReportOpen(true)}
               className="text-xs text-gray-400 hover:text-red-500"
             >
@@ -570,13 +583,36 @@ export function ProductPage() {
         </div>
       </div>
 
-      {reportOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setReportOpen(false)} />
-          <div className="relative bg-white dark:bg-gray-900 rounded-2xl shadow-xl p-6 w-full max-w-md space-y-4">
-            <h2 className="font-bold">Laporkan Produk</h2>
-            <p className="text-sm text-gray-500">Pilih alasan pelaporan. Admin akan meninjau laporanmu.</p>
+      <Modal
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        title="Laporkan Produk"
+        description="Pilih alasan pelaporan. Admin akan meninjau laporanmu."
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setReportOpen(false)}
+              className="px-4 py-2 rounded-xl border text-sm"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={() => reportProduct.mutate()}
+              disabled={reportProduct.isPending}
+              className="px-4 py-2 rounded-xl bg-red-600 text-white text-sm disabled:opacity-50"
+            >
+              {reportProduct.isPending ? 'Mengirim...' : 'Kirim Laporan'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="report-reason" className="block text-sm font-medium mb-1">Alasan</label>
             <select
+              id="report-reason"
               value={reportReason}
               onChange={(e) => setReportReason(e.target.value)}
               className="w-full px-3 py-2.5 border rounded-xl text-sm outline-none dark:bg-gray-800"
@@ -587,31 +623,24 @@ export function ProductPage() {
               <option value="misleading">Informasi menyesatkan</option>
               <option value="other">Lainnya</option>
             </select>
+          </div>
+          <div>
+            <label htmlFor="report-desc" className="block text-sm font-medium mb-1">Penjelasan (opsional)</label>
             <textarea
+              id="report-desc"
               value={reportDesc}
               onChange={(e) => setReportDesc(e.target.value)}
-              placeholder="Penjelasan singkat (opsional)"
+              placeholder="Penjelasan singkat"
               rows={3}
               className="w-full px-3 py-2.5 border rounded-xl text-sm outline-none dark:bg-gray-800 resize-none"
             />
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setReportOpen(false)}
-                className="px-4 py-2 rounded-xl border text-sm"
-              >
-                Batal
-              </button>
-              <button
-                onClick={() => reportProduct.mutate()}
-                disabled={reportProduct.isPending}
-                className="px-4 py-2 rounded-xl bg-red-600 text-white text-sm disabled:opacity-50"
-              >
-                {reportProduct.isPending ? 'Mengirim...' : 'Kirim Laporan'}
-              </button>
-            </div>
           </div>
+          {reportProduct.isError && (
+            <p role="alert" className="text-sm text-red-600">{reportProduct.error.message}</p>
+          )}
         </div>
-      )}
+      </Modal>
+
 
       <div className="bg-white border border-gray-200 rounded-2xl p-6">
         <h2 className="font-bold mb-3">Deskripsi Produk</h2>
@@ -623,7 +652,7 @@ export function ProductPage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-bold">✨ Ringkasan AI</h2>
             {!aiSummary && !loadAiSummary.isPending && (
-              <button
+              <button type="button"
                 onClick={() => {
                   setAiSummaryOpen(true)
                   loadAiSummary.mutate()
@@ -664,7 +693,7 @@ export function ProductPage() {
           <h2 className="font-bold mb-3">Foto Pembeli ({photos.length})</h2>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {photos.map((p, i) => (
-              <button
+              <button type="button"
                 key={p.review_id + i}
                 onClick={() => {
                   setActiveImage(0)
@@ -752,7 +781,7 @@ export function ProductPage() {
                 </div>
               )}
               {user && (
-                <button
+                <button type="button"
                   onClick={() => markHelpful.mutate(r.id)}
                   disabled={markHelpful.isPending}
                   className="mt-2 text-xs text-gray-400 hover:text-amber-600"
@@ -763,7 +792,7 @@ export function ProductPage() {
             </div>
           ))}
           {(reviews?.total ?? 0) > allReviews.length && (
-            <button
+            <button type="button"
               onClick={loadMoreReviews}
               disabled={loadingMore}
               className="w-full py-2.5 rounded-xl border text-sm hover:border-amber-400 disabled:opacity-50"
@@ -796,7 +825,7 @@ export function ProductPage() {
                 placeholder="Tanyakan ke penjual..."
                 className="flex-1 px-4 py-2.5 border rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
               />
-              <button
+              <button type="button"
                 onClick={() => askQA.mutate()}
                 disabled={askQA.isPending || !qaQuestion.trim()}
                 className="px-4 py-2.5 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm disabled:opacity-50"
@@ -819,7 +848,7 @@ export function ProductPage() {
               placeholder="Beri tahu saya jika harga di bawah..."
               className="flex-1 px-4 py-2.5 border rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
             />
-            <button
+            <button type="button"
               onClick={() => watchPrice.mutate()}
               disabled={watchPrice.isPending || !alertTarget}
               className="px-4 py-2.5 rounded-xl bg-amber-500 text-white text-sm disabled:opacity-50"
@@ -838,8 +867,11 @@ export function ProductPage() {
           </div>
         </section>
       )}
+
+      <CompareBar />
     </div>
     </>
   )
 }
+
 

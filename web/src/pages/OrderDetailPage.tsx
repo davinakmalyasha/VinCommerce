@@ -1,14 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { api, openDocument } from '../lib/api'
-import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../lib/format'
+import {
+  formatIDR,
+  formatDate,
+  orderStatusColors,
+  orderStatusLabels,
+  paymentDeadline,
+  deadlinePhase,
+  paymentMethodLabel,
+} from '../lib/format'
 import { ReturnModal } from './ReturnModal'
 import { payWithSnap, midtransEnabled } from '../lib/midtrans'
 import { FileUpload } from '../components/FileUpload'
 import { OrderChat } from '../components/OrderChat'
-import { PaymentCountdown, usePaymentDeadline } from '../components/PaymentCountdown'
-import { paymentMethodLabel } from '../lib/format'
+import { PaymentCountdown } from '../components/PaymentCountdown'
+import { QueryState } from '../components/QueryState'
 
 interface OrderEvent {
   id: number
@@ -47,11 +55,13 @@ export function OrderDetailPage() {
   const [returnFor, setReturnFor] = useState<string | null>(null)
   const [payForm, setPayForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [payDone, setPayDone] = useState(false)
+  const [notice, setNotice] = useState('')
 
-  const { data } = useQuery({
+  const orderQuery = useQuery({
     queryKey: ['order', id],
     queryFn: async () => (await api.get<{ order: OrderDetail }>(`/orders/${id}`)).data.order,
   })
+  const data = orderQuery.data
 
   const { data: events } = useQuery({
     queryKey: ['order-events', id],
@@ -102,8 +112,9 @@ export function OrderDetailPage() {
     mutationFn: async () => api.post(`/orders/${id}/reorder`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cart'] })
-      alert('Item ditambahkan ke keranjang!')
+      setNotice('Item ditambahkan ke keranjang!')
     },
+    onError: (e: Error) => setNotice(e.message),
   })
 
   const pay = useMutation({
@@ -132,14 +143,38 @@ export function OrderDetailPage() {
     },
   })
 
-  // Payment deadline ticker — must run before any early return.
-  const deadline = usePaymentDeadline(data?.placed_at)
+  // Payment deadline. This used to be a `usePaymentDeadline` hook — a 1 Hz
+  // `setInterval` in the PAGE — which re-rendered the address block, the items
+  // list, the timeline and the totals every second, on top of the identical
+  // interval PaymentCountdown ran for the same deadline.
+  //
+  // The page only needs the PHASE (ok / about-to-expire / expired), and that
+  // changes at most twice, so it is computed once here and then flipped by two
+  // one-shot timers. The ticking clock itself lives in <Countdown>.
+  const deadline = paymentDeadline(data?.placed_at)
+  const [phase, setPhase] = useState(() => deadlinePhase(deadline))
+  useEffect(() => {
+    if (!deadline || deadlinePhase(deadline) !== 'ok') return
+    // Two one-shot timers at the two phase boundaries — not a 1 Hz interval.
+    const timers: number[] = []
+    const soonIn = deadline - 2 * 60_000 - Date.now()
+    if (soonIn > 0) timers.push(window.setTimeout(() => setPhase('soon'), soonIn))
+    const endIn = deadline - Date.now()
+    timers.push(window.setTimeout(() => setPhase('expired'), Math.max(0, endIn)))
+    return () => {
+      for (const t of timers) window.clearTimeout(t)
+    }
+  }, [deadline])
 
-  if (!data) return <div className="mx-auto max-w-4xl px-4 py-16 text-center text-gray-500">Memuat...</div>
+  if (!data) return <QueryState query={orderQuery} label="pesanan" />
 
-  const addr = data.shipping_address
+  // shipping_address is NOT NULL in the schema, but a legacy/partial row or a
+  // different API shape would make this `undefined` and the property reads
+  // below would throw during render. Degrade to a placeholder instead.
+  const addr = data.shipping_address ?? ({} as Record<string, string>)
   const returnItem = returnFor ? data.items.find((i) => i.id === returnFor) : null
-  const payBlocked = deadline.expired
+  const payBlocked = phase === 'expired'
+  const expiringSoon = phase === 'soon'
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6 space-y-5">
@@ -151,6 +186,11 @@ export function OrderDetailPage() {
           onClose={() => setReturnFor(null)}
         />
       )}
+      {notice && (
+        <p role="status" className="rounded-lg bg-green-50 dark:bg-green-900/30 text-sm text-green-700 p-2.5">
+          {notice}
+        </p>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <Link to="/orders" className="text-sm text-gray-400 hover:text-gray-700">← Pesanan</Link>
@@ -161,7 +201,7 @@ export function OrderDetailPage() {
             {orderStatusLabels[data.status]}
           </span>
           {(data.status === 'completed' || data.status === 'delivered' || data.status === 'cancelled') && (
-            <button
+            <button type="button"
               onClick={() => reorder.mutate()}
               disabled={reorder.isPending}
               className="px-3 py-1.5 rounded-full bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm disabled:opacity-50"
@@ -179,16 +219,19 @@ export function OrderDetailPage() {
               Bayar via Midtrans (QRIS, e-wallet, VA, kartu) atau transfer di luar aplikasi lalu isi bukti
               pembayaran.
             </p>
-            {!payDone && !deadline.expired && <PaymentCountdown placedAt={data.placed_at} />}
+            {!payDone && !payBlocked && (
+              <PaymentCountdown placedAt={data.placed_at} />
+            )}
           </div>
           {payDone ? (
-            <p className="text-sm text-green-700 font-medium">Pembayaran tercatat! Penjual akan segera memproses pesanan. ✅</p>
-          ) : deadline.expired ? (
+            <p className="text-sm text-green-700 font-medium">Pembayaran tercatat! Penjual akan segera memproses pesananmu. ✅</p>
+          ) : payBlocked ? (
+
             <div className="flex items-center gap-3">
               <p className="text-sm text-red-700">
                 Batas pembayaran lewat — pesanan akan dibatalkan otomatis dan stok dilepas.
               </p>
-              <button
+              <button type="button"
                 onClick={() => cancel.mutate()}
                 disabled={cancel.isPending}
                 className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-50"
@@ -199,9 +242,9 @@ export function OrderDetailPage() {
           ) : (
             <>
               {midtransEnabled() && (
-                <button
+                <button type="button"
                   onClick={() => snapPay.mutate()}
-                  disabled={snapPay.isPending || deadline.expiringSoon}
+                  disabled={snapPay.isPending || expiringSoon}
                   className="mb-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
                   {snapPay.isPending ? 'Membuka Midtrans...' : '⚡ Bayar Sekarang (Midtrans)'}
@@ -232,14 +275,14 @@ export function OrderDetailPage() {
           )}
           {!payDone && (
             <div className="flex gap-2 mt-3">
-              <button
+              <button type="button"
                 onClick={() => pay.mutate()}
                 disabled={payBlocked || pay.isPending || !payForm.reference.trim() || !payForm.amount}
                 className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-50"
               >
                 {pay.isPending ? 'Mencatat...' : 'Saya Sudah Bayar'}
               </button>
-              <button
+              <button type="button"
                 onClick={() => cancel.mutate()}
                 disabled={cancel.isPending}
                 className="px-4 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50"
@@ -254,7 +297,7 @@ export function OrderDetailPage() {
       {data.status === 'shipped' && (
         <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex items-center justify-between">
           <p className="text-sm text-teal-800">Pesanan sudah dikirim oleh penjual. Konfirmasi jika sudah diterima.</p>
-          <button
+          <button type="button"
             onClick={() => confirmDelivery.mutate()}
             disabled={confirmDelivery.isPending}
             className="px-4 py-2 rounded-lg bg-teal-600 text-white text-sm hover:bg-teal-700 disabled:opacity-50"
@@ -269,7 +312,7 @@ export function OrderDetailPage() {
           <p className="text-sm text-green-800">
             Konfirmasi selesai untuk melepas dana escrow ke penjual.
           </p>
-          <button
+          <button type="button"
             onClick={() => complete.mutate()}
             disabled={complete.isPending}
             className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"
@@ -323,7 +366,7 @@ export function OrderDetailPage() {
       <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold text-sm">Item ({data.items.length})</h2>
-          <button onClick={() => openDocument(`/orders/${id}/invoice`)} className="text-xs text-amber-600 hover:underline">
+          <button type="button" onClick={() => openDocument(`/orders/${id}/invoice`)} className="text-xs text-amber-600 hover:underline">
             🧾 Unduh Invoice
           </button>
         </div>
@@ -347,7 +390,7 @@ export function OrderDetailPage() {
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
                     <div className="flex items-center gap-1">
                       {[1, 2, 3, 4, 5].map((n) => (
-                        <button
+                        <button type="button"
                           key={n}
                           onClick={() => setReviewForm({ ...reviewForm, rating: n })}
                           className={`text-xl ${n <= reviewForm.rating ? 'text-amber-500' : 'text-gray-300'}`}
@@ -381,7 +424,7 @@ export function OrderDetailPage() {
                         {reviewImages.map((img, i) => (
                           <div key={img} className="relative">
                             <img src={img} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-200" />
-                            <button
+                            <button type="button"
                               onClick={() => setReviewImages((imgs) => imgs.filter((_, j) => j !== i))}
                               className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs"
                               aria-label="Hapus foto"
@@ -393,27 +436,27 @@ export function OrderDetailPage() {
                       </div>
                     )}
                     <div className="flex gap-2">
-                      <button
+                      <button type="button"
                         onClick={() => submitReview.mutate(it.id)}
                         disabled={submitReview.isPending || !reviewForm.content.trim()}
                         className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm disabled:opacity-50"
                       >
                         {submitReview.isPending ? 'Mengirim...' : 'Kirim Ulasan'}
                       </button>
-                      <button onClick={() => setReviewFor(null)} className="px-4 py-2 rounded-lg border text-sm">
+                      <button type="button" onClick={() => setReviewFor(null)} className="px-4 py-2 rounded-lg border text-sm">
                         Batal
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <button
+                  <button type="button"
                     onClick={() => setReviewFor(it.id)}
                     className="text-xs text-amber-600 hover:underline"
                   >
                     ✍️ Tulis ulasan
                   </button>
                 )}
-                <button
+                <button type="button"
                   onClick={() => setReturnFor(it.id)}
                   className="text-xs text-red-500 hover:underline"
                 >

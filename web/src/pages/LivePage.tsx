@@ -81,7 +81,7 @@ function SessionGrid({ sessions, onPick }: { sessions: LiveSession[]; onPick: (i
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {sessions.map((s) => (
-        <button key={s.id} onClick={() => onPick(s.id)} className="text-left bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden hover:shadow-lg transition-shadow">
+        <button type="button" key={s.id} onClick={() => onPick(s.id)} className="text-left bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden hover:shadow-lg transition-shadow">
           <div className="aspect-video bg-gray-900 relative">
             {s.thumbnail_url ? (
               <img src={s.thumbnail_url} alt="" className="w-full h-full object-cover opacity-80" />
@@ -244,7 +244,7 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                           {hasOverride && <span className="ml-1 text-xs text-gray-400 line-through">{formatIDR(p.regular_price)}</span>}
                         </p>
                       </div>
-                      <button
+                      <button type="button"
                         onClick={() => addToCart.mutate(p.variant_id)}
                         disabled={addToCart.isPending || p.stock === 0}
                         className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium disabled:opacity-50"

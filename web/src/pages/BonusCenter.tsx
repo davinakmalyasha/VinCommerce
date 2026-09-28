@@ -64,8 +64,17 @@ export function BonusCenter() {
     }, 2600)
   }
 
-  const today = new Date().toISOString().slice(0, 10)
-  const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()
+  // Calendar keys must be built from LOCAL date parts. `toISOString()` is UTC,
+  // so for a WIB (UTC+7) user anything after 17:00 local produced TOMORROW's
+  // key — while `daysInMonth` below is a local `getDate()`. The two disagreed
+  // and the grid could render a "2026-09-31" cell (31 days in a 30-day month)
+  // and highlight the wrong day.
+  const nowLocal = new Date()
+  const year = nowLocal.getFullYear()
+  const month = nowLocal.getMonth()
+  const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`
+  const today = `${monthKey}-${String(nowLocal.getDate()).padStart(2, '0')}`
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
   const checkedSet = new Set(status?.dates ?? [])
 
   return (
@@ -82,7 +91,7 @@ export function BonusCenter() {
         </p>
         <div className="grid grid-cols-7 gap-1.5">
           {Array.from({ length: daysInMonth }, (_, i) => {
-            const d = `${new Date().toISOString().slice(0, 7)}-${String(i + 1).padStart(2, '0')}`
+            const d = `${monthKey}-${String(i + 1).padStart(2, '0')}`
             const checked = checkedSet.has(d)
             const isToday = d === today
             return (
@@ -98,6 +107,7 @@ export function BonusCenter() {
           })}
         </div>
         <button
+          type="button"
           onClick={() => checkIn.mutate()}
           disabled={checkIn.isPending || status?.checked_in_today}
           className={`w-full py-3 rounded-xl font-semibold text-sm ${
@@ -109,7 +119,11 @@ export function BonusCenter() {
           {checkIn.isPending
             ? 'Memproses...'
             : status?.checked_in_today
-              ? `✓ Sudah check-in (+${10 * Math.min(status?.streak ?? 1, 7)} poin)`
+              ? // The server awards 10 × min(streak, 7) for the check-in that
+                // just happened. The button labels what the NEXT one will pay,
+                // which is 10 × min(streak + 1, 7) — the old code showed the
+                // current day's award, so the number never appeared to move.
+                `✓ Sudah check-in. Besok +${10 * Math.min((status?.streak ?? 1) + 1, 7)} poin`
               : 'Check-in Sekarang'}
         </button>
       </div>
@@ -144,6 +158,7 @@ export function BonusCenter() {
           </div>
         </div>
         <button
+          type="button"
           onClick={doSpin}
           disabled={!gameStatus?.can_spin || spinning || spin.isPending}
           className={`w-full py-3 rounded-xl font-semibold text-sm ${

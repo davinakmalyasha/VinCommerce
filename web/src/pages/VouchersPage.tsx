@@ -71,7 +71,7 @@ export function VouchersPage() {
             placeholder="Masukkan kode kupon"
             className="flex-1 px-4 py-2.5 border rounded-xl text-sm uppercase outline-none focus:border-amber-400"
           />
-          <button
+          <button type="button"
             onClick={() => claimByCode.mutate(code.trim())}
             disabled={claimByCode.isPending || !code.trim()}
             className="px-6 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
@@ -120,7 +120,7 @@ export function VouchersPage() {
                   <p className="text-xs text-gray-500 mt-1">Min. belanja {formatIDR(v.min_subtotal)}</p>
                   {v.valid_until && <p className="text-xs text-gray-400">Berlaku s/d {v.valid_until.slice(0, 10)}</p>}
                 </div>
-                <button
+                <button type="button"
                   onClick={() => claimByCode.mutate(v.code)}
                   disabled={claimed || claimByCode.isPending}
                   className={`px-4 py-2.5 rounded-xl text-sm font-medium shrink-0 ${

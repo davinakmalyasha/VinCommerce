@@ -65,7 +65,7 @@ export function ResetPasswordPage() {
                 className="w-full px-4 py-2.5 border rounded-lg text-sm outline-none focus:border-amber-400"
               />
               {error && <p className="text-sm text-red-600">{error}</p>}
-              <button
+              <button type="button"
                 onClick={submit}
                 disabled={submitting}
                 className="w-full py-2.5 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"

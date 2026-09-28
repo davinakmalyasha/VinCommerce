@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate } from 'react-router-dom'
 import { api } from '../lib/api'
@@ -30,7 +30,7 @@ export function AccountPage() {
         </div>
         <nav className="flex gap-1 text-sm">
           {(['profil', 'keamanan', 'alamat', 'pantauan', 'undang', 'bonus'] as const).map((t) => (
-            <button
+            <button type="button"
               key={t}
               onClick={() => setTab(t)}
               className={`px-4 py-2 rounded-lg capitalize ${tab === t ? 'bg-amber-500 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`}
@@ -114,7 +114,7 @@ function ProfileTab() {
           className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
         />
       </div>
-      <button
+      <button type="button"
         onClick={() => save.mutate()}
         disabled={save.isPending}
         className="px-6 py-3 rounded-xl bg-amber-500 text-white font-medium disabled:opacity-50"
@@ -194,7 +194,7 @@ function SecurityTab() {
               </code>
             ))}
           </div>
-          <button
+          <button type="button"
             onClick={() => {
               navigator.clipboard?.writeText(backupCodes.join('\n')).catch(() => {})
               setMsg('Kode cadangan disalin!')
@@ -222,7 +222,7 @@ function SecurityTab() {
           onChange={(e) => setNext(e.target.value)}
           className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800"
         />
-        <button
+        <button type="button"
           onClick={() => changePass.mutate()}
           disabled={changePass.isPending || !cur || !next}
           className="px-6 py-3 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white font-medium disabled:opacity-40"
@@ -238,7 +238,7 @@ function SecurityTab() {
           Status: {user?.two_factor_enabled ? '✓ Aktif' : 'Nonaktif'}
         </p>
         {!user?.two_factor_enabled && !totp && (
-          <button
+          <button type="button"
             onClick={() => setupTotp.mutate()}
             disabled={setupTotp.isPending}
             className="px-6 py-3 rounded-xl bg-amber-500 text-white font-medium disabled:opacity-50"
@@ -261,7 +261,7 @@ function SecurityTab() {
               onChange={(e) => setTotpCode(e.target.value)}
               className="w-full px-4 py-3 border rounded-xl text-sm outline-none"
             />
-            <button
+            <button type="button"
               onClick={() => confirmTotp.mutate()}
               disabled={confirmTotp.isPending || totpCode.length < 6}
               className="px-6 py-3 rounded-xl bg-amber-500 text-white font-medium disabled:opacity-50"
@@ -278,7 +278,7 @@ function SecurityTab() {
               onChange={(e) => setTotpCode(e.target.value)}
               className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800"
             />
-            <button
+            <button type="button"
               onClick={() => disableTotp.mutate()}
               disabled={disableTotp.isPending || totpCode.length < 6}
               className="px-6 py-3 rounded-xl border border-red-300 text-red-600 font-medium disabled:opacity-50"
@@ -289,7 +289,7 @@ function SecurityTab() {
               <p className="text-gray-600">
                 Kode cadangan: {backupInfo?.remaining ?? '—'} tersisa (dari {backupInfo?.total ?? '—'})
               </p>
-              <button
+              <button type="button"
                 onClick={() => regenerateBackup.mutate()}
                 disabled={regenerateBackup.isPending}
                 className="mt-2 px-4 py-2 rounded-lg border border-amber-400 text-amber-600 text-sm disabled:opacity-50"
@@ -358,7 +358,7 @@ function WatchesTab() {
               <p className="text-sm font-medium">{a.product_name}</p>
               <p className="text-xs text-gray-500">{a.variant_name}</p>
             </div>
-            <button onClick={() => cancelRestock.mutate(a.id)} className="text-xs text-red-500 hover:underline">
+            <button type="button" onClick={() => cancelRestock.mutate(a.id)} className="text-xs text-red-500 hover:underline">
               Hapus
             </button>
           </div>
@@ -377,7 +377,7 @@ function WatchesTab() {
                 {a.current_price.toLocaleString('id-ID')}
               </p>
             </div>
-            <button onClick={() => cancelPrice.mutate(a.id)} className="text-xs text-red-500 hover:underline">
+            <button type="button" onClick={() => cancelPrice.mutate(a.id)} className="text-xs text-red-500 hover:underline">
               Hapus
             </button>
           </div>
@@ -440,7 +440,7 @@ function ReferralTab() {
           <code className="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-800 rounded-xl font-mono font-bold text-center">
             {code || 'Memuat...'}
           </code>
-          <button
+          <button type="button"
             onClick={copy}
             className="px-4 py-3 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600"
           >
@@ -481,41 +481,120 @@ function ReferralTab() {
   )
 }
 
+const EMPTY_ADDRESS_FORM = {
+  label: '',
+  recipient: '',
+  phone: '',
+  address_line1: '',
+  address_line2: '',
+  city: '',
+  province: '',
+  postal_code: '',
+  country: 'Indonesia',
+  is_default: false,
+}
+
+/**
+ * `id: null` means "a new address has never been saved". The old code used an
+ * empty-string id as the sentinel, so the save mutation took the `editing`
+ * branch and issued `PUT /account/addresses/` — a 404 that react-query
+ * swallowed because the mutation had no `onError`. The form therefore closed
+ * with no message and a second address could never be added.
+ */
+interface AddressDraft {
+  id: string | null
+  form: typeof EMPTY_ADDRESS_FORM
+}
+
 function AddressesTab() {
   const queryClient = useQueryClient()
-  const [editing, setEditing] = useState<Address | null>(null)
-  const [form, setForm] = useState({
-    label: '', recipient: '', phone: '', address_line1: '', city: '', province: '', postal_code: '', is_default: false,
-  })
+  const [draft, setDraft] = useState<AddressDraft | null>(null)
+  const [error, setError] = useState('')
+  const autoOpened = useRef(false)
 
-  const { data: addresses } = useQuery({
+  const { data: addresses, isLoading, isError, error: loadError, refetch } = useQuery({
     queryKey: ['addresses'],
     queryFn: async () => (await api.get<{ addresses: Address[] }>('/account/addresses')).data.addresses,
   })
 
+  const closeDraft = () => {
+    setDraft(null)
+    setError('')
+  }
+
+  const startNew = () => setDraft({ id: null, form: { ...EMPTY_ADDRESS_FORM } })
+
+  const startEdit = (a: Address) =>
+    setDraft({
+      id: a.id,
+      form: {
+        label: a.label,
+        recipient: a.recipient,
+        phone: a.phone,
+        address_line1: a.address_line1,
+        address_line2: a.address_line2 ?? '',
+        city: a.city,
+        province: a.province,
+        postal_code: a.postal_code,
+        country: a.country || 'Indonesia',
+        is_default: a.is_default,
+      },
+    })
+
+  // First-time visitors get the form straight away, as before — but through
+  // the same draft discriminant, never through a fake `editing` object.
+  useEffect(() => {
+    if (draft || autoOpened.current || isLoading || isError) return
+    if (addresses?.length === 0) {
+      autoOpened.current = true
+      startNew()
+    }
+  }, [addresses, draft, isLoading, isError])
+
   const saveAddress = useMutation({
-    mutationFn: async () => {
-      if (editing) {
-        await api.put(`/account/addresses/${editing.id}`, form)
+    mutationFn: async (target: AddressDraft) => {
+      const payload = { ...target.form, address_line2: target.form.address_line2 || undefined }
+      if (target.id === null) {
+        await api.post('/account/addresses', payload)
       } else {
-        await api.post('/account/addresses', form)
+        await api.put(`/account/addresses/${target.id}`, payload)
       }
     },
     onSuccess: () => {
-      setEditing(null)
-      setForm({ label: '', recipient: '', phone: '', address_line1: '', city: '', province: '', postal_code: '', is_default: false })
+      closeDraft()
       queryClient.invalidateQueries({ queryKey: ['addresses'] })
     },
+    onError: (e: Error) => setError(e.message || 'Gagal menyimpan alamat.'),
   })
 
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/account/addresses/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['addresses'] }),
+    onError: (e: Error) => setError(e.message || 'Gagal menghapus alamat.'),
   })
+
+  const setField = <K extends keyof AddressDraft['form']>(key: K, value: AddressDraft['form'][K]) => {
+    setDraft((d) => (d ? { ...d, form: { ...d.form, [key]: value } } : d))
+    setError('')
+  }
 
   return (
     <div className="space-y-3">
       <h2 className="font-bold">Alamat Tersimpan</h2>
+
+      {isError && (
+        <div role="alert" className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
+          <p>{loadError instanceof Error ? loadError.message : 'Gagal memuat daftar alamat.'}</p>
+          <button type="button" onClick={() => void refetch()} className="mt-2 underline">
+            Coba lagi
+          </button>
+        </div>
+      )}
+
+      {!isLoading && !isError && addresses?.length === 0 && !draft && (
+        <p className="text-sm text-gray-500">Belum ada alamat tersimpan. Tambahkan satu untuk mempercepat checkout.</p>
+      )}
+
       {addresses?.map((a) => (
         <div key={a.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-4 flex items-start justify-between">
           <div>
@@ -526,51 +605,94 @@ function AddressesTab() {
             <p className="text-sm text-gray-500">{a.address_line1}, {a.city}, {a.province} {a.postal_code}</p>
           </div>
           <div className="flex gap-3 text-xs">
-            <button
-              onClick={() => {
-                setEditing(a)
-                setForm({ label: a.label, recipient: a.recipient, phone: a.phone, address_line1: a.address_line1, city: a.city, province: a.province, postal_code: a.postal_code, is_default: a.is_default })
-              }}
-              className="text-blue-600 hover:underline"
-            >
+            <button type="button" onClick={() => startEdit(a)} className="text-blue-600 hover:underline">
               Edit
             </button>
-            <button onClick={() => remove.mutate(a.id)} className="text-red-500 hover:underline">
+            <button
+              type="button"
+              onClick={() => remove.mutate(a.id)}
+              disabled={remove.isPending}
+              className="text-red-500 hover:underline disabled:opacity-50"
+            >
               Hapus
             </button>
           </div>
         </div>
       ))}
 
-      {(editing || !addresses?.length) && (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 grid grid-cols-2 gap-3">
-          <input placeholder="Label (Home/Kantor)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="Nama penerima" value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="No. HP" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="Alamat" value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="Kota" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="Provinsi" value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <input placeholder="Kode pos" value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })} className="px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.is_default} onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
+      {draft && (
+        <form
+          className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-2 gap-3"
+          onSubmit={(e) => {
+            e.preventDefault()
+            saveAddress.mutate(draft)
+          }}
+        >
+          <div>
+            <label htmlFor="addr-label" className="text-xs text-gray-500">Label</label>
+            <input id="addr-label" placeholder="Rumah / Kantor" value={draft.form.label} onChange={(e) => setField('label', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-recipient" className="text-xs text-gray-500">Nama penerima</label>
+            <input id="addr-recipient" placeholder="Nama penerima" value={draft.form.recipient} onChange={(e) => setField('recipient', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-phone" className="text-xs text-gray-500">No. HP</label>
+            <input id="addr-phone" type="tel" placeholder="No. HP" value={draft.form.phone} onChange={(e) => setField('phone', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-line1" className="text-xs text-gray-500">Alamat</label>
+            <input id="addr-line1" placeholder="Alamat" value={draft.form.address_line1} onChange={(e) => setField('address_line1', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-line2" className="text-xs text-gray-500">Alamat tambahan (opsional)</label>
+            <input id="addr-line2" placeholder="Opsional" value={draft.form.address_line2} onChange={(e) => setField('address_line2', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-city" className="text-xs text-gray-500">Kota</label>
+            <input id="addr-city" placeholder="Kota" value={draft.form.city} onChange={(e) => setField('city', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-province" className="text-xs text-gray-500">Provinsi</label>
+            <input id="addr-province" placeholder="Provinsi" value={draft.form.province} onChange={(e) => setField('province', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <div>
+            <label htmlFor="addr-postal" className="text-xs text-gray-500">Kode pos</label>
+            <input id="addr-postal" inputMode="numeric" placeholder="Kode pos" value={draft.form.postal_code} onChange={(e) => setField('postal_code', e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm outline-none dark:bg-gray-800" />
+          </div>
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={draft.form.is_default}
+              onChange={(e) => setField('is_default', e.target.checked)}
+            />
             Jadikan default
           </label>
-          <div className="flex gap-2 col-span-2">
-            <button onClick={() => saveAddress.mutate()} className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm">
-              {editing ? 'Simpan Perubahan' : 'Tambah'}
+          {error && <p role="alert" className="text-sm text-red-600 sm:col-span-2">{error}</p>}
+          <div className="flex gap-2 sm:col-span-2">
+            <button
+              type="submit"
+              disabled={saveAddress.isPending}
+              className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm disabled:opacity-50"
+            >
+              {saveAddress.isPending ? 'Menyimpan...' : draft.id === null ? 'Tambah' : 'Simpan Perubahan'}
             </button>
-            <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg border text-sm">Batal</button>
+            <button type="button" onClick={closeDraft} className="px-4 py-2 rounded-lg border text-sm">
+              Batal
+            </button>
           </div>
-        </div>
+        </form>
       )}
-      {!editing && addresses?.length ? (
+
+      {!draft && !isLoading && (
         <button
-          onClick={() => setEditing({ id: '', label: '', recipient: '', phone: '', address_line1: '', city: '', province: '', postal_code: '', country: 'Indonesia', is_default: false, created_at: '', user_id: '' } as Address)}
+          type="button"
+          onClick={startNew}
           className="px-4 py-2 rounded-lg border border-amber-400 text-amber-600 text-sm"
         >
           + Tambah Alamat
         </button>
-      ) : null}
+      )}
     </div>
   )
 }

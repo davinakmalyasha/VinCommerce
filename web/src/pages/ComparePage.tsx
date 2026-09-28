@@ -1,27 +1,28 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { Product } from '../types'
 import { formatIDR } from '../lib/format'
-
-interface CompareItem extends Product {
-  compared_at: number
-}
-
-function loadCompare(): CompareItem[] {
-  try {
-    return JSON.parse(localStorage.getItem('vc_compare') ?? '[]')
-  } catch {
-    return []
-  }
-}
+import {
+  COMPARE_MAX,
+  clearCompare,
+  readCompare,
+  removeCompareItem,
+  type CompareItem,
+} from '../lib/compare'
 
 export function ComparePage() {
-  const [items, setItems] = useState<CompareItem[]>(loadCompare)
+  const [items, setItems] = useState<CompareItem[]>(readCompare)
+
+  // Another tab (or the CompareBar) can change the list while this page is
+  // open; keep the table in sync instead of showing a stale snapshot.
+  useEffect(() => {
+    const sync = () => setItems(readCompare())
+    window.addEventListener('storage', sync)
+    return () => window.removeEventListener('storage', sync)
+  }, [])
 
   const remove = (id: string) => {
-    const next = items.filter((i) => i.id !== id)
-    localStorage.setItem('vc_compare', JSON.stringify(next))
-    setItems(next)
+    removeCompareItem(id)
+    setItems(readCompare())
   }
 
   const allAttrs = useMemo(() => {
@@ -35,7 +36,7 @@ export function ComparePage() {
       <div className="mx-auto max-w-3xl px-4 py-20 text-center">
         <p className="text-gray-500 mb-4">Belum ada produk untuk dibandingkan.</p>
         <p className="text-sm text-gray-400 mb-6">
-          Klik "bandingkan" pada kartu produk untuk menambah.
+          Klik "bandingkan" pada kartu produk untuk menambah (maks {COMPARE_MAX}).
         </p>
         <Link to="/search" className="px-6 py-3 rounded-xl bg-amber-500 text-white font-medium">
           Cari Produk
@@ -46,7 +47,19 @@ export function ComparePage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-extrabold mb-6">Bandingkan Produk ({items.length})</h1>
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
+        <h1 className="text-2xl font-extrabold">Bandingkan Produk ({items.length})</h1>
+        <button
+          type="button"
+          onClick={() => {
+            clearCompare()
+            setItems([])
+          }}
+          className="px-4 py-2 rounded-lg border text-sm hover:border-amber-400"
+        >
+          Kosongkan
+        </button>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm border-collapse">
           <thead>
@@ -61,7 +74,7 @@ export function ComparePage() {
                     <Link to={`/product/${p.slug}`} className="font-medium text-sm hover:text-amber-600 mt-2 block line-clamp-2">
                       {p.name}
                     </Link>
-                    <button onClick={() => remove(p.id)} className="text-xs text-red-500 hover:underline mt-1">
+                    <button type="button" onClick={() => remove(p.id)} className="text-xs text-red-500 hover:underline mt-1">
                       Hapus
                     </button>
                   </div>

@@ -50,10 +50,11 @@ export function MyReturnsPage() {
       setDisputeFor(null)
       setDisputeDesc('')
       queryClient.invalidateQueries({ queryKey: ['my-returns'] })
-      alert('Sengketa diajukan. Admin akan meninjau.')
+      setToast({ tone: 'ok', text: 'Sengketa diajukan. Admin akan meninjau.' })
     },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => setToast({ tone: 'err', text: e.message || 'Gagal mengajukan sengketa.' }),
   })
+  const [toast, setToast] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 space-y-5">
@@ -61,6 +62,17 @@ export function MyReturnsPage() {
         <Link to="/account" className="text-sm text-gray-400 hover:text-gray-700">← Akun</Link>
         <h1 className="text-xl font-bold mt-1">Retur Saya</h1>
       </div>
+      {toast && (
+        <p
+          role="status"
+          className={`rounded-lg p-2.5 text-sm ${
+            toast.tone === 'ok' ? 'bg-green-50 dark:bg-green-900/30 text-green-700' : 'bg-red-50 dark:bg-red-950/40 text-red-700'
+          }`}
+        >
+          {toast.text}
+          <button type="button" onClick={() => setToast(null)} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
       {isLoading && <p className="text-sm text-gray-500">Memuat...</p>}
       {!isLoading && data?.length === 0 && (
         <p className="text-sm text-gray-500">Belum ada pengajuan retur.</p>
@@ -91,13 +103,15 @@ export function MyReturnsPage() {
             {r.admin_note && <p className="text-sm"><span className="text-gray-400">Keputusan admin:</span> {r.admin_note}</p>}
             {r.amount ? <p className="text-sm font-bold text-amber-600">{formatIDR(r.amount)}</p> : null}
             {r.status === 'rejected' && disputeFor !== r.id && (
-              <button onClick={() => setDisputeFor(r.id)} className="text-xs text-red-600 hover:underline">
+              <button type="button" onClick={() => setDisputeFor(r.id)} className="text-xs text-red-600 hover:underline">
                 Tidak setuju? Eskalasi jadi sengketa
               </button>
             )}
             {disputeFor === r.id && (
               <div className="space-y-2 bg-red-50 border border-red-100 rounded-lg p-3">
+                <label htmlFor={`dispute-desc-${r.id}`} className="sr-only">Alasaneskalasi</label>
                 <textarea
+                  id={`dispute-desc-${r.id}`}
                   value={disputeDesc}
                   onChange={(e) => setDisputeDesc(e.target.value)}
                   rows={2}
@@ -105,14 +119,14 @@ export function MyReturnsPage() {
                   className="w-full px-3 py-2 border rounded-lg text-sm outline-none"
                 />
                 <div className="flex gap-2">
-                  <button
+                  <button type="button"
                     onClick={() => escalate.mutate(r.id)}
                     disabled={escalate.isPending || !disputeDesc.trim()}
                     className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm disabled:opacity-50"
                   >
                     Ajukan Sengketa
                   </button>
-                  <button onClick={() => setDisputeFor(null)} className="px-4 py-2 rounded-lg border text-sm">Batal</button>
+                  <button type="button" onClick={() => setDisputeFor(null)} className="px-4 py-2 rounded-lg border text-sm">Batal</button>
                 </div>
               </div>
             )}

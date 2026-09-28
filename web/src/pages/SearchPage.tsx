@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Product } from '../types'
-import { ProductCard } from '../components/ProductCard'
+import { ProductCard, CompareBar } from '../components/ProductCard'
 import { Seo } from '../components/Seo'
+import { QueryState } from '../components/QueryState'
 
 const SORTS = [
   { value: 'relevance', label: 'Relevansi' },
@@ -59,11 +60,12 @@ export function SearchPage() {
     return sp.toString()
   }, [q, category, sort, priceMin, priceMax, brands, minRating, selectedAttrs, page])
 
-  const { data, isLoading } = useQuery({
+  const searchQuery = useQuery({
     queryKey: ['search', queryString],
     queryFn: async () =>
       (await api.get<{ items: Product[]; total: number }>(`/products?${queryString}`)).data,
   })
+  const { data } = searchQuery
 
   const { data: brandList } = useQuery({
     queryKey: ['brands'],
@@ -143,7 +145,7 @@ export function SearchPage() {
           <h3 className="font-semibold text-sm mb-2">Rating</h3>
           <div className="flex flex-wrap gap-1.5">
             {[4, 3, 2].map((n) => (
-              <button
+              <button type="button"
                 key={n}
                 onClick={() => setParam('rating', minRating === String(n) ? '' : String(n))}
                 className={`px-2.5 py-1 rounded-lg text-xs border ${
@@ -177,7 +179,7 @@ export function SearchPage() {
             />
           </div>
           {(hasActiveFilter || category) && (
-            <button
+            <button type="button"
               onClick={() => {
                 const next = new URLSearchParams()
                 if (q) next.set('q', q)
@@ -198,7 +200,7 @@ export function SearchPage() {
               {attr.values.slice(0, 8).map((v) => {
                 const active = selectedAttrs[attr.slug] === v.slug
                 return (
-                  <button
+                  <button type="button"
                     key={v.id}
                     onClick={() => setParam(`attr_${attr.slug}`, active ? '' : v.slug)}
                     className={`px-2.5 py-1 rounded-lg text-xs border ${
@@ -222,7 +224,7 @@ export function SearchPage() {
           </h1>
           <div className="flex items-center gap-2">
             {q && (
-              <button
+              <button type="button"
                 onClick={saveSearch}
                 className="px-3 py-2 rounded-lg border text-xs hover:border-amber-400 hover:text-amber-600"
                 title="Simpan pencarian"
@@ -244,60 +246,51 @@ export function SearchPage() {
           </div>
         </div>
 
-        {isLoading ? (
+        <QueryState query={searchQuery} label="produk" className="!py-10 !text-left">
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3 animate-pulse">
-                <div className="aspect-square bg-gray-100 dark:bg-gray-800 rounded-lg" />
-                <div className="h-4 bg-gray-100 dark:bg-gray-800 rounded mt-3 w-3/4" />
-                <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded mt-2 w-1/2" />
-                <div className="h-5 bg-amber-100 dark:bg-amber-900/30 rounded mt-3 w-1/3" />
-              </div>
-            ))}
+            {data?.items.map((p) => <ProductCard key={p.id} product={p} />)}
           </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-              {data?.items.map((p) => <ProductCard key={p.id} product={p} />)}
+          {data?.items.length === 0 && (
+            <p className="text-gray-500 text-sm py-10 text-center">Tidak ada produk yang cocok.</p>
+          )}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 mt-8">
+              <button
+                type="button"
+                onClick={() => goPage(page - 1)}
+                disabled={page <= 1}
+                className="px-3 py-2 rounded-lg border text-sm disabled:opacity-30 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                ←
+              </button>
+              {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
+                .map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => goPage(p)}
+                    className={`px-3.5 py-2 rounded-lg text-sm ${
+                      p === page ? 'bg-amber-500 text-white' : 'border hover:bg-gray-50 dark:hover:bg-gray-800'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              <button
+                type="button"
+                onClick={() => goPage(page + 1)}
+                disabled={page >= totalPages}
+                className="px-3 py-2 rounded-lg border text-sm disabled:opacity-30 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                →
+              </button>
             </div>
-            {data?.items.length === 0 && (
-              <p className="text-gray-500 text-sm py-10 text-center">Tidak ada produk yang cocok.</p>
-            )}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-2 mt-8">
-                <button
-                  onClick={() => goPage(page - 1)}
-                  disabled={page <= 1}
-                  className="px-3 py-2 rounded-lg border text-sm disabled:opacity-30 hover:bg-gray-50 dark:hover:bg-gray-800"
-                >
-                  ←
-                </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
-                  .map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => goPage(p)}
-                      className={`px-3.5 py-2 rounded-lg text-sm ${
-                        p === page ? 'bg-amber-500 text-white' : 'border hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      {p}
-                    </button>
-                  ))}
-                <button
-                  onClick={() => goPage(page + 1)}
-                  disabled={page >= totalPages}
-                  className="px-3 py-2 rounded-lg border text-sm disabled:opacity-30 hover:bg-gray-50 dark:hover:bg-gray-800"
-                >
-                  →
-                </button>
-              </div>
-            )}
-          </>
-        )}
+          )}
+        </QueryState>
       </div>
     </div>
+    <CompareBar />
     </>
   )
 }

@@ -68,7 +68,7 @@ export function DiscoverFeedPage() {
         )}
         {feedQuery.hasNextPage && !feedQuery.isFetching && (
           <div className="flex justify-center pb-8">
-            <button
+            <button type="button"
               onClick={() => feedQuery.fetchNextPage()}
               className="px-6 py-3 rounded-xl bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-sm font-medium hover:bg-gray-800"
             >

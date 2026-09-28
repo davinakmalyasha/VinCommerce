@@ -5,9 +5,13 @@ import { api } from '../lib/api'
 import type { HelpArticle, HelpCategory } from '../types'
 
 export function HelpCenterPage() {
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const [q, setQ] = useState(params.get('q') ?? '')
   const [search, setSearch] = useState(params.get('q') ?? '')
+  // The sidebar used to render category buttons with no onClick at all — dead
+  // UI that looked filterable but did nothing. It is now the actual filter
+  // state and is reflected in the URL.
+  const category = params.get('category') ?? ''
 
   const { data: categories } = useQuery({
     queryKey: ['help-categories'],
@@ -15,11 +19,22 @@ export function HelpCenterPage() {
   })
 
   const { data: articles } = useQuery({
-    queryKey: ['help-articles', search],
+    queryKey: ['help-articles', search, category],
     queryFn: async () =>
-      (await api.get<{ articles: HelpArticle[] }>(`/help/articles?section=help&q=${encodeURIComponent(search)}`)).data
-        .articles,
+      (
+        await api.get<{ articles: HelpArticle[] }>(
+          `/help/articles?section=help&q=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}`,
+        )
+      ).data.articles,
   })
+
+  const setCategory = (slug: string) => {
+    const next = new URLSearchParams(params)
+    if (slug) next.set('category', slug)
+    else next.delete('category')
+    next.delete('page')
+    setParams(next)
+  }
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -32,13 +47,15 @@ export function HelpCenterPage() {
         <h1 className="text-3xl font-extrabold mb-3">Pusat Bantuan</h1>
         <p className="text-gray-500 mb-6">Temukan jawaban untuk pertanyaanmu tentang belanja, pembayaran, dan pengiriman.</p>
         <form onSubmit={submit} className="max-w-xl mx-auto flex">
+          <label htmlFor="help-search" className="sr-only">Cari bantuan</label>
           <input
+            id="help-search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Cari bantuan..."
-            className="flex-1 h-12 px-4 rounded-l-xl border border-r-0 outline-none focus:border-amber-400 text-sm"
+            className="flex-1 min-w-0 h-12 px-4 rounded-l-xl border border-r-0 outline-none focus:border-amber-400 text-sm"
           />
-          <button className="px-6 h-12 bg-amber-500 text-white rounded-r-xl hover:bg-amber-600 text-sm font-medium">
+          <button type="submit" className="px-6 h-12 bg-amber-500 text-white rounded-r-xl hover:bg-amber-600 text-sm font-medium shrink-0">
             Cari
           </button>
         </form>
@@ -51,7 +68,15 @@ export function HelpCenterPage() {
             Semua
           </Link>
           {categories?.map((c) => (
-            <button key={c.id} className="block w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-amber-50 text-gray-700">
+            <button
+              key={c.id}
+              type="button"
+              aria-pressed={category === c.slug}
+              onClick={() => setCategory(category === c.slug ? '' : c.slug)}
+              className={`block w-full text-left px-3 py-2 rounded-lg text-sm ${
+                category === c.slug ? 'bg-amber-50 text-amber-700 font-medium' : 'hover:bg-amber-50 text-gray-700'
+              }`}
+            >
               {c.name}
             </button>
           ))}

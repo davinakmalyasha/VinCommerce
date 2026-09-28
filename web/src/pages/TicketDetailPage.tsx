@@ -92,7 +92,7 @@ export function TicketDetailPage() {
             placeholder="Tulis balasan..."
             className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
           />
-          <button
+          <button type="button"
             onClick={() => reply.mutate()}
             disabled={reply.isPending || !body.trim()}
             className="mt-3 px-6 py-2.5 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"

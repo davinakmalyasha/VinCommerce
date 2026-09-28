@@ -1,34 +1,20 @@
-import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { formatIDR } from '../lib/format'
 import { useActiveFlashSale } from '../lib/flashSale'
+import { Countdown } from '../components/Countdown'
 
 export function FlashSalePage() {
   const queryClient = useQueryClient()
-  const [endsAt, setEndsAt] = useState(0)
-  const [now, setNow] = useState(Date.now())
-
   const { data } = useActiveFlashSale()
 
-  useEffect(() => {
-    if (data?.flash_sale.ends_at) {
-      setEndsAt(new Date(data.flash_sale.ends_at).getTime())
-    }
-    const t = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [data])
+  const endsAt = data?.flash_sale.ends_at ? new Date(data.flash_sale.ends_at).getTime() : 0
 
   const addToCart = useMutation({
     mutationFn: async (variantId: string) => api.post('/cart/items', { variant_id: variantId, quantity: 1 }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cart'] }),
   })
-
-  const remaining = Math.max(0, endsAt - now)
-  const hh = Math.floor(remaining / 3_600_000)
-  const mm = Math.floor((remaining % 3_600_000) / 60_000)
-  const ss = Math.floor((remaining % 60_000) / 1000)
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -37,14 +23,14 @@ export function FlashSalePage() {
           <h1 className="text-3xl font-extrabold">⚡ {data?.flash_sale.name ?? 'Flash Sale'}</h1>
           <p className="text-red-100 mt-1">{data?.flash_sale.description}</p>
         </div>
-        {remaining > 0 && (
-          <div className="flex gap-2 font-mono text-2xl font-bold">
-            {[hh, mm, ss].map((v, i) => (
-              <span key={i} className="bg-black/30 px-3 py-2 rounded-xl">
-                {String(v).padStart(2, '0')}
-              </span>
-            ))}
-          </div>
+        {/* Ticking is confined to <Countdown>: the page-level interval this
+            replaced re-rendered every product tile once a second. */}
+        {endsAt > 0 && (
+          <Countdown
+            to={endsAt}
+            variant="blocks"
+            expiredLabel={<span className="font-mono text-lg font-bold">Flash sale berakhir</span>}
+          />
         )}
       </div>
 
@@ -65,6 +51,7 @@ export function FlashSalePage() {
               </div>
               {pct > 0 && <p className="text-xs text-red-500 font-semibold">-{pct}%</p>}
               <button
+                type="button"
                 onClick={() => addToCart.mutate(it.variant_id)}
                 disabled={it.stock === 0 || addToCart.isPending}
                 className="w-full mt-2 py-2 rounded-lg bg-red-500 text-white text-sm hover:bg-red-600 disabled:opacity-40"

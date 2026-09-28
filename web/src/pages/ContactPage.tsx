@@ -130,8 +130,9 @@ export function ContactPage() {
               className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
             />
           </div>
-          {submit.isError && <p className="text-sm text-red-600">Gagal membuat tiket. Coba lagi.</p>}
+          {submit.isError && <p role="alert" className="text-sm text-red-600">Gagal membuat tiket. Coba lagi.</p>}
           <button
+            type="submit"
             disabled={submit.isPending}
             className="w-full py-3 rounded-xl bg-amber-500 text-white font-semibold hover:bg-amber-600 disabled:opacity-50"
           >

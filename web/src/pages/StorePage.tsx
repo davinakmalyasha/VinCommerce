@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Product, Store } from '../types'
-import { ProductCard } from '../components/ProductCard'
+import { ProductCard, CompareBar } from '../components/ProductCard'
 import { Seo } from '../components/Seo'
+import { QueryState } from '../components/QueryState'
 import { useSession } from '../stores/session'
 
 export function StorePage() {
@@ -11,10 +13,11 @@ export function StorePage() {
   const { user } = useSession()
   const queryClient = useQueryClient()
 
-  const { data } = useQuery({
+  const storeQuery = useQuery({
     queryKey: ['store', slug],
     queryFn: async () => (await api.get<{ store: Store; products: Product[] }>(`/stores/${slug}`)).data,
   })
+  const data = storeQuery.data
 
   const follow = useMutation({
     mutationFn: async () => {
@@ -25,10 +28,12 @@ export function StorePage() {
       }
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['store', slug] }),
+    onError: (e: Error) => setError(e.message),
   })
+  const [error, setError] = useState('')
 
   if (!data) {
-    return <div className="mx-auto max-w-7xl px-4 py-16 text-center text-gray-500">Memuat toko...</div>
+    return <QueryState query={storeQuery} label="toko" />
   }
 
   const store = data.store
@@ -92,6 +97,7 @@ export function StorePage() {
         </div>
         {user && user.id !== store.owner_id && (
           <button
+            type="button"
             onClick={() => follow.mutate()}
             disabled={follow.isPending}
             className={`px-5 py-2.5 rounded-xl font-medium text-sm ${
@@ -104,6 +110,10 @@ export function StorePage() {
           </button>
         )}
       </div>
+
+      {error && (
+        <p role="alert" className="text-sm text-red-600 bg-red-50 dark:bg-red-950/40 rounded-lg p-2.5">{error}</p>
+      )}
 
       <section>
         <h2 className="font-bold mb-4">Produk Toko</h2>
@@ -122,6 +132,7 @@ export function StorePage() {
         ← Kembali ke katalog
       </Link>
     </div>
+    <CompareBar />
     </>
   )
 }

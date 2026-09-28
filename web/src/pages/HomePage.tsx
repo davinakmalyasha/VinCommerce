@@ -2,8 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Category, Product } from '../types'
-import { ProductCard } from '../components/ProductCard'
+import { ProductCard, CompareBar } from '../components/ProductCard'
 import { BundlesStrip } from '../components/BundlesStrip'
+import { QueryState } from '../components/QueryState'
 import { useActiveFlashSale } from '../lib/flashSale'
 
 interface RecentlyViewed extends Product {
@@ -19,15 +20,17 @@ function loadRecentlyViewed(): RecentlyViewed[] {
 }
 
 export function HomePage() {
-  const { data: categories } = useQuery({
+  const categoriesQuery = useQuery({
     queryKey: ['categories'],
     queryFn: async () => (await api.get<{ categories: Category[] }>('/catalog/categories')).data.categories,
   })
+  const categories = categoriesQuery.data
 
-  const { data: recommended } = useQuery({
+  const recommendedQuery = useQuery({
     queryKey: ['recommended'],
     queryFn: async () => (await api.get<{ products: Product[] }>('/recommendations?limit=10')).data.products,
   })
+  const recommended = recommendedQuery.data
 
   const { data: flashSale } = useActiveFlashSale()
 
@@ -46,11 +49,11 @@ export function HomePage() {
         </Link>
       </section>
 
-      {categories && (
-        <section>
-          <h2 className="text-lg font-bold mb-4">Kategori</h2>
+      <section>
+        <h2 className="text-lg font-bold mb-4">Kategori</h2>
+        <QueryState query={categoriesQuery} label="kategori" className="!py-4 !text-left">
           <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
-            {categories.map((c) => (
+            {(categories ?? []).map((c) => (
               <Link
                 key={c.id}
                 to={`/search?category=${c.slug}`}
@@ -61,8 +64,8 @@ export function HomePage() {
               </Link>
             ))}
           </div>
-        </section>
-      )}
+        </QueryState>
+      </section>
 
       {flashSale && flashSale.items.length > 0 && (
         <section className="rounded-2xl border-2 border-red-200 bg-red-50 p-6">
@@ -100,14 +103,18 @@ export function HomePage() {
             Lihat semua
           </Link>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-          {recommended?.map((p) => <ProductCard key={p.id} product={p} />)}
-        </div>
+        <QueryState query={recommendedQuery} label="rekomendasi" className="!py-4 !text-left">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            {recommended?.map((p) => <ProductCard key={p.id} product={p} />)}
+          </div>
+        </QueryState>
       </section>
 
       <BundlesStrip />
 
       <RecentlyViewedStrip />
+
+      <CompareBar />
     </div>
   )
 }
