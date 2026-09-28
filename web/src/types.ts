@@ -44,9 +44,9 @@ export interface Product {
   rating_count: number
   sold_count: number
   created_at: string
-  category?: { id: string; name: string }
+  category?: { id: string; name: string; slug?: string }
   brand?: { id: string; name: string }
-  seller?: { id: string; name: string }
+  seller?: { id: string; name: string; slug?: string }
   variants?: Variant[]
   images?: { url: string; is_primary?: boolean }[]
   attributes?: Record<string, string>

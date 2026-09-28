@@ -1,16 +1,22 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, type ComponentType, type ReactNode } from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 import { RootLayout } from './components/layout/RootLayout'
-import { HomePage } from './pages/HomePage'
-import { SearchPage } from './pages/SearchPage'
-import { ProductPage } from './pages/ProductPage'
-import { CartPage } from './pages/CartPage'
+import { ErrorBoundary, RouteSkeleton } from './components/ErrorBoundary'
 
-// Secondary storefront pages + Seller Center + Admin Console are separate
-// bundles, loaded on demand (keeps the entry chunk small for first paint).
+/**
+ * Every page is a separate chunk. Previously HomePage, SearchPage,
+ * ProductPage and CartPage were imported eagerly, which pulled ProductPage
+ * (35 KB of source) into the entry bundle: the entry was a single 371 KB file
+ * containing react-dom, the router, react-query, zustand, axios AND the app
+ * code, so any app change invalidated vendor code in every visitor's cache.
+ */
 const lazyOf = (loader: () => Promise<Record<string, unknown>>, name: string) =>
-  lazy(() => loader().then((m) => ({ default: m[name] as React.ComponentType })))
+  lazy(() => loader().then((m) => ({ default: m[name] as ComponentType })))
 
+const HomePage = lazyOf(() => import('./pages/HomePage'), 'HomePage')
+const SearchPage = lazyOf(() => import('./pages/SearchPage'), 'SearchPage')
+const ProductPage = lazyOf(() => import('./pages/ProductPage'), 'ProductPage')
+const CartPage = lazyOf(() => import('./pages/CartPage'), 'CartPage')
 const CheckoutPage = lazyOf(() => import('./pages/CheckoutPage'), 'CheckoutPage')
 const OrdersPage = lazyOf(() => import('./pages/OrdersPage'), 'OrdersPage')
 const OrderDetailPage = lazyOf(() => import('./pages/OrderDetailPage'), 'OrderDetailPage')
@@ -58,6 +64,7 @@ const ContactPage = lazyOf(() => import('./pages/ContactPage'), 'ContactPage')
 const MyTicketsPage = lazyOf(() => import('./pages/MyTicketsPage'), 'MyTicketsPage')
 const TicketDetailPage = lazyOf(() => import('./pages/TicketDetailPage'), 'TicketDetailPage')
 const DocsPage = lazyOf(() => import('./pages/DocsPage'), 'DocsPage')
+const ApiQuickstartPage = lazyOf(() => import('./pages/ApiQuickstartPage'), 'ApiQuickstartPage')
 // LegalPage takes props — wrap it so the generic lazy component type works.
 const LazyLegal = lazy(() =>
   import('./pages/LegalPage').then((m) => ({ default: m.LegalPage })),
@@ -83,92 +90,113 @@ const LivePage = lazyOf(() => import('./pages/LivePage'), 'LivePage')
 const SupportConsole = lazyOf(() => import('./pages/support/SupportConsole'), 'SupportConsole')
 const NotFoundPage = lazyOf(() => import('./pages/NotFoundPage'), 'NotFoundPage')
 
-function LazyOutlet({ children }: { children: React.ReactNode }) {
-  return <Suspense fallback={<div className="py-24 text-center text-sm text-gray-400">Memuat modul...</div>}>{children}</Suspense>
+/**
+ * Wraps a route element in a Suspense boundary AND an error boundary.
+ *
+ * Without a boundary, a cold navigation to any lazy route suspends all the
+ * way to the root: React holds the root suspended and the user gets a blank
+ * white page with no header or footer for the duration of the chunk fetch.
+ * The previous code only wrapped /seller and /admin, leaving ~45 routes
+ * without a fallback.
+ */
+function route(node: ReactNode, label: string) {
+  return (
+    <ErrorBoundary label={label}>
+      <Suspense fallback={<RouteSkeleton label={label} />}>{node}</Suspense>
+    </ErrorBoundary>
+  )
 }
+
+const SellerLayoutLazy = () => route(<SellerLayout />, 'Seller Center')
+const AdminLayoutLazy = () => route(<AdminLayout />, 'Admin Console')
 
 export const router = createBrowserRouter([
   {
     path: '/',
     element: <RootLayout />,
+    errorElement: route(<NotFoundPage />, 'Halaman'),
     children: [
-      { index: true, element: <HomePage /> },
-      { path: 'discover', element: <DiscoverFeedPage /> },
-      { path: 'search', element: <SearchPage /> },
-      { path: 'product/:slug', element: <ProductPage /> },
-      { path: 'store/:slug', element: <StorePage /> },
-      { path: 'cart', element: <CartPage /> },
-      { path: 'checkout', element: <CheckoutPage /> },
-      { path: 'orders', element: <OrdersPage /> },
-      { path: 'orders/:id', element: <OrderDetailPage /> },
-      { path: 'login', element: <LoginPage /> },
-      { path: 'register', element: <RegisterPage /> },
-      { path: 'verify-email', element: <VerifyEmailPage /> },
-      { path: 'reset-password', element: <ResetPasswordPage /> },
-      { path: 'invite/:code', element: <InviteLandingPage /> },
-      { path: 'account', element: <AccountPage /> },
-      { path: 'wishlist', element: <WishlistPage /> },
-      { path: 'wallet', element: <WalletPage /> },
-      { path: 'returns', element: <MyReturnsPage /> },
-      { path: 'followed-stores', element: <FollowedStoresPage /> },
-      { path: 'notifications', element: <NotificationsPage /> },
-      { path: 'flash-sales', element: <FlashSalePage /> },
-      { path: 'live', element: <LivePage /> },
-      { path: 'support', element: <SupportConsole /> },
-      { path: 'tracking/:number', element: <TrackingPage /> },
-      { path: 'vouchers', element: <VouchersPage /> },
-      { path: 'compare', element: <ComparePage /> },
-      { path: 'help', element: <HelpCenterPage /> },
-      { path: 'help/:slug', element: <HelpArticlePage /> },
-      { path: 'faq', element: <FaqPage /> },
-      { path: 'contact', element: <ContactPage /> },
-      { path: 'account/tickets', element: <MyTicketsPage /> },
-      { path: 'account/tickets/:id', element: <TicketDetailPage /> },
-      { path: 'docs', element: <DocsPage /> },
-      { path: 'docs/api', element: <HelpArticlePage /> },
-      { path: 'terms', element: <LegalTerms /> },
-      { path: 'privacy', element: <LegalPrivacy /> },
-      { path: 'refund-policy', element: <LegalRefund /> },
-      { path: 'shipping-policy', element: <LegalShipping /> },
-      { path: '*', element: <NotFoundPage /> },
+      { index: true, element: route(<HomePage />, 'Beranda') },
+      { path: 'discover', element: route(<DiscoverFeedPage />, 'Discover') },
+      { path: 'search', element: route(<SearchPage />, 'Pencarian') },
+      { path: 'product/:slug', element: route(<ProductPage />, 'Produk') },
+      { path: 'store/:slug', element: route(<StorePage />, 'Toko') },
+      { path: 'cart', element: route(<CartPage />, 'Keranjang') },
+      { path: 'checkout', element: route(<CheckoutPage />, 'Checkout') },
+      { path: 'orders', element: route(<OrdersPage />, 'Pesanan') },
+      { path: 'orders/:id', element: route(<OrderDetailPage />, 'Detail pesanan') },
+      { path: 'login', element: route(<LoginPage />, 'Masuk') },
+      { path: 'register', element: route(<RegisterPage />, 'Daftar') },
+      { path: 'verify-email', element: route(<VerifyEmailPage />, 'Verifikasi email') },
+      { path: 'reset-password', element: route(<ResetPasswordPage />, 'Reset kata sandi') },
+      { path: 'forgot-password', element: route(<ResetPasswordPage />, 'Lupa kata sandi') },
+      { path: 'invite/:code', element: route(<InviteLandingPage />, 'Undangan') },
+      { path: 'account', element: route(<AccountPage />, 'Akun') },
+      { path: 'wishlist', element: route(<WishlistPage />, 'Favorit') },
+      { path: 'wallet', element: route(<WalletPage />, 'Dompet') },
+      { path: 'returns', element: route(<MyReturnsPage />, 'Retur') },
+      { path: 'followed-stores', element: route(<FollowedStoresPage />, 'Toko diikuti') },
+      { path: 'notifications', element: route(<NotificationsPage />, 'Notifikasi') },
+      { path: 'flash-sales', element: route(<FlashSalePage />, 'Flash sale') },
+      { path: 'live', element: route(<LivePage />, 'Live') },
+      { path: 'support', element: route(<SupportConsole />, 'Bantuan') },
+      { path: 'tracking/:number', element: route(<TrackingPage />, 'Lacak pesanan') },
+      { path: 'vouchers', element: route(<VouchersPage />, 'Voucher') },
+      { path: 'compare', element: route(<ComparePage />, 'Bandingkan') },
+      { path: 'help', element: route(<HelpCenterPage />, 'Pusat bantuan') },
+      { path: 'help/:slug', element: route(<HelpArticlePage />, 'Artikel') },
+      { path: 'faq', element: route(<FaqPage />, 'FAQ') },
+      { path: 'contact', element: route(<ContactPage />, 'Kontak') },
+      { path: 'account/tickets', element: route(<MyTicketsPage />, 'Tiket saya') },
+      { path: 'account/tickets/:id', element: route(<TicketDetailPage />, 'Detail tiket') },
+      { path: 'docs', element: route(<DocsPage />, 'Dokumentasi') },
+      // This used to render HelpArticlePage, which reads a :slug param this
+      // route does not provide, so the "API Quickstart" link 404'd with
+      // GET /help/articles/undefined.
+      { path: 'docs/api', element: route(<ApiQuickstartPage />, 'API Quickstart') },
+      { path: 'terms', element: route(<LegalTerms />, 'Syarat & ketentuan') },
+      { path: 'privacy', element: route(<LegalPrivacy />, 'Kebijakan privasi') },
+      { path: 'refund-policy', element: route(<LegalRefund />, 'Kebijakan retur') },
+      { path: 'shipping-policy', element: route(<LegalShipping />, 'Kebijakan pengiriman') },
+      { path: '*', element: route(<NotFoundPage />, 'Halaman tidak ditemukan') },
       {
         path: 'seller',
-        element: <LazyOutlet><SellerLayout /></LazyOutlet>,
+        element: <SellerLayoutLazy />,
         children: [
-          { index: true, element: <SellerHome /> },
-          { path: 'products', element: <SellerProducts /> },
-          { path: 'orders', element: <SellerOrders /> },
-          { path: 'returns', element: <SellerReturns /> },
-          { path: 'wallet', element: <SellerWallet /> },
-          { path: 'analytics', element: <SellerAnalytics /> },
-          { path: 'coupons', element: <SellerCoupons /> },
-          { path: 'live', element: <SellerLiveStudio /> },
-          { path: 'settings', element: <SellerSettings /> },
+          { index: true, element: route(<SellerHome />, 'Dashboard seller') },
+          { path: 'products', element: route(<SellerProducts />, 'Produk saya') },
+          { path: 'orders', element: route(<SellerOrders />, 'Pesanan masuk') },
+          { path: 'returns', element: route(<SellerReturns />, 'Retur masuk') },
+          { path: 'wallet', element: route(<SellerWallet />, 'Dompet seller') },
+          { path: 'analytics', element: route(<SellerAnalytics />, 'Analitik seller') },
+          { path: 'coupons', element: route(<SellerCoupons />, 'Kupon toko') },
+          { path: 'live', element: route(<SellerLiveStudio />, 'Studio live') },
+          { path: 'settings', element: route(<SellerSettings />, 'Pengaturan toko') },
         ],
       },
       {
         path: 'admin',
-        element: <LazyOutlet><AdminLayout /></LazyOutlet>,
+        element: <AdminLayoutLazy />,
         children: [
-          { index: true, element: <AdminOverview /> },
-          { path: 'stores', element: <AdminStores /> },
-          { path: 'tickets', element: <AdminTickets /> },
-          { path: 'reviews', element: <AdminReviews /> },
-          { path: 'reports', element: <AdminReports /> },
-          { path: 'returns', element: <AdminReturns /> },
-          { path: 'coupons', element: <AdminCoupons /> },
-          { path: 'shipping', element: <AdminShipping /> },
-          { path: 'users', element: <AdminUsers /> },
-          { path: 'articles', element: <AdminArticles /> },
-          { path: 'flags', element: <AdminFlags /> },
-          { path: 'analytics', element: <AdminAnalytics /> },
-          { path: 'orders', element: <AdminOps /> },
-          { path: 'audit', element: <AdminAudit /> },
-          { path: 'commission', element: <AdminCommission /> },
-          { path: 'catalog', element: <AdminCatalog /> },
-          { path: 'flash-sales', element: <AdminFlashSales /> },
-          { path: 'disputes', element: <AdminDisputes /> },
-          { path: 'payouts', element: <AdminPayouts /> },
+          { index: true, element: route(<AdminOverview />, 'Admin overview') },
+          { path: 'stores', element: route(<AdminStores />, 'Kelola toko') },
+          { path: 'tickets', element: route(<AdminTickets />, 'Antrean tiket') },
+          { path: 'reviews', element: route(<AdminReviews />, 'Moderasi ulasan') },
+          { path: 'reports', element: route(<AdminReports />, 'Laporan produk') },
+          { path: 'returns', element: route(<AdminReturns />, 'Antrean retur') },
+          { path: 'coupons', element: route(<AdminCoupons />, 'Kupon platform') },
+          { path: 'shipping', element: route(<AdminShipping />, 'Metode pengiriman') },
+          { path: 'users', element: route(<AdminUsers />, 'Pengguna') },
+          { path: 'articles', element: route(<AdminArticles />, 'Artikel bantuan') },
+          { path: 'flags', element: route(<AdminFlags />, 'Feature flags') },
+          { path: 'analytics', element: route(<AdminAnalytics />, 'Analitik platform') },
+          { path: 'orders', element: route(<AdminOps />, 'Cari pesanan') },
+          { path: 'audit', element: route(<AdminAudit />, 'Audit log') },
+          { path: 'commission', element: route(<AdminCommission />, 'Komisi platform') },
+          { path: 'catalog', element: route(<AdminCatalog />, 'Katalog') },
+          { path: 'flash-sales', element: route(<AdminFlashSales />, 'Flash sale') },
+          { path: 'disputes', element: route(<AdminDisputes />, 'Sengketa') },
+          { path: 'payouts', element: route(<AdminPayouts />, 'Pencairan dana') },
         ],
       },
     ],
