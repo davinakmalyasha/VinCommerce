@@ -1,8 +1,26 @@
 # Local infrastructure for VinCommerce.
 # Mirrors infra/scripts/start-deps.ps1 for Docker users.
+#
+# Base images are digest-pinned for the same reason as compose.full.yaml: a
+# floating tag means `docker compose pull` can change what is running under you
+# with no diff in this repository. .github/dependabot.yml tracks the digests.
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
+  deploy:
+    resources:
+      limits:
+        cpus: "2.0"
+        memory: 1g
+
 services:
   postgres:
-    image: postgres:17
+    <<: *common
+    image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
     environment:
       POSTGRES_USER: vincom
       POSTGRES_PASSWORD: vincom_dev
@@ -11,23 +29,36 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
 
   redis:
-    image: redis:8
-    command: ["redis-server", "--appendonly", "yes"]
+    <<: *common
+    image: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # See the longer note in compose.full.yaml: this instance also carries the
+      # asynq job queue, which must not be evicted under cache pressure.
+      - --maxmemory
+      - 512mb
+      # noeviction: this instance also carries the asynq job queue, whose
+      # in-flight task payloads must not be evicted under cache pressure. Cache
+      # writes failing is safe (callers swallow cache errors and fall through
+      # to Postgres); an evicted order-expiry job is not. Full rationale in
+      # compose.full.yaml.
+      - --maxmemory-policy
+      - noeviction
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
-    restart: unless-stopped
 
   mailpit:
-    image: axllent/mailpit:v1.29
+    <<: *common
+    image: axllent/mailpit:v1.29@sha256:757f22b56c1da03570afdb3d259effe5091018008a81bbedc8158cee7e16fdbc
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
-    restart: unless-stopped
 
 volumes:
   pgdata:

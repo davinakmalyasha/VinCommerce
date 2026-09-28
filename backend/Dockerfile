@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS builder
+# Base images are pinned by digest, not by tag: `golang:1.26-alpine` and
+# `alpine:3.21` move as soon as a patch lands, so a rebuild weeks from now
+# silently changes the toolchain or libc a previously-green build used.
+# .github/dependabot.yml tracks the digests and opens the bump PR.
+FROM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
@@ -8,7 +12,7 @@ COPY backend/ ./
 ARG GIT_SHA=unknown
 RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${GIT_SHA}" -o /out/api ./cmd/api
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
 RUN adduser -D -u 10001 app
 USER app
 COPY --from=builder /out/api /usr/local/bin/api

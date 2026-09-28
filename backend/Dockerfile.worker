@@ -1,13 +1,27 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS builder
+# Base images are pinned by digest, not by tag. `golang:1.26-alpine` and
+# `alpine:3.21` both move as soon as a patch lands, so a rebuild weeks from now
+# silently changes the toolchain or libc a previously-green build used. Dependabot
+# (.github/dependabot.yml) tracks the digests and opens the bump PR.
+FROM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
 RUN CGO_ENABLED=0 go build -o /out/worker ./cmd/worker
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
 RUN adduser -D -u 10001 app
 USER app
 COPY --from=builder /out/worker /usr/local/bin/worker
+# The worker has no HTTP listener, so there is nothing to curl. The probe
+# instead runs `worker --healthcheck`, which dials the queue with the worker's
+# own Redis credentials and reads per-queue depth/latency. That is the only
+# check that can see the failure that actually bites: a reachable Redis that
+# the worker is not draining. A plain `exit 0` in a healthcheck is a lie that
+# reports a wedged worker as healthy forever.
+# --timeout is 10s, and the probe self-bounds at 8s, so a wedged Redis is
+# reported as a failed probe rather than killed mid-write.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD worker --healthcheck || exit 1
 ENTRYPOINT ["worker"]

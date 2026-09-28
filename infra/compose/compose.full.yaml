@@ -1,7 +1,39 @@
 # Full VinCommerce stack for Docker users.
+
+# Shared operational defaults, merged into every service below with `<<: *common`.
+#
+# deploy.resources.limits is honoured by `docker compose up` (Compose v2 maps it
+# onto real container limits), so a container that leaks — the API holding a
+# large join in memory, a runaway SSE fan-out, Redis past its maxmemory — is
+# capped by the host instead of by luck.
+#
+# The logging cap matters more than it looks. json-file's default is *unbounded*,
+# so the API's access log alone will fill the volume and take Postgres down with
+# it; 50 MB x 3 files per service keeps the failure local and diagnosable.
+#
+# Per-service overrides still win: a key listed alongside `<<: *common` in a
+# service block replaces the anchor's value for that key.
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "3"
+  deploy:
+    resources:
+      limits:
+        cpus: "2.0"
+        memory: 1g
+
 services:
   postgres:
-    image: postgres:17
+    <<: *common
+    # Digest-pinned, not tag-pinned. `postgres:17` moves with every patch
+    # release, so an unpinned `docker compose pull` can silently change the
+    # database major's minor version — and therefore on-disk format behaviour —
+    # between a working machine and a broken one. Dependabot tracks the digest.
+    image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
     environment:
       POSTGRES_USER: vincom
       POSTGRES_PASSWORD: vincom_dev
@@ -9,7 +41,6 @@ services:
     # Bind to loopback only — never expose the dev database to the LAN.
     ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
-    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vincom"]
       interval: 5s
@@ -17,11 +48,38 @@ services:
       retries: 10
 
   redis:
-    image: redis:8
-    command: ["redis-server", "--appendonly", "yes"]
+    <<: *common
+    image: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # A memory cap is a prerequisite for adding a response cache: without one,
+      # a slow cache leak becomes an OOM kill of the whole container rather than
+      # a degraded hit rate.
+      - --maxmemory
+      - 512mb
+      # noeviction, deliberately. This instance holds BOTH the response cache
+      # and the asynq job queue, and a cache eviction policy here is a
+      # correctness hazard rather than a tuning knob: asynq keeps accepted but
+      # not-yet-executed task payloads in the same keyspace, so any LRU policy
+      # can evict an in-flight task under memory pressure — silently dropping
+      # an expired-order cancellation, an escrow sweep or a payment email.
+      #
+      # noeviction gets both behaviours right:
+      #   * cache writes fail with OOM -> callers already swallow cache errors
+      #     and fall through to Postgres, so the API degrades to a cache miss;
+      #   * queue writes are never evicted, because Redis refuses them instead.
+      #
+      # 512 MB is set well above steady-state usage, so hitting the cap is a
+      # real capacity signal (the worker's --healthcheck surfaces a growing
+      # backlog) rather than routine churn. See docs/ARCHITECTURE.md for the
+      # production recommendation of splitting cache and queue onto separate
+      # instances.
+      - --maxmemory-policy
+      - noeviction
     ports: ["127.0.0.1:6379:6379"]
     volumes: [redisdata:/data]
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -29,13 +87,14 @@ services:
       retries: 10
 
   mailpit:
-    image: axllent/mailpit:v1.29
+    <<: *common
+    image: axllent/mailpit:v1.29@sha256:757f22b56c1da03570afdb3d259effe5091018008a81bbedc8158cee7e16fdbc
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
-    restart: unless-stopped
 
   api:
+    <<: *common
     build: { context: ., dockerfile: backend/Dockerfile }
     environment:
       DB_HOST: postgres
@@ -50,36 +109,90 @@ services:
       WEB_URL: http://localhost:5173
       CORS_ALLOW_ORIGINS: http://localhost:5173,http://localhost
       UPLOAD_DIR: /data/uploads
-      # Override with a strong value outside local development!
-      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-please-change-me-32chars}
+      # REQUIRED here. Every request reaches the API from the `web` container,
+      # so without this the client-IP resolver sees only the proxy's address
+      # and every per-IP rate limiter collapses into ONE shared bucket — a mass
+      # logout at 30 refreshes/min, and globally serialised registration. Set it
+      # to the network the proxy actually lives on; never to a range that
+      # includes untrusted clients.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+      # No default on purpose. A committed fallback here is a published
+      # signing key: it is 41 chars, so it satisfies the length guard, and it
+      # is not the sentinel string the guard also compared against — so an
+      # operator setting APP_ENV=production but forgetting JWT_SECRET booted
+      # a production API signed with a key from this repository.
+      # Generate one:  openssl rand -base64 48
+      #
+      # Quoted, and the quotes are load-bearing: an unquoted
+      # `${VAR:?a message with: a colon}` contains ": " inside a plain scalar,
+      # which YAML 1.1/1.2 and go-yaml v3 (the parser compose-go uses) both
+      # reject with "mapping values are not allowed in this context" — so the
+      # whole file failed to parse and `docker compose up` was impossible.
+      # Compose still interpolates a quoted value; the `:?` guard is unchanged.
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set - generate with: openssl rand -base64 48}"
+      DB_MIGRATE_ON_START: ${DB_MIGRATE_ON_START:-true}
       MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
       MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:-}
       MIDTRANS_ENV: ${MIDTRANS_ENV:-sandbox}
-    ports: ["8080:8080"]
+    # Loopback only. The API is unauthenticated-plaintext HTTP and carries
+    # credentials, JWTs, the refresh cookie, wallet balances and KYC
+    # documents; publishing it on every interface exposes all of that to the
+    # LAN. Put a TLS terminator in front for anything beyond local use.
+    ports: ["127.0.0.1:8080:8080"]
     volumes: [uploads:/data/uploads]
-    restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
 
   worker:
+    <<: *common
     build: { context: ., dockerfile: backend/Dockerfile.worker }
+    # Docker's default grace period is 10s, and the worker's own drain is
+    # bounded at 30s (ShutdownTimeout in internal/worker, covering the SMTP
+    # send path). At 10s Docker SIGKILLs the process while tasks are still
+    # in flight — an order cancellation half-applied, a payment email
+    # rendered but never sent. 45s leaves the drain time to finish on its
+    # own terms; the worker's internal timeout still guarantees the process
+    # exits well before that.
+    stop_grace_period: 45s
     environment:
       DB_HOST: postgres
       DB_USER: vincom
       DB_PASSWORD: vincom_dev
       DB_NAME: vincom
+      APP_ENV: ${APP_ENV:-development}
+      # The worker must receive the same Redis credentials as the API. It
+      # used to receive only REDIS_ADDR, so the moment Redis required a
+      # password every scheduled job stopped with no error surfaced
+      # anywhere - expired-order cancellation, auto-completion, cart
+      # recovery, seller digests and low-stock alerts all went silent.
       REDIS_ADDR: redis:6379
-    restart: unless-stopped
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
 
   web:
-    build: { context: ., dockerfile: web/Dockerfile }
-    ports: ["5173:80"]
-    restart: unless-stopped
-    depends_on: [api]
+    <<: *common
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      # Vite inlines VITE_* at build time, so these have to arrive as build args
+      # — setting them in the service `environment` would do nothing, because
+      # they are read while the bundle is built, not while the container runs.
+      args:
+        VITE_MIDTRANS_CLIENT_KEY: ${VITE_MIDTRANS_CLIENT_KEY:-}
+        VITE_MIDTRANS_SNAP_URL: ${VITE_MIDTRANS_SNAP_URL:-}
+    # 8080 in the container, not 80: the image runs as the unprivileged
+    # `nginx` user and cannot bind a port below 1024.
+    # Loopback only, for the same reason as the API. nginx serves the SPA;
+    # it has no TLS, so do not expose it beyond the host.
+    ports: ["127.0.0.1:5173:8080"]
+    # Wait for the API to report ready, otherwise nginx starts first and
+    # the first requests fail against a not-yet-listening upstream.
+    depends_on:
+      api: { condition: service_healthy }
 
 volumes:
   pgdata:
