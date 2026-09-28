@@ -28,7 +28,10 @@ type Auth struct {
 func NewAuth(svc *service.AuthService, logger *slog.Logger, cfg *config.Config) *Auth {
 	return &Auth{
 		svc: svc, logger: logger,
-		secure:     cfg.Environment == "production",
+		// The refresh cookie must be Secure on every non-local deployment.
+		// Comparing to the literal "production" missed APP_ENV=staging, so a
+		// staging host shipped the refresh token over plaintext HTTP.
+		secure:     !cfg.IsDev(),
 		refreshTTL: cfg.Auth.RefreshTokenTTL,
 	}
 }
