@@ -4,8 +4,23 @@ import type { User } from '../types'
 
 const IMPERSONATION_KEY = 'vc_impersonating'
 
+// Best-effort: drop any service-worker Cache Storage entries. The SW never
+// caches /api/ or /uploads/ (Cache Storage keys ignore the Authorization and
+// X-Session-Key headers, so caching user-scoped responses would replay one
+// account's data to the next), but this is defence in depth: it guarantees no
+// user-scoped response survives an account switch or logout.
+function clearServiceWorkerCache() {
+  try {
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_USER_CACHE' })
+    }
+  } catch {
+    // ignore — the SW may not be registered at all
+  }
+}
+
 // Wired by App.tsx so login/logout can purge cached per-user react-query data
-// (orders, wallet, admin tables) — otherwise the next account could briefly
+// (orders, wallet, admin tables) - otherwise the next account could briefly
 // render the previous user's data.
 let clearQueryCache: () => void = () => {}
 export function bindQueryCacheClear(fn: () => void) {
@@ -116,6 +131,7 @@ export const useSession = create<SessionState>((set) => ({
       totp_code: totpCode,
     })
     clearQueryCache() // purge any previous account's cached data
+    clearServiceWorkerCache()
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
     await mergeGuestCart()
@@ -124,6 +140,7 @@ export const useSession = create<SessionState>((set) => ({
   register: async (data) => {
     const res = await api.post<{ access_token: string; user: User }>('/auth/register', data)
     clearQueryCache()
+    clearServiceWorkerCache()
     setAccessToken(res.data.access_token)
     set({ user: res.data.user, accessToken: res.data.access_token })
     await mergeGuestCart()
@@ -137,6 +154,7 @@ export const useSession = create<SessionState>((set) => ({
     }
     setAccessToken(null)
     clearQueryCache()
+    clearServiceWorkerCache()
     set({ user: null, accessToken: null })
   },
 }))
