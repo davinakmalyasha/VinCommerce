@@ -3,8 +3,10 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"html/template"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
@@ -79,15 +81,98 @@ func (c *Client) Send(ctx context.Context, to, subject, templateName string, dat
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
 
-	// Mailpit dev server accepts any TLS mode; try STARTTLS, fall back to plain.
-	err := smtp.SendMail(addr, auth, c.from, []string{to}, []byte(msg))
-	if err != nil {
+	// net/smtp.SendMail dials with NO timeout and sets no socket deadline. A
+	// single blackholed SMTP host (a firewall DROP, a provider that stopped
+	// accepting port 25) pins the goroutine forever; repeated across tasks it
+	// consumes every worker slot and stalls the whole queue. Dial and speak
+	// through a context so the caller's deadline always wins.
+	if err := c.deliver(ctx, addr, auth, to, []byte(msg)); err != nil {
+		// Mailpit dev server accepts any TLS mode; try STARTTLS, fall back to plain.
 		if strings.Contains(err.Error(), "tls") || strings.Contains(err.Error(), "handshake") {
-			return smtp.SendMail(addr, nil, c.from, []string{to}, []byte(msg))
+			return c.deliver(ctx, addr, nil, to, []byte(msg))
 		}
 		return err
 	}
 	return nil
+}
+
+// dialTimeout bounds establishing the TCP connection and the SMTP handshake.
+const dialTimeout = 10 * time.Second
+
+// deliver performs one SMTP delivery attempt under a bounded deadline.
+// net/smtp.SendMail dials with NO timeout and sets no socket deadline, so it
+// is unusable in a worker: one blackholed host pins a goroutine forever and
+// repeated across tasks it consumes every worker slot and stalls the queue.
+func (c *Client) deliver(ctx context.Context, addr string, auth smtp.Auth, to string, msg []byte) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+
+	d := net.Dialer{Timeout: dialTimeout}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	// Absolute deadline for the whole conversation, never exceeding the
+	// caller's own deadline when it has one.
+	deadline := time.Now().Add(dialTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("smtp set deadline: %w", err)
+	}
+
+	// If the caller cancels mid-send, collapse the deadline so the blocked
+	// read/write returns immediately instead of waiting it out.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-stop:
+		}
+	}()
+
+	cl, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("smtp greeting: %w", err)
+	}
+	defer cl.Close()
+
+	if ok, _ := cl.Extension("STARTTLS"); ok {
+		if err := cl.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("smtp starttls: %w", err)
+		}
+	}
+	if auth != nil {
+		if ok, _ := cl.Extension("AUTH"); ok {
+			if err := cl.Auth(auth); err != nil {
+				return fmt.Errorf("smtp auth: %w", err)
+			}
+		}
+	}
+	if err := cl.Mail(c.from); err != nil {
+		return fmt.Errorf("smtp mail from: %w", err)
+	}
+	if err := cl.Rcpt(to); err != nil {
+		return fmt.Errorf("smtp rcpt to: %w", err)
+	}
+	w, err := cl.Data()
+	if err != nil {
+		return fmt.Errorf("smtp data: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp write body: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp close body: %w", err)
+	}
+	return cl.Quit()
 }
 
 func buildMessage(from, to, subject, body string) string {
