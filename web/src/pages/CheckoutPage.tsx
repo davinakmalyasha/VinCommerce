@@ -37,6 +37,42 @@ interface VoucherLite {
   store_name?: string
 }
 
+/**
+ * Rank the buyer's usable vouchers against the quoted subtotal.
+ *
+ * This is a pure function on purpose. It used to be an inline `filter`/`sort`
+ * block that referenced `quote` from the enclosing component scope, and that
+ * block was written ABOVE the `const { data: quote } = useQuery(...)` that
+ * declares it. `quote` is a `const`, so the identifier sits in the temporal
+ * dead zone for the whole of the first render; `filter` invokes its callback
+ * synchronously, so the very first render threw
+ *
+ *   ReferenceError: Cannot access 'quote' before initialization
+ *
+ * which the route-level ErrorBoundary caught and rendered as "Terjadi
+ * kesalahan di halaman ini" for EVERY logged-in buyer — checkout was
+ * completely unreachable. `tsc` does not report it (reading a `const` inside a
+ * closure is lexically legal, it is only illegal at that point in time) and no
+ * test navigated a browser to /checkout.
+ *
+ * Extracting it to a module-scope function makes it impossible to reintroduce
+ * the ordering dependency: the quote is now a parameter, so it has to exist
+ * before the call can be written at all.
+ */
+function rankVouchers(
+  vouchers: VoucherLite[] | undefined,
+  subtotal: number | undefined,
+): { usable: VoucherLite[]; best: VoucherLite | null } {
+  const all = vouchers ?? []
+  if (!subtotal || subtotal <= 0) return { usable: [], best: null }
+  const usable = all.filter((v) => subtotal >= v.min_subtotal)
+  if (usable.length === 0) return { usable: [], best: null }
+  const discount = (v: VoucherLite) =>
+    v.type === 'percent' ? Math.floor((subtotal * v.value) / 100) : v.value
+  const best = usable.reduce((b, v) => (discount(v) > discount(b) ? v : b))
+  return { usable, best }
+}
+
 export function CheckoutPage() {
   const { user } = useSession()
   const navigate = useNavigate()
@@ -77,18 +113,6 @@ export function CheckoutPage() {
     queryFn: async () => (await api.get<{ balance: number }>('/loyalty')).data.balance,
   })
 
-  // Best-coupon suggestion: estimate each voucher's discount against the current quote subtotal.
-  const applicableVouchers = (vouchers ?? []).filter((v) => !quote || quote.subtotal >= v.min_subtotal)
-  const bestVoucher = applicableVouchers.length
-    ? [...applicableVouchers].sort((a, b) => {
-        const est = (v: VoucherLite) =>
-          v.type === 'percent'
-            ? Math.round(((quote?.subtotal ?? 0) * v.value) / 100)
-            : v.value
-        return est(b) - est(a)
-      })[0]
-    : null
-
   const quoteEnabled = !!user && !paidOrder
 
   // Debounce free-text inputs: without it every keystroke fires a
@@ -112,6 +136,10 @@ export function CheckoutPage() {
     placeholderData: (prev) => prev, // keep last good totals while refetching
   })
   const { data: quote, isError: quoteError } = quoteQuery
+
+  // Best-coupon suggestion. Must come after the `quote` declaration above — see
+  // the note on rankVouchers for what happens if it does not.
+  const { usable: applicableVouchers, best: bestVoucher } = rankVouchers(vouchers, quote?.subtotal)
 
   // The debounce means the visible inputs can be AHEAD of the quote on screen.
   // The order is placed against the debounced values, so a submit is only safe
