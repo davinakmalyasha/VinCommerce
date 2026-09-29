@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,7 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/vincommerce/backend/internal/ai"
+	"github.com/vincommerce/backend/internal/app"
 	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
@@ -25,21 +24,31 @@ import (
 	mw "github.com/vincommerce/backend/internal/httpapi/middleware"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/metrics"
-	"github.com/vincommerce/backend/internal/payments"
-	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
-	"github.com/vincommerce/backend/internal/stream"
 )
 
-// ctxPlaceholder avoids leaking request contexts into service construction.
-func ctxPlaceholder() context.Context { return context.Background() }
-
 // Dependencies bundles services for router construction.
+//
+// The service graph is no longer built here. It is built once in
+// internal/app.Build, which cmd/api and cmd/worker both call, so the two
+// processes cannot drift into different wiring -- the defect that left the
+// worker with no payment service, no loyalty ledger, no broker and no mailer,
+// and therefore a cart-recovery job that reported success and sent nothing.
 type Dependencies struct {
-	Pool    *db.Pool
-	Redis   *cache.Client
-	Config  *config.Config
-	Logger  *slog.Logger
+	App *app.Services
+	// Pool and Redis are the raw infrastructure handles the HTTP process itself
+	// needs, as opposed to the wired services: the readiness probe pings both,
+	// the rate limiter is per-request middleware rather than a service, and
+	// checkout idempotency is a Redis key owned by the transport (it is being
+	// moved into a service). They belong here rather than being reached for
+	// through App so that infra and domain dependencies stay distinguishable.
+	Pool   *db.Pool
+	Redis  *cache.Client
+	Config *config.Config
+	Logger *slog.Logger
+	// Mailer is used by the media service and the invoice renderer. The
+	// application services received it via app.Deps; this is the same instance
+	// passed explicitly for the handler-level uses.
 	Mailer  *mail.Client
 	Metrics *metrics.Registry
 }
@@ -48,147 +57,51 @@ type Dependencies struct {
 func NewRouter(deps Dependencies) http.Handler {
 	cfg := deps.Config
 	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	graph := deps.App
+	if graph == nil {
+		// Cannot happen through the normal path: cmd/api calls app.Build first
+		// and refuses to start on error. Kept as a hard panic rather than a nil
+		// dereference further down, because a nil graph is a wiring bug and
+		// should say so.
+		panic("httpapi.NewRouter: Dependencies.App is required; build it with app.Build")
+	}
 
 	metricsReg := deps.Metrics
 	if metricsReg == nil {
 		metricsReg = metrics.New()
 	}
 
-	// repositories
-	users := repository.NewUserRepository(deps.Pool)
-	sessions := repository.NewSessionRepository(deps.Pool)
-	categories := repository.NewCategoryRepository(deps.Pool)
-	products := repository.NewProductRepository(deps.Pool)
-	reviews := repository.NewReviewRepository(deps.Pool)
-	carts := repository.NewCartRepository(deps.Pool)
-	orders := repository.NewOrderRepository(deps.Pool)
-	addresses := repository.NewAddressRepository(deps.Pool)
-	paymentRepo := repository.NewPaymentRepository(deps.Pool)
-	stores := repository.NewStoreRepository(deps.Pool)
-	wishlistRepo := repository.NewWishlistRepository(deps.Pool)
-	analyticsRepo := repository.NewAnalyticsRepository(deps.Pool)
-	supportRepo := repository.NewSupportRepository(deps.Pool)
-	notificationRepo := repository.NewNotificationRepository(deps.Pool)
-	flagRepo := repository.NewFeatureFlagRepository(deps.Pool)
-	chatRepo := repository.NewChatRepository(deps.Pool)
-	marketRepo := repository.NewQARepository(deps.Pool)
-	loyaltyRepo := repository.NewLoyaltyRepository(deps.Pool)
-	disputeRepo := repository.NewDisputeRepository(deps.Pool)
-	gameRepo := repository.NewGamificationRepository(deps.Pool)
-	liveRepo := repository.NewLiveRepository(deps.Pool)
+	// Repositories and services come pre-wired from the shared composition root.
+	// Only the six repositories the HTTP handlers still reach for directly are
+	// unpacked here. The other fifteen used to be unpacked too and went unused
+	// once the wiring moved into app.Build -- which is precisely why it was not
+	// obvious that the worker was building a different graph.
+	repos := graph.Repositories
+	users := repos.Users
+	sessions := repos.Sessions
 
-	// services
-	password := service.NewPassword(
-		cfg.Auth.Argon2Memory, cfg.Auth.Argon2Iterations, cfg.Auth.Argon2Parallelism, cfg.Auth.Argon2SaltLength)
-	tokens := service.NewTokenManager(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL, cfg.Auth.RefreshTokenTTL)
-	authSvc := service.NewAuthService(users, sessions, password, tokens, deps.Mailer, cfg)
-	oauthSvc := service.NewOAuthService(users, sessions, password, tokens, cfg.OAuth.GoogleClientID, cfg.OAuth.GoogleClientSecret, cfg.OAuth.GoogleRedirectURL)
-	catalogSvc := service.NewCatalogService(categories)
-	productSvc := service.NewProductService(products, reviews, orders)
-	catalogSvc.SetCache(cache.NewStore(deps.Redis.Client))
-	orderSvc := service.NewOrderService(carts, orders, addresses)
-	orderSvc.SetStores(stores)
-	orderSvc.SetLoyalty(loyaltyRepo)
-	orderSvc.SetWishlist(wishlistRepo)
-	orderSvc.SetInsurancePct(cfg.Payments.ShippingInsurancePct)
-	// payment gateways: the sandbox adapter is DEV-ONLY (its webhook secret is
-	// public knowledge); Midtrans when keys configured. In production the
-	// sandbox gateway must never exist so forged webhooks fail closed.
-	isDev := cfg.IsDev()
-	gateways := []payments.Gateway{}
-	if isDev {
-		if gw, err := payments.NewGateway("sandbox", cfg.Payments.SandboxBaseURL, "", "", nil); err == nil {
-			gateways = append(gateways, gw)
-		}
-	} else if cfg.Payments.Gateway == "sandbox" {
-		logger.Error("payment gateway: refusing sandbox gateway in production")
-	}
-	if cfg.Payments.MidtransServerKey != "" {
-		methods := []string{}
-		for _, m := range strings.Split(cfg.Payments.EnabledMethods, ",") {
-			if m = strings.TrimSpace(m); m != "" {
-				methods = append(methods, m)
-			}
-		}
-		mt, err := payments.NewGateway("midtrans", "", cfg.Payments.MidtransServerKey, cfg.Payments.MidtransEnv, methods)
-		if err != nil {
-			logger.Error("payment gateway: midtrans disabled", "reason", err.Error())
-		} else {
-			gateways = append(gateways, mt)
-			logger.Info("payment gateway: midtrans enabled", "env", cfg.Payments.MidtransEnv)
-		}
-	}
-	paymentSvc := service.NewPaymentService(paymentRepo, orders, gateways, cfg.Payments.Gateway, cfg.App.BaseURL)
-	paymentSvc.SetSandboxAutoSend(isDev)
-	sellerSvc := service.NewSellerService(stores, users, products, orders, paymentRepo)
-	sellerSvc.SetSessions(sessions)
-	sellerSvc.SetReturnAutoApprove(cfg.Payments.ReturnAutoApproveMax)
-	paymentSvc.SetPayoutGuard(sellerSvc.AssertPayoutEligible)
-	sellerSvc.SetPresenceCache(cache.NewStore(deps.Redis.Client))
-	engagementSvc := service.NewEngagementService(wishlistRepo, products)
-	engagementSvc.SetCache(cache.NewStore(deps.Redis.Client))
-	engagementSvc.SetStores(stores)
-	productSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
-	sellerSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
-	analyticsSvc := service.NewAnalyticsService(analyticsRepo)
-	analyticsSvc.SetOrders(orders)
-	supportSvc := service.NewSupportService(supportRepo, orders)
-	notificationSvc := service.NewNotificationService(notificationRepo)
-	productSvc.SetNotificationService(notificationSvc)
-
-	broker := stream.NewBroker(deps.Redis.Client)
-	chatSvc := service.NewChatService(chatRepo, orders, broker)
-	marketSvc := service.NewMarketService(marketRepo)
-	marketSvc.SetNotificationService(notificationSvc)
-	marketSvc.SetLoyalty(loyaltyRepo, disputeRepo)
-	marketSvc.SetGamification(gameRepo)
-
-	liveSvc := service.NewLiveService(liveRepo, products)
-	liveSvc.SetBroker(broker)
-	marketSvc.SetUsers(users)
-	marketSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
-	supportSvc.SetUsers(users)
-	supportSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
-
-	// AI assistant: knowledge base = published help articles.
-	articles, _ := supportSvc.AllArticles(ctxPlaceholder())
-	docs := make([]ai.Document, 0, len(articles))
-	for _, a := range articles {
-		if !a.IsPublished {
-			continue
-		}
-		docs = append(docs, ai.Document{ID: a.ID, Title: a.Title, Content: a.Content, Source: a.Section})
-	}
-	assistant := ai.NewAssistant(ai.Config{
-		BaseURL: cfg.AI.BaseURL, APIKey: cfg.AI.APIKey, Model: cfg.AI.Model,
-	}, docs, logger)
-	if assistant.LLMEnabled() {
-		logger.Info("ai assistant: llm mode", "model", cfg.AI.Model)
-	} else {
-		logger.Info("ai assistant: offline retrieval mode (set AI_API_KEY for LLM)")
-	}
-	aiSvc := service.NewAIService(assistant, products, categories)
-	aiSvc.SetContext(orders, reviews)
-	orderSvc.SetBroker(broker)
-	orderSvc.SetPaymentService(paymentSvc)
-	orderSvc.SetNotificationService(notificationSvc)
-	orderSvc.SetUsers(users)
-	orderSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
-	// The order service has post-commit paths (loyalty debit, email send)
-	// where the work is already durable; the logger is the only way their
-	// failures stay visible.
-	orderSvc.SetLogger(logger)
-	paymentSvc.SetBroker(broker)
-	paymentSvc.SetNotificationService(notificationSvc)
-	paymentSvc.SetUsers(users)
-	// A "split" dispute decision moves real money, so the payment service must
-	// be able to claim the dispute row inside its own transaction.
-	paymentSvc.SetDisputes(disputeRepo)
-	paymentSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
-	marketSvc.SetPaymentService(paymentSvc)
-	sellerSvc.SetMailer(deps.Mailer, cfg.App.WebURL)
-	sellerSvc.SetNotificationService(notificationSvc)
-	supportSvc.SetNotificationService(notificationSvc)
+	// Services come pre-wired from the shared composition root. These are the
+	// handler-facing names; the graph is the single source of wiring.
+	authSvc := graph.Services.Auth
+	oauthSvc := graph.Services.OAuth
+	catalogSvc := graph.Services.Catalog
+	productSvc := graph.Services.Product
+	orderSvc := graph.Services.Order
+	paymentSvc := graph.Services.Payment
+	sellerSvc := graph.Services.Seller
+	engagementSvc := graph.Services.Engagement
+	marketSvc := graph.Services.Market
+	supportSvc := graph.Services.Support
+	analyticsSvc := graph.Services.Analytics
+	chatSvc := graph.Services.Chat
+	liveSvc := graph.Services.Live
+	aiSvc := graph.Services.AI
+	notificationSvc := graph.Services.Notification
+	tokens := graph.Tokens
+	broker := graph.Broker
 
 	// handlers
 	health := handler.NewHealth(deps.Pool, deps.Redis.Client, cfg)
@@ -205,7 +118,15 @@ func NewRouter(deps Dependencies) http.Handler {
 	seller := handler.NewSeller(sellerSvc)
 	buyerReturns := handler.NewBuyerReturns(sellerSvc)
 	admin := handler.NewAdmin(sellerSvc)
-	adminOps := handler.NewAdminOps(sellerSvc, flagRepo, deps.Redis.Client)
+	// Feature-flag gating. The middleware lives in the middleware package and
+	// takes a one-method interface, so the kill-switch policy is a transport
+	// concern that does not have to import the service layer. It used to be a
+	// method on the AdminOps handler, so the router reached through a handler
+	// constructor to install a cross-cutting policy.
+	flagMw := func(key string) func(http.Handler) http.Handler {
+		return mw.RequireFeature(graph.Services.FeatureFlags, key)
+	}
+	adminOps := handler.NewAdminOps(sellerSvc, graph.Services.FeatureFlags, deps.Redis.Client)
 	adminOps.SetAuth(authSvc)
 	adminReviews := handler.NewAdminReviews(productSvc)
 	media := handler.NewMedia(service.NewMediaService(filepath.Join(cfg.App.UploadDir), cfg.App.BaseURL, 5<<20))
@@ -233,7 +154,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(metricsReg.Middleware)
 	// chi's RealIP is replaced by middleware.ClientIP. RealIP is documented as
 	// vulnerable to spoofing and unconditionally takes the leftmost
-	// X-Forwarded-For entry — i.e. whatever the client sent first. That value
+	// X-Forwarded-For entry Ã¢â‚¬â€ i.e. whatever the client sent first. That value
 	// keyed every per-IP rate limiter, so a fresh forged header per request
 	// gave unlimited login attempts, unlimited registration, and unmetered LLM
 	// spend. See middleware/requestid.go.
@@ -255,7 +176,6 @@ func NewRouter(deps Dependencies) http.Handler {
 	authMw := mw.Authenticate(tokens, mw.CachedVerChecker(users, 30*time.Second))
 	optionalAuthMw := mw.AuthenticateOptional(tokens, mw.CachedVerChecker(users, 30*time.Second))
 	auditMw := mw.AuditMiddleware(sessions, logger)
-	flagMw := adminOps.FeatureFlagMiddleware
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health/live", health.Liveness)
@@ -371,7 +291,7 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport), auditMw).
 					Post("/orders/{orderId}/refund", paymentsH.Refund)
 			})
-			// dev-only sandbox drivers (order owner or staff) — never in production.
+			// dev-only sandbox drivers (order owner or staff) Ã¢â‚¬â€ never in production.
 			if cfg.IsDev() {
 				r.Group(func(r chi.Router) {
 					r.Use(authMw)
@@ -390,8 +310,8 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/seller", func(r chi.Router) {
 			r.Use(authMw)
-			// Store open/view stay auth-only: that's the buyer→seller
-			// onboarding funnel. Everything else requires the seller role —
+			// Store open/view stay auth-only: that's the buyerÃ¢â€ â€™seller
+			// onboarding funnel. Everything else requires the seller role Ã¢â‚¬â€
 			// ownership checks remain as defense-in-depth beneath this gate.
 			r.Get("/store", seller.MyStore)
 			r.Post("/store", seller.OpenStore)
@@ -502,7 +422,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(flagMw("live_commerce")).Get("/live", liveH.List)
 		r.With(flagMw("live_commerce")).Get("/live/{id}", liveH.Detail)
 		r.With(flagMw("live_commerce")).Get("/live/{id}/pinned", liveH.Pinned)
-		r.With(flagMw("live_commerce"), authMw).Post("/live/{id}/chat", liveH.ChatPost)
+		// Auth FIRST, then the flag gate. The previous ordering on the chat route was
+		// (flag, auth), so an anonymous caller received 409 FEATURE_DISABLED rather
+		// than 401 -- which both answers a request the caller had no right to make
+		// and discloses whether the feature is on. The SSE route on the next line
+		// already had the correct order, which is how the inconsistency survived:
+		// two adjacent routes, same flag, opposite middleware order.
+		r.With(authMw, flagMw("live_commerce")).Post("/live/{id}/chat", liveH.ChatPost)
 		r.With(authMw, flagMw("live_commerce")).Get("/stream/live/{id}", streamH.Live)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
 		r.With(authMw).Post("/stores/{id}/follow", seller.FollowStore)
@@ -597,7 +523,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Use(authMw)
 			r.With(flagMw("ai_assistant"), rateLimiter.Limit(20, time.Minute, userKey)).Post("/ask", aiH.Ask)
 			// review-summary renders on the public product page, so any
-			// authenticated user may call it — the per-user limiter keeps
+			// authenticated user may call it Ã¢â‚¬â€ the per-user limiter keeps
 			// LLM cost bounded.
 			r.With(rateLimiter.Limit(30, time.Minute, userKey)).Post("/review-summary", aiH.ReviewSummary)
 			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin), rateLimiter.Limit(20, time.Minute, userKey)).
@@ -631,7 +557,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	})))
 
 	// SEO
-	seo := handler.NewSEO(products, categories, cache.NewStore(deps.Redis.Client), cfg.App.WebURL)
+	seo := handler.NewSEO(graph.Services.Seo)
 	r.Get("/robots.txt", seo.Robots)
 	r.Get("/sitemap.xml", seo.Sitemap)
 
@@ -653,7 +579,7 @@ func NewRouter(deps Dependencies) http.Handler {
 //
 // It uses the resolved client IP WITHOUT the port. The previous version used
 // r.RemoteAddr directly, which is "ip:port" whenever no proxy header is
-// present — and the source port is ephemeral, so every new connection landed
+// present Ã¢â‚¬â€ and the source port is ephemeral, so every new connection landed
 // in a fresh bucket. A trivial client that opens one socket per request
 // defeated /auth/login, /auth/register and the webhook limiter completely.
 //
@@ -721,7 +647,7 @@ func (p *peekedBody) Close() error {
 // only, so both failure paths truncated the request: a body over 4 KiB reached
 // the handler as its first 4097 bytes, and a mid-body read error delivered a
 // partial payload. Either way auth.Login failed with a JSON parse error rather
-// than the real 413/400 — and the doc comment claimed the opposite.
+// than the real 413/400 Ã¢â‚¬â€ and the doc comment claimed the opposite.
 //
 // Here the prefix is re-joined to the untouched remainder, so the handler
 // always sees the complete original body.

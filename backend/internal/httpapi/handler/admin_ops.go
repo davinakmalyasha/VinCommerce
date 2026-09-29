@@ -7,20 +7,19 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/httpapi/middleware"
-	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
 )
 
 // AdminOps exposes coupon, user and feature-flag management.
 type AdminOps struct {
 	svc   *service.SellerService
-	flags *repository.FeatureFlagRepository
+	flags *service.FeatureFlagService
 	rdb   *redis.Client
 	auth  *service.AuthService
 }
 
 // NewAdminOps creates an AdminOps handler.
-func NewAdminOps(svc *service.SellerService, flags *repository.FeatureFlagRepository, rdb *redis.Client) *AdminOps {
+func NewAdminOps(svc *service.SellerService, flags *service.FeatureFlagService, rdb *redis.Client) *AdminOps {
 	return &AdminOps{svc: svc, flags: flags, rdb: rdb}
 }
 
@@ -156,6 +155,12 @@ func (h *AdminOps) ToggleCoupon(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- feature flags ---
+//
+// The repository and the middleware both used to live here. The repository
+// because the handler held it directly, and the middleware because the router
+// reached through a handler constructor to get at it -- which meant a
+// cross-cutting kill-switch policy had its only home inside a transport type.
+// Both now belong to service.FeatureFlagService and middleware.RequireFeature.
 
 // Flags handles GET /admin/flags.
 func (h *AdminOps) Flags(w http.ResponseWriter, r *http.Request) {
@@ -181,24 +186,6 @@ func (h *AdminOps) ToggleFlag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
-}
-
-// FeatureFlagMiddleware rejects requests when a flag is disabled (empty key = pass-through).
-func (h *AdminOps) FeatureFlagMiddleware(key string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if key == "" {
-				next.ServeHTTP(w, r)
-				return
-			}
-			enabled, err := h.flags.IsEnabled(r.Context(), key)
-			if err != nil || !enabled {
-				writeErr(w, r, domain.E(domain.KindConflict, "FEATURE_DISABLED", "fitur ini sedang nonaktif"))
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 // --- shipping methods ---

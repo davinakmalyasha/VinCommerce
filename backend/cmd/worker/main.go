@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vincommerce/backend/internal/app"
+	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
 	"github.com/vincommerce/backend/internal/mail"
-	"github.com/vincommerce/backend/internal/repository"
-	"github.com/vincommerce/backend/internal/service"
 	"github.com/vincommerce/backend/internal/worker"
 )
 
@@ -115,26 +115,66 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	carts := repository.NewCartRepository(pool)
-	orders := repository.NewOrderRepository(pool)
-	addresses := repository.NewAddressRepository(pool)
-	orderSvc := service.NewOrderService(carts, orders, addresses)
+	// Redis is required, not optional, for this process: it is the task queue.
+	// The healthcheck already refuses to report healthy when it is unreachable,
+	// so failing at boot too means a credential mismatch is a crash with a
+	// readable reason rather than a container that starts and silently runs no
+	// jobs.
+	rdb, err := cache.Connect(ctx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("worker requires redis for its task queue: %w", err)
+	}
+	defer rdb.Close()
 
-	marketRepo := repository.NewQARepository(pool)
-	notifRepo := repository.NewNotificationRepository(pool)
-	marketSvc := service.NewMarketService(marketRepo)
-	marketSvc.SetNotificationService(service.NewNotificationService(notifRepo))
+	mailer := mail.NewClient(mail.Config{
+		Host:     cfg.SMTP.Host,
+		Port:     cfg.SMTP.Port,
+		From:     cfg.SMTP.From,
+		Username: cfg.SMTP.Username,
+		Password: cfg.SMTP.Password,
+	})
+	if mailer.IsConfigured() {
+		logger.Info("mail client configured", "host", cfg.SMTP.Host)
+	}
 
-	users := repository.NewUserRepository(pool)
-	products := repository.NewProductRepository(pool)
-	stores := repository.NewStoreRepository(pool)
-	paymentRepo := repository.NewPaymentRepository(pool)
-	sellerSvc := service.NewSellerService(stores, users, products, orders, paymentRepo)
-	sellerSvc.SetMailer(mail.NewClient(mail.Config{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, From: cfg.SMTP.From, Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, UseTLS: false}), cfg.App.WebURL)
-	sellerSvc.SetNotificationService(service.NewNotificationService(notifRepo))
+	// The SAME composition root cmd/api uses. This used to be a hand-rolled
+	// second copy that applied 3 of the router's 49 setter calls, and because the
+	// wiring was setter-based rather than constructor-based, every omitted
+	// dependency was a nil field guarded by `if s.x == nil` rather than a
+	// compile error. The consequences, all of them silent:
+	//
+	//   payments    nil -> AdvanceShippedOrders never captured COD
+	//   loyalty     nil -> CompleteDelivered never awarded a point
+	//   broker      nil -> no job published an SSE event
+	//   notifs      nil -> no job wrote an in-app notification
+	//   mailer      nil -> RecoverAbandonedCarts returned (0, nil) forever, so
+	//                     the cart-recovery job reported SUCCESS every 30
+	//                     minutes and sent no email, ever
+	//   logger      nil -> the log line that would have shown the above was
+	//                     the one line that was skipped
+	//
+	// Four of those produce a green dashboard and no work done. Now there is
+	// one graph, and a service that gains a dependency gains it in both
+	// processes.
+	graph, err := app.Build(ctx, app.Deps{
+		Pool:   pool,
+		Redis:  rdb.Client,
+		Config: cfg,
+		Logger: logger,
+		Mailer: mailer,
+	})
+	if err != nil {
+		return err
+	}
 
-	sessions := repository.NewSessionRepository(pool)
-	srv, err := worker.NewServerWithSessions(cfg.Redis, orderSvc, marketSvc, sellerSvc, sessions, logger)
+	srv, err := worker.NewServerWithSessions(
+		cfg.Redis,
+		graph.Services.Order,
+		graph.Services.Market,
+		graph.Services.Seller,
+		graph.Repositories.Sessions,
+		logger,
+	)
 	if err != nil {
 		return err
 	}

@@ -91,6 +91,24 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Import boundaries
+        # Enforces the dependency direction docs/ARCHITECTURE.md claims:
+        # handler -> service -> repository, domain imports nothing internal,
+        # and a binary constructs services only through internal/app.
+        #
+        # This is a real gate, not a convention. It exists because four
+        # specific violations shipped: a handler holding two repositories and
+        # composing a sitemap, a handler that also DEFINED the feature-flag
+        # middleware so the router had to reach through a handler constructor
+        # to install a cross-cutting policy, a handler implementing checkout
+        # idempotency with raw Redis, and pgx.Tx in a service signature spread
+        # across 20 call sites.
+        #
+        # The check is type-level for the service layer, so `pgx.ErrNoRows` is
+        # still allowed -- matching that sentinel is legitimate -- while
+        # `pgx.Tx` in a signature is not.
+        run: node scripts/check-import-boundaries.mjs
+
       - name: Unit tests
         run: go test ./internal/... -count=1 -race
 

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vincommerce/backend/internal/app"
 	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
@@ -80,9 +81,34 @@ func run(logger *slog.Logger) error {
 		logger.Info("mail client configured", "host", cfg.SMTP.Host)
 	}
 
+	// One composition root, shared with cmd/worker. Building the graph here
+	// rather than inside NewRouter is what makes it impossible for the two
+	// processes to end up wired differently -- which is how the worker came to
+	// have no payment service, no loyalty ledger, no broker, no notification
+	// service and no mailer, and therefore a cart-recovery job that reported
+	// success and sent nothing.
+	graph, err := app.Build(ctx, app.Deps{
+		Pool:   pool,
+		Redis:  rdb.Client,
+		Config: cfg,
+		Logger: logger,
+		Mailer: mailer,
+	})
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.NewRouter(httpapi.Dependencies{Pool: pool, Redis: rdb, Config: cfg, Logger: logger, Mailer: mailer, Metrics: metrics.New()}),
+		Addr: fmt.Sprintf(":%d", cfg.Port),
+		Handler: httpapi.NewRouter(httpapi.Dependencies{
+			App:     graph,
+			Pool:    pool,
+			Redis:   rdb,
+			Config:  cfg,
+			Logger:  logger,
+			Mailer:  mailer,
+			Metrics: metrics.New(),
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

@@ -51,6 +51,15 @@ func (t *OrderTx) Commit(ctx context.Context) error {
 // wallets) can participate in the same atomic unit of work.
 func (t *OrderTx) PgTx() pgx.Tx { return t.tx }
 
+// Querier exposes the transaction as a Querier.
+//
+// This is the accessor services should prefer over PgTx: it is the minimal
+// surface, it keeps pgx.Tx out of service-layer signatures, and it is
+// deliberately not a general escape hatch -- a service can run a statement
+// inside the transaction but cannot begin, commit or roll it back, so it
+// cannot accidentally take ownership of the unit of work.
+func (t *OrderTx) Querier() Querier { return t.tx }
+
 // SetStatus updates the order status inside this transaction.
 func (t *OrderTx) SetStatus(ctx context.Context, orderID, status string) error {
 	tag, err := t.tx.Exec(ctx, `

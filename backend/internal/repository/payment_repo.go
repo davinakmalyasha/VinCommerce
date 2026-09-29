@@ -159,9 +159,17 @@ func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, orderID stri
 // HasEscrowRelease reports whether escrow was ever paid out for an order. A
 // partially_refunded intent no longer records that, so it is read from the
 // ledger row the release wrote.
-func (r *PaymentRepository) HasEscrowRelease(ctx context.Context, tx pgx.Tx, orderID string, out *bool) error {
+// HasEscrowRelease reports whether this order's escrow was ever paid out.
+//
+// It takes a Querier rather than a pgx.Tx so the payment service can call it
+// with its own transaction handle without naming the pgx type. That is the
+// only reason this signature is not just pgx.Tx: every other "-Tx" method in
+// this file is called through the OrderTx unit of work, and having one method
+// that required the raw handle is what pushed pgx into the service layer's
+// import list.
+func (r *PaymentRepository) HasEscrowRelease(ctx context.Context, q Querier, orderID string, out *bool) error {
 	var exists bool
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM wallet_transactions
 			WHERE ref_id = $1 AND reason = $2 AND kind = 'credit'

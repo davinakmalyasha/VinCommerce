@@ -428,10 +428,15 @@ func (s *PaymentService) refundedTotal(ctx context.Context, orderID string) (flo
 // escrowWasReleased reports whether this order's escrow was ever paid out to
 // the seller, read from the ledger rather than the intent status. A
 // partially_refunded intent has lost that bit of information.
-func (s *PaymentService) escrowWasReleased(ctx context.Context, tx pgx.Tx, orderID string) (bool, error) {
+//
+// It takes a *repository.OrderTx rather than a pgx.Tx. This function is the only
+// place in the service layer that named the pgx transaction type directly, and
+// it was the last one: everything else reaches persistence through the OrderTx
+// unit of work, which is what keeps the transaction boundary owned by the
+// repository rather than by whoever happens to call it.
+func (s *PaymentService) escrowWasReleased(ctx context.Context, tx *repository.OrderTx, orderID string) (bool, error) {
 	var released bool
-	err := s.payments.HasEscrowRelease(ctx, tx, orderID, &released)
-	if err != nil {
+	if err := s.payments.HasEscrowRelease(ctx, tx.Querier(), orderID, &released); err != nil {
 		return false, err
 	}
 	return released, nil
@@ -694,7 +699,7 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 	// the intent status, because a partially_refunded intent has lost that
 	// bit: it could have been released before the first partial refund, or
 	// still held in escrow.
-	wasReleased, err := s.escrowWasReleased(ctx, tx.PgTx(), orderID)
+	wasReleased, err := s.escrowWasReleased(ctx, tx, orderID)
 	if err != nil {
 		return err
 	}
