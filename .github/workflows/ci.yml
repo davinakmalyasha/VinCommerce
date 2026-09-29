@@ -322,18 +322,42 @@ jobs:
       # the anchors and every ${VAR:?...} guard without pulling a single image
       # or starting a container.
       - name: Validate compose file
-        # JWT_SECRET has no default on purpose (see infra/compose/compose.full.yaml),
-        # so `config` must be run with it set or it fails on the guard itself.
+        # JWT_SECRET and REDIS_PASSWORD have no default on purpose (see
+        # infra/compose/compose.full.yaml), so `config` must be run with them
+        # set or it fails on the guard itself.
         # Deliberately short and obviously fake: the gitleaks
         # `go-env-secret-assignment` rule flags any 24+ character literal in a
         # *_SECRET assignment, and a CI-only value must never be shaped like a
         # credential.
         env:
           JWT_SECRET: ci-check-1
+          REDIS_PASSWORD: ci-check-2
         run: docker compose -f infra/compose/compose.full.yaml config -q
 
       - name: Validate the lightweight compose file too
         run: docker compose -f infra/compose/compose.yaml config -q
+
+      - name: Assert compose service environment is complete
+        # `docker compose config -q` only proves the YAML parses and every
+        # ${VAR:?} guard is satisfied. It cannot tell you that a service is
+        # MISSING a variable, because the file is valid either way -- which is
+        # how APP_ENV was set on `worker` but not `api` (giving a production
+        # worker and a development API with the sandbox gateway and its
+        # published webhook secret mounted), and how REDIS_PASSWORD ended up on
+        # `worker` but not `api` (so a correctly secured Redis left the API
+        # unauthenticated and every rate limit failing open).
+        #
+        # Both defects produced a stack that started, reported healthy, and
+        # served traffic. Neither was visible without reading the file.
+        run: node scripts/check-compose-env.mjs
+
+      - name: Prove the compose check actually detects regressions
+        # A guard that has never been shown to fail is a claim, not evidence.
+        # This reintroduces each of the three real defects and asserts the guard
+        # rejects every one. It found a bug in the guard itself on first run: a
+        # typo (`app` for `api`) meant the entire api block was silently
+        # unchecked while the guard reported PASS.
+        run: node scripts/check-compose-env.test.mjs
 
       # Plain `docker buildx build` rather than docker/build-push-action: buildx
       # and the GHA cache backend are already on the runner, and this keeps the

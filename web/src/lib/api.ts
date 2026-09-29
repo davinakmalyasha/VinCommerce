@@ -13,8 +13,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The API base URL.
+ *
+ * VITE_API_URL was documented in .env.example as "API base URL the app calls"
+ * while this line hardcoded '/api/v1', so setting it changed nothing about
+ * where the app actually sent its requests. An operator following the
+ * documentation to point the SPA at a cross-origin API had silently configured
+ * nothing, and the only symptom was every request hitting the SPA's own origin
+ * and 404ing.
+ *
+ * Empty means same-origin, which is the correct default behind nginx: it
+ * forwards /api to the API container, so a relative base is both simpler and
+ * immune to a wrong origin in configuration.
+ */
+const apiBase = import.meta.env.VITE_API_URL ?? ''
+
+export const API_V1 = `${apiBase.replace(/\/+$/, '')}/api/v1`
+
 export const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: API_V1,
   timeout: 15_000,
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true,

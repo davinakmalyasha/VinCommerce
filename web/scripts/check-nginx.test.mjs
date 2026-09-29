@@ -12,8 +12,16 @@ const original = fs.readFileSync(confPath, 'utf8')
 const checker = path.resolve('scripts/check-nginx.mjs')
 
 function run() {
+  // stdio: ['ignore', 'pipe', 'pipe'] is load-bearing for legibility, not
+  // correctness. The checker writes its findings to stderr and exits non-zero
+  // when it finds one -- which is exactly what a SUCCESSFUL mutation should do.
+  // Without piping, every one of those detections printed a bare "FAIL ..."
+  // line to the terminal, interleaved with this suite's own real failure output,
+  // so a green run looked like a wall of failures. A test harness that makes a
+  // pass look like a fail trains you to ignore it.
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
   try {
-    const out = execFileSync(process.execPath, [checker], { encoding: 'utf8' })
+    const out = execFileSync(process.execPath, [checker], opts)
     return { code: 0, out }
   } catch (e) {
     return { code: e.status ?? 1, out: (e.stdout ?? '') + (e.stderr ?? '') }
@@ -50,9 +58,15 @@ const cases = [
     mutate: (s) => s.replace(/(location \/api\/ \{[^}]*?)(proxy_set_header X-Forwarded-Proto \$scheme;)/, '$1$2\n        proxy_buffering off;'),
   },
   {
-    name: 'Host header forwarding removed from /docs',
+    // Was `/docs`. The Swagger UI moved to `/api-docs` because proxying `/docs`
+    // shadowed the SPA's own `/docs` route and `/docs/api` quickstart page, so
+    // the product's documentation was unreachable behind the edge in every
+    // containerised deployment. This mutation caught that move, which is the
+    // suite working: a rename that invalidated a test meant the test was
+    // pointing at something that no longer existed.
+    name: 'Host header forwarding removed from /api-docs',
     expect: /does not forward Host/i,
-    mutate: (s) => s.replace(/(location = \/docs \{[^}]*?)proxy_set_header Host \$host;\s*\n/s, '$1'),
+    mutate: (s) => s.replace(/(location = \/api-docs \{[^}]*?)proxy_set_header Host \$host;\s*\n/s, '$1'),
   },
   {
     name: 'X-Forwarded-For removed from /uploads/',
@@ -95,6 +109,65 @@ const cases = [
     expect: /lack 'always'/i,
     file: 'security-headers.conf',
     mutate: (s) => s.replace(/"nosniff" always;/, '"nosniff";'),
+  },
+  {
+    // Added with the edge rate limiter. `limit_req` keys on $binary_remote_addr,
+    // which is the DIRECT PEER -- so behind the TLS terminator every visitor
+    // shares one 30r/s bucket and the edge limiter becomes a self-inflicted
+    // denial of service that looks like a traffic spike. `realip` runs in the
+    // preaccess phase, before limit_req, so the bucketing uses the real address.
+    name: 'real_ip_header removed (every visitor shares one rate-limit bucket behind a proxy)',
+    expect: /real_ip_header/i,
+    mutate: (s) => s.replace(/^\s*real_ip_header\s+X-Forwarded-For;\s*$/m, ''),
+  },
+  {
+    // 0.0.0.0/0 in set_real_ip_from is the classic mistake: it lets ANY client
+    // set X-Forwarded-For and therefore choose its own rate-limit bucket and its
+    // own audit-logged client IP, defeating per-IP limiting and corrupting the
+    // audit trail in one move.
+    name: 'set_real_ip_from widened to 0.0.0.0/0 (client-controlled client IP)',
+    expect: /0\.0\.0\.0\/0|set_real_ip_from/i,
+    mutate: (s) =>
+      s.replace(
+        /set_real_ip_from 172\.16\.0\.0\/12;/,
+        'set_real_ip_from 0.0.0.0/0;\n    set_real_ip_from 172.16.0.0/12;',
+      ),
+  },
+  {
+    // Without `resolver`, nginx resolves `api` once at config-parse time, so
+    // `docker compose up -d --force-recreate api` gives the container a new IP
+    // and every proxied request 502s until nginx is reloaded.
+    name: 'resolver removed (nginx 502s after any API container recreate)',
+    expect: /resolver/i,
+    mutate: (s) => s.replace(/^resolver 127\.0\.0\.11[^\n]*\n/m, ''),
+  },
+  {
+    // The 429 body must be JSON matching the app's envelope, or lib/api.ts
+    // surfaces a JSON parse error instead of "terlalu banyak permintaan".
+    name: 'rate-limit response body is not the app error envelope',
+    expect: /application\/json|429|envelope/i,
+    mutate: (s) => s.replace(/default_type application\/json;/, 'default_type text/html;'),
+  },
+  {
+    // The @too_many_requests location defines its own add_header (Retry-After),
+    // and nginx's inheritance rule is that a child defining ANY add_header
+    // discards the entire inherited set. This exact mistake was made and
+    // caught by the checker when the location was first added.
+    name: 'security-headers include dropped from the @too_many_requests location',
+    expect: /@too_many_requests.*does not include security-headers|discard/i,
+    mutate: (s) =>
+      s.replace(
+        /(location @too_many_requests \{)\n(\s*include \/etc\/nginx\/snippets\/security-headers\.conf;)/,
+        '$1',
+      ),
+  },
+  {
+    // Swagger at /docs shadowed the SPA's own /docs and /docs/api routes, so
+    // the product's documentation pages were unreachable behind the edge. The
+    // commit that fixed the dev-mode 404 fixed the wrong layer.
+    name: 'Swagger moved back to /docs (shadows the SPA documentation routes)',
+    expect: /\/docs|shadow/i,
+    mutate: (s) => s.replace(/location = \/api-docs \{/, 'location = /docs {'),
   },
 ]
 

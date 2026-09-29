@@ -142,9 +142,147 @@ for (const loc of locations) {
   }
 }
 
+// --- 2b. real client address resolution -------------------------------------
+//
+// `limit_req_zone` keys on $binary_remote_addr, the DIRECT PEER. Behind the
+// TLS terminator in infra/compose/compose.tls.yaml that peer is the terminator's
+// own address, so every visitor lands in one 30r/s bucket and the edge limiter
+// becomes a self-inflicted denial of service that presents as a traffic spike.
+//
+// `realip` runs in the preaccess phase, which is before `limit_req`, so the
+// bucketing uses the rewritten address -- but only for a peer inside a declared
+// `set_real_ip_from`. Two ways this goes wrong, both checked:
+//
+//   * no real_ip_header at all: the limiter buckets on the proxy.
+//   * set_real_ip_from 0.0.0.0/0: ANY client can set X-Forwarded-For and pick
+//     its own bucket and its own audit-logged client IP, which defeats per-IP
+//     limiting and corrupts the audit trail in the same move.
+if (conf.includes('limit_req_zone')) {
+  if (!/^\s*real_ip_header\s+\S+;/m.test(conf)) {
+    fail(
+      'limit_req_zone is declared but real_ip_header is not: the limiter keys on ' +
+        '$binary_remote_addr, so behind any reverse proxy or TLS terminator every ' +
+        'visitor shares ONE bucket and the edge limiter becomes a self-DoS',
+    )
+  }
+  if (!/^\s*real_ip_recursive\s+on\s*;/m.test(conf)) {
+    warn(
+      'real_ip_recursive is not on: with more than one proxy in the path, nginx ' +
+        'takes the LAST X-Forwarded-For entry rather than walking the chain ' +
+        'right-to-left. middleware.ClientIP in the Go app does walk it.',
+    )
+  }
+  const trusted = [...conf.matchAll(/^\s*set_real_ip_from\s+(\S+);/gm)].map((m) => m[1])
+  if (trusted.length === 0) {
+    fail('limit_req_zone is declared but no set_real_ip_from is set')
+  }
+  for (const t of trusted) {
+    if (t === '0.0.0.0/0' || t === '::/0' || t === '*') {
+      fail(
+        `set_real_ip_from ${t} trusts EVERY peer: any client can set X-Forwarded-For ` +
+          'and choose its own rate-limit bucket and its own audit-logged client IP',
+      )
+    }
+  }
+}
+
+// --- 2c. upstream resolution and keepalive -----------------------------------
+//
+// nginx resolves a literal hostname ONCE, at config-parse time -- whether it
+// appears in `proxy_pass` or inside an `upstream { server ...; }` block.
+// `docker compose up -d --force-recreate api` gives the container a new address
+// and every proxied request returns 502 until nginx is reloaded. `resolver`
+// (127.0.0.11 is Docker's embedded DNS) plus a short TTL fixes it.
+//
+// And without `keepalive` in the upstream block, nginx opens a new TCP
+// connection per request: connection-handshake churn against the API's listener
+// backlog, and HTTP keep-alive defeated entirely.
+//
+// Both triggers have to be checked. The first version of this check only looked
+// at `proxy_pass http://host:port`, which is exactly the form it exists to
+// discourage -- so after every location correctly moved to the `upstream vc_api`
+// block, the hostname was inside the upstream block instead and the check
+// switched itself off while guarding nothing. The mutation suite caught it by
+// removing `resolver` and watching the checker pass. The second version fixed
+// the trigger but then required a `:port` in proxy_pass, which `http://vc_api`
+// does not have, so it failed the same way for the same reason.
+const literalHostRefs = [
+  ...[...conf.matchAll(/proxy_pass\s+http:\/\/([A-Za-z0-9_.-]+)(?::(\d+))?/g)].map((m) => m[0].trim()),
+  ...[...conf.matchAll(/^\s*server\s+([A-Za-z0-9_.-]+):(\d+)\s*;/gm)].map((m) => m[0].trim()),
+]
+if (literalHostRefs.length > 0) {
+  if (!/^\s*resolver\s+127\.0\.0\.11/m.test(conf)) {
+    fail(
+      `${literalHostRefs[0]} names a host, but there is no ` +
+        '`resolver 127.0.0.11`: nginx resolves the name once at config-parse time, ' +
+        'so recreating the api container 502s every request until nginx is reloaded',
+    )
+  }
+}
+if (/upstream\s+\w+\s*\{/.test(conf) && !/upstream\s+\w+\s*\{[\s\S]*?keepalive\s+\d+/.test(conf)) {
+  fail(
+    'an `upstream` block is declared without `keepalive`: nginx opens a new TCP ' +
+      'connection to the API for every request, defeating HTTP keep-alive entirely',
+  )
+}
+
+// --- 2d. rate-limit responses must match the app's error envelope ------------
+//
+// `lib/api.ts` parses `body.error.code`. A 429 rendered as nginx's default HTML
+// error page surfaces to the user as a JSON parse failure rather than
+// "terlalu banyak permintaan", which is both a worse message and a misleading
+// one about what went wrong.
+if (conf.includes('limit_req')) {
+  if (!/location\s+@too_many_requests\s*\{/.test(conf)) {
+    fail(
+      'limit_req is configured but there is no `location @too_many_requests`: ' +
+        'the 429 body will be nginx\'s HTML error page, which the SPA cannot parse',
+    )
+  } else {
+    const named = locations.find((l) => l.name === '@too_many_requests')
+    if (named && !/default_type\s+application\/json/.test(named.body)) {
+      fail(
+        'location @too_many_requests does not set `default_type application/json`: ' +
+          'the body is served as text/html and the browser may download it as a file',
+      )
+    }
+    if (named && !/"error"\s*:/.test(named.body)) {
+      fail(
+        'location @too_many_requests does not return the {"error":{"code",...}} ' +
+          'envelope that lib/api.ts parses',
+      )
+    }
+  }
+}
+
+// --- 2e. Swagger must not shadow the SPA's own /docs routes ------------------
+//
+// The SPA owns `/docs` (web/src/router.tsx) and `/docs/api`. Proxying `/docs`
+// to the API's Swagger UI made both unreachable behind the edge in every
+// containerised deployment, while looking correct in dev because the Vite proxy
+// only forwards `/api` and `/uploads`.
+//
+// parseLocations keeps the `=` modifier in the name (`= /api-docs`), so
+// normalise before comparing -- the first version compared against the bare
+// path and therefore never matched anything, which the mutation suite caught by
+// moving Swagger back to /docs and watching the checker pass.
+const normName = (n) => n.replace(/^[=~^]+\s*/, '').trim()
+const docsProxied = locations.filter((l) => {
+  const n = normName(l.name)
+  return n === '/docs' || n === '/docs/' || n === '/api-docs' || n === '/api-docs/'
+})
+const shadowing = docsProxied.filter((l) => normName(l.name).startsWith('/docs'))
+if (shadowing.length > 0) {
+  for (const l of shadowing) {
+    fail(
+      `location "${l.name}" proxies to the API, shadowing the SPA's own ${normName(l.name)} ` +
+        'route and /docs/api. Swagger belongs at /api-docs.',
+    )
+  }
+}
+
 // --- 3. include paths exist -------------------------------------------------
-for (const m of conf.matchAll(/^\s*include\s+(\S+)\s*;/gm)) {
-  const inc = m[1]
+for (const m of conf.matchAll(/^\s*include\s+(\S+)\s*;/gm)) {  const inc = m[1]
   if (!inc.startsWith('/etc/nginx/')) continue
   // Map the in-image path back to a repo file.
   const repoFile =

@@ -561,10 +561,19 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Get("/robots.txt", seo.Robots)
 	r.Get("/sitemap.xml", seo.Sitemap)
 
-	// API documentation (OpenAPI + Swagger UI)
-	r.Handle("/docs", SwaggerUIHandler())
-	r.Handle("/docs/*", SwaggerUIHandler())
-	r.Handle("/docs/openapi.json", OpenAPIHandler(cfg.App.BaseURL+"/api/v1"))
+	// API documentation (OpenAPI + Swagger UI).
+	//
+	// Mounted at /api-docs, not /docs. The SPA owns a `/docs` route
+	// (web/src/router.tsx -> DocsPage) and a `/docs/api` quickstart page, and
+	// web/nginx.conf proxied /docs here, which made both unreachable behind the
+	// edge in every containerised deployment. It looked correct in dev because
+	// the Vite proxy only forwards /api and /uploads, so the SPA owned /docs
+	// locally -- which is why a commit fixed the dev 404 while leaving the
+	// production path shadowed. check-nginx.mjs now fails if a /docs location
+	// ever proxies to the API again.
+	r.Handle("/api-docs", SwaggerUIHandler())
+	r.Handle("/api-docs/*", SwaggerUIHandler())
+	r.Handle("/api-docs/openapi.json", OpenAPIHandler(cfg.App.BaseURL+"/api/v1"))
 
 	// observability: /metrics is admin-only (scrape via internal network with a token)
 	r.Group(func(r chi.Router) {

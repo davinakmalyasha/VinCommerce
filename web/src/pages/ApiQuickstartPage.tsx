@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
+import { apiDocsUrl } from '../lib/docs'
 
 const BASE = `${import.meta.env.VITE_API_URL ?? ''}/api/v1`
-const DOCS = `${import.meta.env.VITE_API_DOCS_URL ?? 'http://localhost:8080/docs'}`
 
 /**
  * A real API quickstart page.
@@ -98,7 +98,7 @@ curl -sS -X POST ${BASE}/checkout/place \\
           Seluruh endpoint, skema request/response, dan definisi error ada di Swagger UI.
         </p>
         <a
-          href={DOCS}
+          href={apiDocsUrl()}
           target="_blank"
           rel="noopener noreferrer"
           className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-gray-900 hover:bg-amber-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"

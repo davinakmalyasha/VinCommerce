@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
+import { API_DOCS_BASE } from '../lib/docs'
 import type { HelpArticle } from '../types'
 
 export function DocsPage() {
@@ -18,7 +19,12 @@ export function DocsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
         <a
-          href="/docs/openapi.json"
+          // /api-docs, not /docs. Swagger moved there because the SPA owns
+          // /docs, and a plain <a> is used rather than <Link> because this
+          // points at the API's own server, not at an SPA route: the SPA router
+          // would intercept a react-router <Link> and render the docs page
+          // instead of the specification.
+          href={`${API_DOCS_BASE}/openapi.json`}
           className="block bg-gray-900 text-white rounded-xl p-6 hover:bg-gray-800 transition-colors"
         >
           <p className="text-lg font-bold">OpenAPI Specification</p>

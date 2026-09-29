@@ -3,8 +3,8 @@
 # Shared operational defaults, merged into every service below with `<<: *common`.
 #
 # deploy.resources.limits is honoured by `docker compose up` (Compose v2 maps it
-# onto real container limits), so a container that leaks — the API holding a
-# large join in memory, a runaway SSE fan-out, Redis past its maxmemory — is
+# onto real container limits), so a container that leaks ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the API holding a
+# large join in memory, a runaway SSE fan-out, Redis past its maxmemory ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â is
 # capped by the host instead of by luck.
 #
 # The logging cap matters more than it looks. json-file's default is *unbounded*,
@@ -31,14 +31,14 @@ services:
     <<: *common
     # Digest-pinned, not tag-pinned. `postgres:17` moves with every patch
     # release, so an unpinned `docker compose pull` can silently change the
-    # database major's minor version — and therefore on-disk format behaviour —
+    # database major's minor version ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and therefore on-disk format behaviour ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     # between a working machine and a broken one. Dependabot tracks the digest.
     image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
     environment:
       POSTGRES_USER: vincom
       POSTGRES_PASSWORD: vincom_dev
       POSTGRES_DB: vincom
-    # Bind to loopback only — never expose the dev database to the LAN.
+    # Bind to loopback only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never expose the dev database to the LAN.
     ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
@@ -63,7 +63,7 @@ services:
       # and the asynq job queue, and a cache eviction policy here is a
       # correctness hazard rather than a tuning knob: asynq keeps accepted but
       # not-yet-executed task payloads in the same keyspace, so any LRU policy
-      # can evict an in-flight task under memory pressure — silently dropping
+      # can evict an in-flight task under memory pressure ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â silently dropping
       # an expired-order cancellation, an escrow sweep or a payment email.
       #
       # noeviction gets both behaviours right:
@@ -78,13 +78,38 @@ services:
       # instances.
       - --maxmemory-policy
       - noeviction
+      # Authenticated. This instance was previously reachable by anything on the
+      # compose network with no credential, which is a fraud primitive rather
+      # than a hygiene issue: stream.Broker.Publish is a plain PUBLISH to
+      # `user:<id>:events`, so a process that can reach Redis can write a fake
+      # "order shipped" or "escrow released" event to ANY user id on the
+      # platform. Combined with the flat single-network topology, the web
+      # container could do it too.
+      #
+      # Generate one:  openssl rand -base64 32
+      - --requirepass
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD must be set - generate with: openssl rand -base64 32}"
+      # Cluster/replication auth. Harmless standalone, required if this is ever
+      # made a replica.
+      - --masterauth
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD must be set - generate with: openssl rand -base64 32}"
     ports: ["127.0.0.1:6379:6379"]
     volumes: [redisdata:/data]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # -a because `redis-cli ping` returns NOAUTH without credentials, which
+      # would mark a perfectly healthy server unhealthy and, because
+      # depends_on waits on this condition, stop the API and worker from
+      # starting at all.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
+      # The password is in the server command line, not the environment, so the
+      # healthcheck gets it from the same required variable Compose interpolated.
+      # `$$` escapes interpolation so the shell expands it at probe time.
+      start_period: 5s
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set - generate with: openssl rand -base64 32}"
 
   mailpit:
     <<: *common
@@ -101,7 +126,37 @@ services:
       DB_USER: vincom
       DB_PASSWORD: vincom_dev
       DB_NAME: vincom
+      # REQUIRED, and previously absent from this service while the worker had
+      # it. `APP_ENV=production docker compose up` therefore produced a
+      # PRODUCTION WORKER and a DEVELOPMENT API, and the consequences are not
+      # cosmetic:
+      #
+      #   * cfg.IsDev() is true, so router.go registers the sandbox payment
+      #     gateway -- whose webhook secret is the literal string
+      #     "sandbox-webhook-secret", published in this repository and on
+      #     gitleaks' allowlist;
+      #   * the dev-only routes mount, including
+      #     POST /payments/sandbox/orders/{id}/approve, so any authenticated
+      #     order owner can mark their own order paid;
+      #   * SetSandboxAutoSend is on, so no real gateway is required;
+      #   * config.Validate's "refuse the sandbox gateway in production" guard
+      #     never fires, because the environment is not production.
+      #
+      # An operator doing the obvious thing gets a deployment where forged
+      # webhooks settle any order. scripts/check-compose-env.mjs now fails CI if
+      # this key is ever removed again.
+      APP_ENV: ${APP_ENV:-development}
       REDIS_ADDR: redis:6379
+      # The API must receive the same Redis credentials as the worker. It did
+      # not, which is the identical bug commit faf9842 fixed for the worker and
+      # which was never applied here. The moment an operator correctly secured
+      # Redis, the API kept connecting unauthenticated: every rate limit fell
+      # open (the limiter treats any Redis error as "no limit"), the SSE broker
+      # went dead, and the cache silently became a no-op. The readiness probe
+      # uses the same client, so the container reported "redis: unreachable"
+      # with nothing in the logs explaining that the credential was the problem.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set - generate with: openssl rand -base64 32}
+      REDIS_DB: ${REDIS_DB:-0}
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
       SMTP_FROM: "VinCommerce <no-reply@vincommerce.local>"
@@ -111,14 +166,14 @@ services:
       UPLOAD_DIR: /data/uploads
       # REQUIRED here. Every request reaches the API from the `web` container,
       # so without this the client-IP resolver sees only the proxy's address
-      # and every per-IP rate limiter collapses into ONE shared bucket — a mass
+      # and every per-IP rate limiter collapses into ONE shared bucket ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a mass
       # logout at 30 refreshes/min, and globally serialised registration. Set it
       # to the network the proxy actually lives on; never to a range that
       # includes untrusted clients.
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
       # No default on purpose. A committed fallback here is a published
       # signing key: it is 41 chars, so it satisfies the length guard, and it
-      # is not the sentinel string the guard also compared against — so an
+      # is not the sentinel string the guard also compared against ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so an
       # operator setting APP_ENV=production but forgetting JWT_SECRET booted
       # a production API signed with a key from this repository.
       # Generate one:  openssl rand -base64 48
@@ -126,7 +181,7 @@ services:
       # Quoted, and the quotes are load-bearing: an unquoted
       # `${VAR:?a message with: a colon}` contains ": " inside a plain scalar,
       # which YAML 1.1/1.2 and go-yaml v3 (the parser compose-go uses) both
-      # reject with "mapping values are not allowed in this context" — so the
+      # reject with "mapping values are not allowed in this context" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so the
       # whole file failed to parse and `docker compose up` was impossible.
       # Compose still interpolates a quoted value; the `:?` guard is unchanged.
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set - generate with: openssl rand -base64 48}"
@@ -150,7 +205,7 @@ services:
     # Docker's default grace period is 10s, and the worker's own drain is
     # bounded at 30s (ShutdownTimeout in internal/worker, covering the SMTP
     # send path). At 10s Docker SIGKILLs the process while tasks are still
-    # in flight — an order cancellation half-applied, a payment email
+    # in flight ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an order cancellation half-applied, a payment email
     # rendered but never sent. 45s leaves the drain time to finish on its
     # own terms; the worker's internal timeout still guarantees the process
     # exits well before that.
@@ -161,13 +216,18 @@ services:
       DB_PASSWORD: vincom_dev
       DB_NAME: vincom
       APP_ENV: ${APP_ENV:-development}
-      # The worker must receive the same Redis credentials as the API. It
-      # used to receive only REDIS_ADDR, so the moment Redis required a
-      # password every scheduled job stopped with no error surfaced
-      # anywhere - expired-order cancellation, auto-completion, cart
-      # recovery, seller digests and low-stock alerts all went silent.
+      # The worker must receive the same Redis credentials as the API. It used to
+      # receive only REDIS_ADDR, so the moment Redis required a password every
+      # scheduled job stopped with no error surfaced anywhere - expired-order
+      # cancellation, auto-completion, cart recovery, seller digests and
+      # low-stock alerts all went silent.
+      #
+      # Required (`:?`) rather than defaulted, so a deployment cannot half-secure
+      # Redis: a default of "" here combined with `--requirepass` on the server
+      # is a worker that cannot start, and a default of "" with no server
+      # password is a worker whose credentials are not actually private.
       REDIS_ADDR: redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set - generate with: openssl rand -base64 32}
       REDIS_DB: ${REDIS_DB:-0}
     depends_on:
       postgres: { condition: service_healthy }
@@ -179,7 +239,7 @@ services:
       context: .
       dockerfile: web/Dockerfile
       # Vite inlines VITE_* at build time, so these have to arrive as build args
-      # — setting them in the service `environment` would do nothing, because
+      # ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â setting them in the service `environment` would do nothing, because
       # they are read while the bundle is built, not while the container runs.
       args:
         VITE_MIDTRANS_CLIENT_KEY: ${VITE_MIDTRANS_CLIENT_KEY:-}
