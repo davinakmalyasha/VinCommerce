@@ -40,6 +40,14 @@ const (
 	// opinion nobody looks at -- so this job is what makes the ledger's numbers
 	// trustworthy rather than merely present.
 	TaskReconcileLedger = "ledger:reconcile"
+	// TaskReconcileSettlements compares what the gateway says moved against what
+	// our ledger recorded.
+	//
+	// The other two reconciliation jobs check the books against the CACHES derived
+	// from them. This one checks the books against the outside world, which is the
+	// only one of the three that can catch money the platform thinks it has and
+	// does not -- or money it never recorded at all.
+	TaskReconcileSettlements = "ledger:reconcile_settlements"
 	// TaskReleasePayoutReservations releases seller holds whose T+n lag has
 	// passed with no open return or dispute.
 	//
@@ -170,15 +178,20 @@ func jobSpecs(d Deps) []jobSpec {
 		{"@every 10m", TaskReconcileRefunds, "default", 30 * time.Minute},
 		// The ledger check is a read-only report and cheap, so daily.
 		{"@daily", TaskReconcileLedger, "low", 25 * time.Hour},
+		// Settlements arrive on the gateway's own schedule, T+1 to T+7, so a
+		// daily pass is the natural cadence: anything older than that is a
+		// finding rather than a delay.
+		{"@daily", TaskReconcileSettlements, "low", 25 * time.Hour},
 	}
 
 	// A job whose service is absent is dropped rather than registered against a
 	// handler that would panic the first time it fired. Dropping it is also why
 	// the Warn above matters: the schedule is the only place this is visible.
 	enabled := map[string]bool{
-		TaskSessionPurge:     d.Sessions != nil,
-		TaskReconcileRefunds: d.Payment != nil,
-		TaskReconcileLedger:  d.Ledger != nil,
+		TaskSessionPurge:         d.Sessions != nil,
+		TaskReconcileRefunds:     d.Payment != nil,
+		TaskReconcileLedger:      d.Ledger != nil,
+		TaskReconcileSettlements: d.Payment != nil,
 	}
 	out := make([]jobSpec, 0, len(all))
 	for _, j := range all {
@@ -256,6 +269,9 @@ func New(d Deps) (*Server, error) {
 	}
 	if d.Ledger != nil {
 		mux.HandleFunc(TaskReconcileLedger, withTimeout(reconcileLedgerHandler(d.Ledger, logger)))
+		if d.Payment != nil {
+			mux.HandleFunc(TaskReconcileSettlements, withTimeout(reconcileSettlementsHandler(d.Payment, logger)))
+		}
 	} else {
 		logger.Warn("ledger not wired: the derived balance caches will never be " +
 			"checked against the journal, so drift would go unnoticed")
@@ -655,6 +671,48 @@ func reconcileLedgerHandler(ledger *service.LedgerService, logger *slog.Logger) 
 				"user_id", w.UserID,
 				"wallet_balance", w.WalletBalance, "ledger_balance", w.LedgerBalance,
 				"wallet_held", w.WalletHeld, "ledger_held", w.LedgerHeld)
+		}
+		return nil
+	}
+}
+
+// reconcileSettlementsHandler compares gateway-reported movements against the
+// ledger.
+//
+// A dirty result is logged and NOT returned, for the same reason as the ledger
+// handler above: the drift is a fact about the data, so a retry produces the same
+// answer, and returning an error would bury the finding under a task failure.
+//
+// It logs at ERROR rather than Warn even when nothing matched, because a gateway
+// movement with no journal means money moved and the platform has no record of
+// it. That is the finding the whole settlement table exists to surface, and it
+// should be impossible to miss in a log full of Info.
+func reconcileSettlementsHandler(pay *service.PaymentService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		report, err := pay.ReconcileSettlements(ctx, 0)
+		if err != nil {
+			return err
+		}
+		if report.Clean {
+			logger.Info("settlement reconciliation clean",
+				"generated_at", report.GeneratedAt, "matched", report.Matched)
+			return nil
+		}
+		logger.Error("settlement reconciliation found gaps",
+			"unreconciled", report.Unreconciled,
+			"discrepant", report.Discrepant,
+			"matched", report.Matched,
+			"hint", "an unreconciled movement is money the gateway reported and no "+
+				"journal records; a discrepant one is matched but the amounts differ, "+
+				"and the gateway's figure is the one to trust")
+		// Name the movements, not just the counts: a count tells an operator
+		// something is wrong, a settlement ref tells them which one to go and look
+		// up in the provider's dashboard.
+		for _, s := range report.UnmatchedSamples {
+			logger.Error("gateway movement has no journal", "detail", s)
+		}
+		for _, d := range report.DiscrepantSamples {
+			logger.Error("gateway movement disagrees with the journal", "detail", d)
 		}
 		return nil
 	}
