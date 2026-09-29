@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/vincommerce/backend/internal/domain"
@@ -172,30 +175,73 @@ func TestOnlyNonTerminalRefundsArePolled(t *testing.T) {
 	}
 }
 
-// Every state the service can write must be a state the schema accepts, and the
-// two must be the same set. A status constant that drifted from the CHECK
-// constraint would only fail at runtime, in production, on a real refund.
-func TestRefundStatesCoverTheSchemaExactly(t *testing.T) {
-	// Mirrors the CHECK in migration 00043:
-	//   status IN ('pending','submitted','succeeded','failed','manual')
-	schema := map[string]bool{
+// Every state the service can write must be a state the schema accepts.
+//
+// The previous version of this test compared the Go constants to a map built
+// FROM THOSE SAME CONSTANTS, which is a tautology: it passed no matter what the
+// database said, and a new sixth state added to the service would have been
+// asserted against a map that also contained it. It now reads the CHECK
+// constraint out of the migration, so a constant that drifts from the column
+// fails here rather than in production on a real refund.
+func TestRefundStatesMatchTheSchemaCheck(t *testing.T) {
+	sql, err := os.ReadFile(filepath.Join("..", "db", "migrations", "00043_double_entry_ledger.sql"))
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+
+	// Pull the allowed set out of:
+	//   status VARCHAR(12) NOT NULL DEFAULT 'pending'
+	//   CHECK (status IN ('pending','submitted',...))
+	re := regexp.MustCompile(`status\s+VARCHAR\(\d+\)[^;]*?CHECK\s*\(status\s+IN\s*\(([^)]*)\)`)
+	m := re.FindSubmatch(sql)
+	if m == nil {
+		t.Fatal("could not find the refunds status CHECK in migration 00043; " +
+			"if the constraint moved or was renamed, point this test at it")
+	}
+
+	schemaStates := map[string]bool{}
+	for _, quoted := range regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(string(m[1]), -1) {
+		schemaStates[quoted[1]] = true
+	}
+	if len(schemaStates) == 0 {
+		t.Fatal("the CHECK parsed to an empty set; the regex matched but captured nothing")
+	}
+
+	codeStates := map[string]bool{
 		RefundStatePending:   true,
 		RefundStateSubmitted: true,
 		RefundStateSucceeded: true,
 		RefundStateFailed:    true,
 		RefundStateManual:    true,
 	}
-	used := []string{
-		RefundStatePending, RefundStateSubmitted, RefundStateSucceeded,
-		RefundStateFailed, RefundStateManual,
-	}
-	for _, status := range used {
-		if !schema[status] {
-			t.Errorf("status %q is used by the service but not allowed by the schema", status)
+
+	for state := range codeStates {
+		if !schemaStates[state] {
+			t.Errorf("the service can write status %q but the schema rejects it", state)
 		}
 	}
-	if len(used) != len(schema) {
-		t.Errorf("the service defines %d statuses and the schema allows %d", len(used), len(schema))
+	for state := range schemaStates {
+		if !codeStates[state] {
+			t.Errorf("the schema allows status %q but the service has no constant for it, "+
+				"so a refund can reach a state nothing can act on", state)
+		}
+	}
+}
+
+// The domain constants and the service aliases must be the same strings, or the
+// two definitions have already drifted.
+func TestDomainAndServiceRefundStatesAgree(t *testing.T) {
+	pairs := [][2]string{
+		{domain.RefundPending, RefundStatePending},
+		{domain.RefundSubmitted, RefundStateSubmitted},
+		{domain.RefundSucceeded, RefundStateSucceeded},
+		{domain.RefundFailed, RefundStateFailed},
+		{domain.RefundManual, RefundStateManual},
+	}
+	for _, p := range pairs {
+		if p[0] != p[1] {
+			t.Errorf("domain %q != service %q", p[0], p[1])
+		}
 	}
 }
 

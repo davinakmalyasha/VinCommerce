@@ -39,20 +39,19 @@ import (
 // record exactly when it matters most: a refund the provider performed that we
 // never wrote down, which is a real outflow of money with no accounting entry.
 
-// Refund statuses as stored. These mirror the payments package constants; the
-// duplication is deliberate so a database CHECK and a Go constant cannot drift
-// into disagreeing about what a legal state is.
+// Refund statuses as stored. Aliased from domain rather than redeclared.
 //
-// The records themselves are repository.Refund: the id is application-generated,
-// the status set is the database's, and nothing in the business rules treats a
-// refund as a value object. Re-declaring the struct in the service would mean two
-// types with the same fields and two places to update.
+// These were originally a second, independent set in this package, and having two
+// sets of the same five strings is how a state constant drifts from the column's
+// CHECK constraint: the database rejects the value, in production, on a real
+// refund, and the error says nothing about which of the two definitions is
+// wrong. domain owns the vocabulary; this package and the handlers both use it.
 const (
-	RefundStatePending   = "pending"
-	RefundStateSubmitted = "submitted"
-	RefundStateSucceeded = "succeeded"
-	RefundStateFailed    = "failed"
-	RefundStateManual    = "manual"
+	RefundStatePending   = domain.RefundPending
+	RefundStateSubmitted = domain.RefundSubmitted
+	RefundStateSucceeded = domain.RefundSucceeded
+	RefundStateFailed    = domain.RefundFailed
+	RefundStateManual    = domain.RefundManual
 )
 
 // ExecuteRefund runs a refund through the provider and records it durably.
@@ -348,6 +347,116 @@ func (s *PaymentService) writeRefundStatus(
 	if err := s.statuses.WriteRefundStatus(ctx, id, gatewayRef, status, failureReason); err != nil {
 		slogRefundStatus(ctx, id, status, err)
 	}
+}
+
+// AdminRefunds lists refunds for the operator queue.
+//
+// status empty means all states, which is what an operator wants by default: the
+// queue is a triage list, and pre-filtering to one state hides the ones that fell
+// out of every pipeline.
+func (s *PaymentService) AdminRefunds(ctx context.Context, status string, limit int) ([]*domain.Refund, error) {
+	return s.payments.RefundsForAdmin(ctx, status, limit)
+}
+
+// StaleRefundAfter is how long a refund may sit with the provider before the
+// system stops calling it "in progress" and starts calling it a person's problem.
+//
+// Midtrans settles T+1 to T+7 depending on the method, so a week is the outer
+// bound; past it, a refund still marked `submitted` is not slow, it is stuck.
+// The threshold exists because "in progress" is a claim the system keeps making
+// indefinitely on the buyer's behalf, and a claim that never expires is a way of
+// never having to admit a refund was lost.
+const StaleRefundAfter = 7 * 24 * time.Hour
+
+// AdminRefundSummary is the headline the operator's dashboard needs.
+//
+// Counts per state, plus the number that actually requires action. A dashboard
+// showing "47 refunds, 3 failed" sends the reader somewhere to work; one showing
+// "5 need a human" is the list.
+type AdminRefundSummary struct {
+	Total       int `json:"total"`
+	Pending     int `json:"pending"`
+	Submitted   int `json:"submitted"`
+	Succeeded   int `json:"succeeded"`
+	Failed      int `json:"failed"`
+	Manual      int `json:"manual"`
+	NeedsAction int `json:"needs_action"`
+	// StaleSubmitted is the subset of `submitted` that has passed the settlement
+	// window. Counted separately from Manual because the remedy differs: a manual
+	// refund needs a bank transfer, a stale one needs the gateway chased first.
+	StaleSubmitted int `json:"stale_submitted"`
+}
+
+// RefundQueueSummary counts the refund queue and identifies what needs a person.
+func (s *PaymentService) RefundQueueSummary(ctx context.Context) (*AdminRefundSummary, error) {
+	refunds, err := s.payments.RefundsForAdmin(ctx, "", 500)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	out := &AdminRefundSummary{Total: len(refunds)}
+	for _, r := range refunds {
+		switch r.Status {
+		case RefundStatePending:
+			out.Pending++
+		case RefundStateSubmitted:
+			out.Submitted++
+			if r.SettledAt == nil && now.Sub(r.RequestedAt) > StaleRefundAfter {
+				out.StaleSubmitted++
+			}
+		case RefundStateSucceeded:
+			out.Succeeded++
+		case RefundStateFailed:
+			out.Failed++
+		case RefundStateManual:
+			out.Manual++
+		}
+		if r.NeedsOperator(now, StaleRefundAfter) {
+			out.NeedsAction++
+		}
+	}
+	return out, nil
+}
+
+// TrialBalance returns every account's balance for the admin ledger view.
+//
+// A report an operator can read without knowing the schema: which accounts hold
+// money, and how much. On an escrow marketplace the first question an operator
+// asks is "how much are we holding, and for whom", and this is the answer.
+func (s *PaymentService) TrialBalance(ctx context.Context) ([]domain.TrialBalanceRow, error) {
+	if s.ledger == nil {
+		return nil, domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so no trial balance can be produced")
+	}
+	return s.ledger.TrialBalance(ctx, s.payments.Pool())
+}
+
+// EscrowOutstanding is the number an operator asks for first: money held for
+// other people right now.
+//
+// Before the ledger it could only be approximated by summing captured-but-not-
+// released intents, which silently omits COD in transit, disputes, and any balance
+// a refund has already drawn down.
+func (s *PaymentService) EscrowOutstanding(ctx context.Context) (float64, error) {
+	if s.ledger == nil {
+		return 0, domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so escrow cannot be reported")
+	}
+	return s.ledger.EscrowOutstanding(ctx, s.payments.Pool())
+}
+
+// LedgerReconciliation exposes the drift report on demand, not only on the daily
+// schedule.
+//
+// A scheduled check nobody can look at on demand is a check whose findings only
+// exist in a log line. This is the endpoint that turns it into something an
+// operator can act on.
+func (s *PaymentService) LedgerReconciliation(ctx context.Context) (*domain.LedgerReconciliation, error) {
+	if s.ledger == nil {
+		return nil, domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so no reconciliation can be produced")
+	}
+	return s.ledger.ReconcileAll(ctx)
 }
 
 // slogRefundStatus reports a failure to record a refund's outcome.

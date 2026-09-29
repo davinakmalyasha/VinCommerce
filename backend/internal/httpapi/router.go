@@ -128,6 +128,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	adminOps := handler.NewAdminOps(sellerSvc, graph.Services.FeatureFlags, deps.Redis.Client)
 	adminOps.SetAuth(authSvc)
+	// The refund queue, trial balance and reconciliation report. Without this the
+	// `manual` refund state is unreachable: a state nobody can list is a state
+	// nobody acts on, and `manual` exists precisely because a person has to.
+	adminOps.SetPayment(paymentSvc)
 	adminReviews := handler.NewAdminReviews(productSvc)
 	media := handler.NewMedia(service.NewMediaService(filepath.Join(cfg.App.UploadDir), cfg.App.BaseURL, 5<<20))
 	chatH := handler.NewChat(chatSvc)
@@ -371,6 +375,16 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/stores/{id}/decide", admin.DecideStore)
 			r.Post("/stores/{id}/kyc/decide", admin.DecideKYC)
 			r.Post("/returns/{id}/refund", admin.RefundReturn)
+			// The money surfaces. `manual` refunds are a person moving money by
+			// hand, and a person cannot act on a state they cannot list.
+			//
+			// On adminOps, not admin: the money operations live with the other ops
+			// handlers, and splitting them across two admin types is how half an
+			// admin surface ends up on one and half on the other.
+			r.Get("/refunds", adminOps.Refunds)
+			r.Get("/refunds/summary", adminOps.RefundSummary)
+			r.Get("/ledger/trial-balance", adminOps.TrialBalance)
+			r.Get("/ledger/reconciliation", adminOps.LedgerReconciliation)
 			r.Get("/analytics", analyticsH.Platform)
 			r.Get("/pending-counts", analyticsH.PendingCounts)
 			r.Get("/analytics/export.csv", analyticsH.PlatformCSV)

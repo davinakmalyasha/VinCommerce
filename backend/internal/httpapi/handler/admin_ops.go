@@ -16,12 +16,23 @@ type AdminOps struct {
 	flags *service.FeatureFlagService
 	rdb   *redis.Client
 	auth  *service.AuthService
+	// pay exposes the money surfaces: the refund queue, the trial balance and the
+	// reconciliation report.
+	//
+	// Optional, and nil is answered with a clear 409 rather than a nil dereference.
+	// A handler set without it should say "the money surfaces are unavailable",
+	// not crash an operator's dashboard -- and the distinction matters, because a
+	// crash looks like a broken feature while a 409 looks like a configuration gap.
+	pay *service.PaymentService
 }
 
 // NewAdminOps creates an AdminOps handler.
 func NewAdminOps(svc *service.SellerService, flags *service.FeatureFlagService, rdb *redis.Client) *AdminOps {
 	return &AdminOps{svc: svc, flags: flags, rdb: rdb}
 }
+
+// SetPayment attaches the money surfaces.
+func (h *AdminOps) SetPayment(pay *service.PaymentService) { h.pay = pay }
 
 // SetAuth enables impersonation support.
 func (h *AdminOps) SetAuth(a *service.AuthService) { h.auth = a }

@@ -186,6 +186,49 @@ func (r *PaymentRepository) RefundsForOrder(ctx context.Context, orderID string)
 	return out, rows.Err()
 }
 
+// RefundsForAdmin lists refunds for the operator queue, joined with the order and
+// buyer so the list is answerable without an N+1 per row.
+//
+// The join is the point. An operator triaging "who are we owed money to" needs
+// the order number and the buyer's email in the same row; making them a second
+// call per line is how a queue gets exported to a spreadsheet and the audit trail
+// lost. The join is on the refund's own order_id, so it adds no fan-out and cannot
+// duplicate a refund.
+func (r *PaymentRepository) RefundsForAdmin(ctx context.Context, status string, limit int) ([]*domain.Refund, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT rf.id, rf.payment_intent_id, rf.order_id, rf.gateway,
+		       COALESCE(rf.gateway_ref, ''), rf.amount::float8, COALESCE(rf.reason, ''),
+		       rf.status, COALESCE(rf.failure_reason, ''), COALESCE(rf.requested_by::text, ''),
+		       rf.requested_at, rf.settled_at, rf.created_at,
+		       COALESCE(o.order_number, ''), COALESCE(u.email, '')
+		  FROM refunds rf
+		  LEFT JOIN orders o ON o.id = rf.order_id
+		  LEFT JOIN users  u ON u.id = o.buyer_id
+		 WHERE ($1 = '' OR rf.status = $1)
+		 ORDER BY rf.created_at DESC
+		 LIMIT $2`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*domain.Refund{}
+	for rows.Next() {
+		var d domain.Refund
+		if err := rows.Scan(&d.ID, &d.PaymentIntentID, &d.OrderID, &d.Gateway,
+			&d.GatewayRef, &d.Amount, &d.Reason, &d.Status, &d.FailureReason,
+			&d.RequestedBy, &d.RequestedAt, &d.SettledAt, &d.CreatedAt,
+			&d.OrderNumber, &d.BuyerEmail); err != nil {
+			return nil, err
+		}
+		out = append(out, &d)
+	}
+	return out, rows.Err()
+}
+
 const refundSelect = `
 	SELECT id, payment_intent_id, order_id, COALESCE(journal_id::text, ''),
 	       gateway, COALESCE(gateway_ref, ''), amount::float8, COALESCE(reason, ''),
