@@ -289,3 +289,10 @@ func (s *LedgerService) TrialBalance(ctx context.Context, q repository.Querier) 
 func (s *LedgerService) Reconcile(ctx context.Context, q repository.Querier) (*domain.LedgerReconciliation, error) {
 	return s.ledger.Reconcile(ctx, q)
 }
+
+// ReconcileAll runs the report over the ledger's own pool, for callers with no
+// transaction to join -- chiefly the scheduled job that makes the cache
+// trustworthy rather than merely present.
+func (s *LedgerService) ReconcileAll(ctx context.Context) (*domain.LedgerReconciliation, error) {
+	return s.ledger.ReconcileAll(ctx)
+}

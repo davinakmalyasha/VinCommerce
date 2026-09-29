@@ -167,14 +167,25 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	srv, err := worker.NewServerWithSessions(
-		cfg.Redis,
-		graph.Services.Order,
-		graph.Services.Market,
-		graph.Services.Seller,
-		graph.Repositories.Sessions,
-		logger,
-	)
+	// Deps, not a positional list. The old NewServerWithSessions chain had grown
+	// a second constructor precisely because the first could not express a new
+	// dependency, which is the same drift app.Build exists to prevent; adding
+	// Payment and Ledger positionally would have needed a third constructor.
+	//
+	// The money services are passed here rather than being looked up inside the
+	// worker because a worker that silently lacks them is indistinguishable from
+	// one that has them and finds nothing to do -- and the whole point of these
+	// two jobs is that they DO have something to do.
+	srv, err := worker.New(worker.Deps{
+		Redis:    cfg.Redis,
+		Orders:   graph.Services.Order,
+		Market:   graph.Services.Market,
+		Seller:   graph.Services.Seller,
+		Sessions: graph.Repositories.Sessions,
+		Payment:  graph.Services.Payment,
+		Ledger:   graph.Services.Ledger,
+		Logger:   logger,
+	})
 	if err != nil {
 		return err
 	}

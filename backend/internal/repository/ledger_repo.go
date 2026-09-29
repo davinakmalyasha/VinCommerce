@@ -253,6 +253,23 @@ func (r *LedgerRepository) JournalEntries(ctx context.Context, q Querier, journa
 	return out, rows.Err()
 }
 
+// ReconcileAll runs the reconciliation over the repository's own pool.
+//
+// A read-only report that needs no transaction, so it can be driven by a
+// scheduled job that has no transaction to join. The transactional form --
+// Reconcile(ctx, q) -- stays for callers that want the report to reflect a
+// consistent snapshot alongside other work.
+func (r *LedgerRepository) ReconcileAll(ctx context.Context) (*domain.LedgerReconciliation, error) {
+	return r.Reconcile(ctx, r.pool)
+}
+
+// Pool exposes the underlying pool.
+//
+// Present for the same reason PaymentRepository has one: a caller that must run a
+// statement outside a transaction -- a scheduled reconciliation, a read-only
+// report -- needs a Querier and the service deliberately does not own one.
+func (r *LedgerRepository) Pool() *db.Pool { return r.pool }
+
 // Reconcile proves the derived caches agree with the journal entries.
 //
 // Two things can drift. `account_balances` is updated on every post, and

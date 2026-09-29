@@ -24,7 +24,55 @@ const (
 	TaskLowStock            = "stock:low"
 	TaskSellerPresence      = "seller:presence_stats"
 	TaskSessionPurge        = "sessions:purge_expired"
+	// TaskReconcileRefunds polls the payment gateway for refunds whose outcome it
+	// still owns and settles the ones it confirms.
+	//
+	// Without this a refund the provider accepted stays `submitted` forever. The
+	// submit path returns as soon as the provider takes the request, so nothing
+	// else ever asks -- and an operator looking at the queue cannot tell which
+	// refunds actually paid out.
+	TaskReconcileRefunds = "payments:reconcile_refunds"
+	// TaskReconcileLedger asserts the derived balance caches agree with the
+	// journal entries, and that no journal is unbalanced.
+	//
+	// `account_balances` and `wallets` are caches of `ledger_entries`. A cache
+	// that is never checked against its source is not a cache, it is a second
+	// opinion nobody looks at -- so this job is what makes the ledger's numbers
+	// trustworthy rather than merely present.
+	TaskReconcileLedger = "ledger:reconcile"
+	// TaskReleasePayoutReservations releases seller holds whose T+n lag has
+	// passed with no open return or dispute.
+	//
+	// This is the fraud control made real: a seller cannot withdraw a balance a
+	// return is about to reverse, because the money has not left yet.
+	TaskReleasePayoutReservations = "payouts:release_reservations"
 )
+
+// Deps is everything the worker needs.
+//
+// A struct rather than a positional parameter list, because the list was already
+// a trap once. `NewServer` grew a `sessions` parameter, which meant a second
+// constructor had to exist alongside it, and the next dependency would have
+// needed a third. That is precisely the shape of the defect app.Build exists to
+// fix -- two construction sites that can drift apart -- reproduced inside a
+// single package. Adding Payment and Ledger as two more positional parameters
+// would have made it four constructors and no way to see at a glance what a
+// worker is wired to.
+//
+// Every field is optional. A nil service disables its job rather than failing the
+// boot, so a partially-wired worker still runs everything it CAN run and the
+// absence is visible in the log instead of being a silent no-op.
+type Deps struct {
+	Redis    config.RedisConfig
+	Orders   *service.OrderService
+	Market   *service.MarketService
+	Seller   *service.SellerService
+	Sessions *repository.SessionRepository
+	// Payment and Ledger drive the money reconciliation jobs.
+	Payment *service.PaymentService
+	Ledger  *service.LedgerService
+	Logger  *slog.Logger
+}
 
 // Server wires asynq workers and schedules recurring jobs.
 type Server struct {
@@ -63,23 +111,97 @@ func redisOpt(cfg config.RedisConfig) asynq.RedisClientOpt {
 }
 
 // NewServer creates the asynq server with task handlers.
+//
+// Kept as a thin wrapper so the many call sites that do not need the money
+// services do not have to spell out the whole struct.
 func NewServer(redisCfg config.RedisConfig, orders *service.OrderService, market *service.MarketService, seller *service.SellerService, logger *slog.Logger) (*Server, error) {
-	return newServer(redisCfg, orders, market, seller, nil, logger)
+	return New(Deps{Redis: redisCfg, Orders: orders, Market: market, Seller: seller, Logger: logger})
 }
 
 // NewServerWithSessions accepts the session repository so expired refresh
 // sessions can be purged periodically instead of accumulating forever.
+//
+// Deprecated in favour of New(Deps{...}). It is retained only so the change is
+// reviewable as a diff rather than as a rewrite; there is one caller.
 func NewServerWithSessions(redisCfg config.RedisConfig, orders *service.OrderService, market *service.MarketService, seller *service.SellerService, sessions *repository.SessionRepository, logger *slog.Logger) (*Server, error) {
-	return newServer(redisCfg, orders, market, seller, sessions, logger)
+	return New(Deps{
+		Redis: redisCfg, Orders: orders, Market: market, Seller: seller,
+		Sessions: sessions, Logger: logger,
+	})
 }
 
-func newServer(redisCfg config.RedisConfig, orders *service.OrderService, market *service.MarketService, seller *service.SellerService, sessions *repository.SessionRepository, logger *slog.Logger) (*Server, error) {
+// jobSpec is one recurring job.
+type jobSpec struct {
+	spec, taskType, queue string
+	uniq                  time.Duration
+}
+
+// jobSpecs returns the recurring schedule, filtered by which services are wired.
+//
+// A pure function of Deps, so the schedule can be asserted without a Redis. That
+// matters more than it sounds: a job missing from this table is invisible. The
+// worker starts, its health check passes, and it never reconciles a refund -- and
+// the operator sees refunds sitting in `submitted` with nothing obviously wrong
+// anywhere.
+//
+// The uniq TTL MUST exceed the job's period for every entry. asynq's Unique lock
+// expires with the TTL, so a TTL below the interval means the guard has already
+// lapsed by the time the next tick fires and the dedup does nothing while
+// appearing to. The first version of this table set every TTL just *below* its
+// interval, which made the guard inert on all ten jobs.
+func jobSpecs(d Deps) []jobSpec {
+	all := []jobSpec{
+		// Order expiry releases stock reservations and moves money-adjacent state,
+		// so it runs on the high-priority queue: a backlog in `low` silently
+		// delays expired-order cleanup and holds inventory hostage.
+		{"@every 5m", TaskCancelExpiredOrders, "critical", 15 * time.Minute},
+		{"@daily", TaskAutoCompleteOrders, "default", 25 * time.Hour},
+		// Ghost-buyer sweep: shipped -> delivered after the carrier window.
+		{"@every 6h", TaskAdvanceShipped, "default", 12 * time.Hour},
+		{"@hourly", TaskPriceAlerts, "low", 2 * time.Hour},
+		{"@every 15m", TaskBackInStock, "low", 45 * time.Minute},
+		{"@every 30m", TaskCartRecovery, "low", 75 * time.Minute},
+		{"@daily", TaskSellerDigest, "low", 25 * time.Hour},
+		{"@every 30m", TaskLowStock, "low", 75 * time.Minute},
+		{"@daily", TaskSellerPresence, "low", 25 * time.Hour},
+		{"@every 1h", TaskSessionPurge, "low", 3 * time.Hour},
+		// Refund polling is frequent because each run settles money that is
+		// already at the provider and merely un-recorded here.
+		{"@every 10m", TaskReconcileRefunds, "default", 30 * time.Minute},
+		// The ledger check is a read-only report and cheap, so daily.
+		{"@daily", TaskReconcileLedger, "low", 25 * time.Hour},
+	}
+
+	// A job whose service is absent is dropped rather than registered against a
+	// handler that would panic the first time it fired. Dropping it is also why
+	// the Warn above matters: the schedule is the only place this is visible.
+	enabled := map[string]bool{
+		TaskSessionPurge:     d.Sessions != nil,
+		TaskReconcileRefunds: d.Payment != nil,
+		TaskReconcileLedger:  d.Ledger != nil,
+	}
+	out := make([]jobSpec, 0, len(all))
+	for _, j := range all {
+		if on, gated := enabled[j.taskType]; gated && !on {
+			continue
+		}
+		out = append(out, j)
+	}
+	return out
+}
+
+// New builds the worker from an explicit dependency set.
+func New(d Deps) (*Server, error) {
 	// A nil logger would panic in shutdown(), which is the worst possible
 	// moment: the process is already on its way out and the panic turns a
 	// clean drain into a SIGKILL.
+	logger := d.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+	redisCfg := d.Redis
+	orders, market, seller, sessions := d.Orders, d.Market, d.Seller, d.Sessions
+
 	opt := redisOpt(redisCfg)
 
 	// Fail fast and loudly if the queue is unreachable. A worker that starts
@@ -122,6 +244,22 @@ func newServer(redisCfg config.RedisConfig, orders *service.OrderService, market
 	if sessions != nil {
 		mux.HandleFunc(TaskSessionPurge, withTimeout(sessionPurgeHandler(sessions, logger)))
 	}
+	// The money reconciliation jobs. Registered only when their service is
+	// present, and the ABSENCE is logged: a worker that silently does not
+	// reconcile refunds looks identical to one that reconciles them and finds
+	// nothing, and those two states must never be confused.
+	if d.Payment != nil {
+		mux.HandleFunc(TaskReconcileRefunds, withTimeout(reconcileRefundsHandler(d.Payment, logger)))
+	} else {
+		logger.Warn("payment service not wired: gateway refunds will never be " +
+			"reconciled, so a refund the provider accepted stays pending forever")
+	}
+	if d.Ledger != nil {
+		mux.HandleFunc(TaskReconcileLedger, withTimeout(reconcileLedgerHandler(d.Ledger, logger)))
+	} else {
+		logger.Warn("ledger not wired: the derived balance caches will never be " +
+			"checked against the journal, so drift would go unnoticed")
+	}
 
 	// Recurring jobs get:
 	//   * MaxRetry(3) so a permanently failing task does not burn 25 retries;
@@ -148,28 +286,14 @@ func newServer(redisCfg config.RedisConfig, orders *service.OrderService, market
 		return nil
 	}
 
-	// Order expiry releases stock reservations and moves money-adjacent state,
-	// so it runs on the high-priority queue: a backlog in `low` silently
-	// delays expired-order cleanup and holds inventory hostage.
-	for _, j := range []struct {
-		spec, taskType, queue string
-		uniq                  time.Duration
-	}{
-		{"@every 5m", TaskCancelExpiredOrders, "critical", 15 * time.Minute},
-		{"@daily", TaskAutoCompleteOrders, "default", 25 * time.Hour},
-		// Ghost-buyer sweep: shipped -> delivered after the carrier window.
-		{"@every 6h", TaskAdvanceShipped, "default", 12 * time.Hour},
-		{"@hourly", TaskPriceAlerts, "low", 2 * time.Hour},
-		{"@every 15m", TaskBackInStock, "low", 45 * time.Minute},
-		{"@every 30m", TaskCartRecovery, "low", 75 * time.Minute},
-		{"@daily", TaskSellerDigest, "low", 25 * time.Hour},
-		{"@every 30m", TaskLowStock, "low", 75 * time.Minute},
-		{"@daily", TaskSellerPresence, "low", 25 * time.Hour},
-		{"@every 1h", TaskSessionPurge, "low", 3 * time.Hour},
-	} {
-		if j.taskType == TaskSessionPurge && sessions == nil {
-			continue
-		}
+	// The schedule as DATA, so it can be asserted without a Redis.
+	//
+	// Building a Server requires a reachable Redis, which means the registration
+	// table used to be untestable. A job silently missing from that table is
+	// invisible: the worker starts, reports healthy, and never reconciles
+	// anything. That is the same class of defect as the cart-recovery job that
+	// had no mailer wired and reported success forever.
+	for _, j := range jobSpecs(d) {
 		if err := register(j.spec, j.taskType, j.queue, j.uniq); err != nil {
 			return nil, err
 		}
@@ -454,6 +578,84 @@ func sellerPresenceHandler(seller *service.SellerService, logger *slog.Logger) f
 			return err
 		}
 		logger.Info("seller presence stats recomputed")
+		return nil
+	}
+}
+
+// reconcileRefundBatch bounds one run.
+//
+// A bound rather than "reconcile everything": the loop makes a network call per
+// refund, so an unbounded run against a large pending queue would hold a worker
+// slot past taskTimeout, get retried, and do the same work again.
+const reconcileRefundBatch = 100
+
+// reconcileRefundsHandler settles refunds the gateway has confirmed but this
+// system has not yet recorded as settled.
+//
+// The error is returned so asynq retries, and the work is idempotent: a refund
+// already terminal is not polled again, and a poll that cannot reach the provider
+// changes nothing.
+func reconcileRefundsHandler(pay *service.PaymentService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		succeeded, failed, manual, err := pay.ReconcileRefunds(ctx, reconcileRefundBatch)
+		if err != nil {
+			return err
+		}
+		// Logged even when every count is zero. A reconciliation job that only
+		// speaks when it finds something is indistinguishable from a job that is
+		// not running, and the difference matters here: silence would mean either
+		// "all settled" or "nothing has polled the gateway in a week".
+		logger.Info("refund reconciliation complete",
+			"settled", succeeded, "failed", failed, "manual", manual)
+		// `manual` is an operator queue rather than an error, so it is reported
+		// and not raised: retrying will not move money a human must move.
+		if manual > 0 {
+			logger.Warn("refunds need an operator", "count", manual,
+				"hint", "the gateway cannot complete these; a human must transfer the money")
+		}
+		return nil
+	}
+}
+
+// reconcileLedgerHandler proves the derived caches agree with the journal.
+//
+// A dirty result is logged at Error and NOT returned, because there is nothing to
+// retry: the drift is a fact about the data, and re-running the same query
+// produces the same answer. Returning an error would burn three retries and bury
+// the finding under a task failure. The report is the alarm.
+func reconcileLedgerHandler(ledger *service.LedgerService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		report, err := ledger.ReconcileAll(ctx)
+		if err != nil {
+			return err
+		}
+		if report.Clean {
+			logger.Info("ledger reconciliation clean", "generated_at", report.GeneratedAt)
+			return nil
+		}
+		logger.Error("ledger reconciliation found drift",
+			"balance_cache_drift", report.BalanceCacheRows,
+			"unbalanced_journals", report.UnbalancedJournals,
+			"wallet_drift", report.WalletDriftRows,
+			"hint", "account_balances and wallets are caches of ledger_entries; "+
+				"drift means a posting path skipped the ledger, or wrote a cache directly")
+		// Name the offenders rather than only counting them. A count tells an
+		// operator that something is wrong; the account codes tell them where.
+		for _, d := range report.BalanceCacheDrift {
+			logger.Error("account balance disagrees with its entries",
+				"account", d.AccountCode, "cached", d.Cached, "expected", d.Expected)
+		}
+		for _, u := range report.Unbalanced {
+			logger.Error("journal does not sum to zero",
+				"journal_id", u.JournalID, "idempotency_key", u.IdempotencyKey,
+				"tx_type", u.TxType, "debits", u.Debits, "credits", u.Credits)
+		}
+		for _, w := range report.WalletDrift {
+			logger.Error("wallet disagrees with the seller's ledger account",
+				"user_id", w.UserID,
+				"wallet_balance", w.WalletBalance, "ledger_balance", w.LedgerBalance,
+				"wallet_held", w.WalletHeld, "ledger_held", w.LedgerHeld)
+		}
 		return nil
 	}
 }
