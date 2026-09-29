@@ -441,13 +441,11 @@ func (r *PaymentRepository) Payouts(ctx context.Context, walletID string) ([]*do
 	return payouts, rows.Err()
 }
 
-// MarkPayoutSent marks a payout processed (sandbox simulates transfer).
-func (r *PaymentRepository) MarkPayoutSent(ctx context.Context, payoutID, ref string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE payouts SET status = 'sent', gateway_ref = $2, processed_at = now()
-		WHERE id = $1 AND status = 'pending'`, payoutID, ref)
-	return err
-}
+// MarkPayoutSent is gone: it marked a payout sent WITHOUT posting a journal, so
+// the money left the platform with nothing recording it. It was used by the
+// sandbox auto-send path, which now goes through the service's postPayoutSettled
+// so the sandbox exercises the same accounting as production. A test double that
+// settles more cheaply than reality is a test double that hides the bug.
 
 // AdminPayout is a withdrawal request joined with the requester identity.
 type AdminPayout struct {
@@ -499,9 +497,36 @@ func (r *PaymentRepository) PayoutsByStatus(ctx context.Context, status string, 
 	return out, rows.Err()
 }
 
-// CompletePayout marks a payout sent (admin confirms real transfer happened).
-func (r *PaymentRepository) CompletePayout(ctx context.Context, payoutID, ref string) error {
-	tag, err := r.pool.Exec(ctx, `
+// PayoutForUpdate locks a pending payout and returns the details a posting
+// needs.
+//
+// Transaction-scoped and FOR UPDATE because the payout lifecycle is two steps
+// (request, then sent-or-failed) and both need the amount and the seller to post
+// a journal. Reading it outside the lock is how a concurrent failure and
+// completion both pass the status check.
+func (r *PaymentRepository) PayoutForUpdate(ctx context.Context, q Querier, payoutID string) (*domain.Payout, error) {
+	var p domain.Payout
+	var processedAt *time.Time
+	err := q.QueryRow(ctx, `
+		SELECT id, wallet_id, amount, status, COALESCE(gateway_ref,''),
+		       COALESCE(bank_name,''), COALESCE(bank_account,''), requested_at, processed_at
+		  FROM payouts WHERE id = $1 AND status = 'pending' FOR UPDATE`, payoutID).
+		Scan(&p.ID, &p.WalletID, &p.Amount, &p.Status, &p.GatewayRef,
+			&p.BankName, &p.BankAccount, &p.RequestedAt, &processedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.E(domain.KindConflict, "NOT_PENDING", "payout is not awaiting processing")
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.ProcessedAt = processedAt
+	return &p, nil
+}
+
+// MarkPayoutSentTx marks a payout sent inside a caller's transaction, so the
+// status change and its ledger posting commit together.
+func (r *PaymentRepository) MarkPayoutSentTx(ctx context.Context, q Querier, payoutID, ref string) error {
+	tag, err := q.Exec(ctx, `
 		UPDATE payouts SET status = 'sent', gateway_ref = NULLIF($2, ''), processed_at = now()
 		WHERE id = $1 AND status = 'pending'`, payoutID, ref)
 	if err != nil {
@@ -513,39 +538,60 @@ func (r *PaymentRepository) CompletePayout(ctx context.Context, payoutID, ref st
 	return nil
 }
 
-// FailPayout rejects a pending payout and refunds the amount to the seller's
-// wallet â€” atomically, so funds can never be stuck debited without a record.
-func (r *PaymentRepository) FailPayout(ctx context.Context, payoutID string) error {
-	tx, err := r.pool.Begin(ctx)
+// MarkPayoutFailedTx rejects a pending payout inside a caller's transaction.
+func (r *PaymentRepository) MarkPayoutFailedTx(ctx context.Context, q Querier, payoutID string) error {
+	tag, err := q.Exec(ctx, `
+		UPDATE payouts SET status = 'failed', processed_at = now()
+		WHERE id = $1 AND status = 'pending'`, payoutID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-
-	var (
-		walletID string
-		amount   float64
-	)
-	err = tx.QueryRow(ctx,
-		`SELECT wallet_id, amount FROM payouts WHERE id = $1 AND status = 'pending' FOR UPDATE`,
-		payoutID).Scan(&walletID, &amount)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if tag.RowsAffected() == 0 {
 		return domain.E(domain.KindConflict, "NOT_PENDING", "payout is not awaiting processing")
 	}
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE payouts SET status = 'failed', processed_at = now() WHERE id = $1`, payoutID); err != nil {
-		return err
-	}
-	// Refund the reservation debit; 'adjustment' is the ledger reason the
-	// wallet UI already labels.
-	if err := r.WalletTxOn(ctx, tx, walletID, "credit", "adjustment", amount, payoutID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return nil
 }
+
+// ReserveSellerPending moves an amount out of a seller's spendable balance and
+// into the payout pipeline, recording a seller_reservation row.
+//
+// The reservation is the fraud control, not the bookkeeping. Without it a seller
+// can request a payout, and then a return comes in against the same balance and
+// the reversal finds nothing to claw back -- because the money has already been
+// marked as sent. Real marketplaces hold the balance until a T+n lag has passed
+// with no open return or dispute.
+//
+// The seller_reservations row is what makes that hold visible and releasable
+// rather than implicit in a balance column.
+func (r *PaymentRepository) ReserveSellerPending(ctx context.Context, q Querier, sellerID, payoutID string, amount float64) error {
+	if _, err := q.Exec(ctx, `
+		INSERT INTO seller_reservations (seller_id, payout_id, amount, kind, note)
+		VALUES ($1, $2, $3, 'payout', 'withdrawal requested')`,
+		sellerID, payoutID, amount); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReleaseSellerReservation marks a payout's reservation as released.
+func (r *PaymentRepository) ReleaseSellerReservation(ctx context.Context, q Querier, payoutID string) error {
+	_, err := q.Exec(ctx,
+		`UPDATE seller_reservations SET released_at = now()
+		  WHERE payout_id = $1 AND released_at IS NULL`, payoutID)
+	return err
+}
+
+// FailPayout and CompletePayout were removed rather than left in place.
+//
+// They lived here and opened their own transaction, which is precisely why the
+// payout lifecycle could not post a ledger journal: a repository cannot reach the
+// ledger service, and a caller using these would move money with no accounting
+// record and no way to add one. Leaving them would be a trap for the next
+// caller, who would reasonably assume a working method does the whole job.
+//
+// The transaction-scoped PayoutForUpdate / MarkPayoutSentTx / MarkPayoutFailedTx
+// replace them, and the service orchestrates so the journal commits with the
+// status change.
 
 // PlatformFee is the active commission configuration.
 type PlatformFee struct {

@@ -137,6 +137,49 @@ func refundEntries(sellerID string, amount, refundSeller, refundFee float64, was
 	return append(entries, Credit(AccGatewayClearing, amount))
 }
 
+// payoutRequestedEntries builds the journal for a withdrawal request.
+//
+// Debit the seller's personal account, credit seller_pending. NOT bank_clearing:
+// the money has left what the seller can spend, but no transfer has been
+// attempted, so booking it as cash already in our bank would report a payment
+// that has not happened.
+//
+// seller_pending rather than escrow_held because the money was released to this
+// seller and is now owed to them specifically. Putting it back in escrow would
+// make "money we are holding for the marketplace" include a withdrawal already
+// queued, which is the number an operator reads when asking what is at risk.
+func payoutRequestedEntries(sellerID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(PersonalAccount(sellerID), amount),
+		Credit(AccSellerPending, amount),
+	}
+}
+
+// payoutSettledEntries builds the journal for a completed transfer.
+//
+// Debit seller_pending, credit bank_clearing. This is the moment the money
+// genuinely leaves: a liability we owed becomes cash in the platform's own
+// account, and the pipeline empties.
+func payoutSettledEntries(sellerID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(AccSellerPending, amount),
+		Credit(AccBankClearing, amount),
+	}
+}
+
+// payoutFailedEntries is the exact mirror of payoutRequestedEntries, because a
+// failed payout is the un-doing of the request: the seller gets their balance
+// back and the pipeline empties without ever reaching the bank.
+//
+// A reversal rather than a new unrelated posting, so the two journals read as
+// halves of one story when an operator reads the trial balance for a seller.
+func payoutFailedEntries(sellerID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(AccSellerPending, amount),
+		Credit(PersonalAccount(sellerID), amount),
+	}
+}
+
 // refundKey builds the idempotency key for a refund journal.
 //
 // It keys on the CUMULATIVE refunded total, not the refund amount. Two refunds of

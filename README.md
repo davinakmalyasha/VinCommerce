@@ -249,8 +249,8 @@ they would cost you in a real deployment.
    acquires a negative balance that reads as a receivable from nobody — and it
    reverses the commission as well as the seller's leg, so a refunded sale earns
    no commission.
-   *Still open: payouts do not post a journal yet, and the `refunds` table still
-   has no writer (items 1 and 10).*
+   *Still open: the `refunds` table still has no writer, and the refund paths
+   still credit a wallet rather than calling `Gateway.Refund` (item 1).*
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure
    functions in `internal/service/money.go` with property tests, rounds to whole
@@ -276,9 +276,24 @@ they would cost you in a real deployment.
 8. **Email is sent synchronously** inside the request or worker that triggers
    it, so checkout waits on 1–3 SMTP round trips. It should be enqueued. The
    asynq infrastructure already exists, so this is a queue and a dispatch.
-9. **No payout schedule.** Payouts are seller-initiated and on demand, KYC-gated
-   only. Real marketplaces run a T+2/T+7 batch with a reserve for COD and a
-   disputes window, which is also the main fraud control.
+9. **[partly closed] No payout schedule.** Payouts were seller-initiated and on
+   demand, KYC-gated only, and a request debited the wallet with no reservation:
+   a seller could request a payout and then have a return come in against the same
+   balance, where the reversal found nothing to claw back because the money was
+   already marked as sent.
+   Now every payout request writes a `seller_reservations` row and posts a
+   journal, and the payout lifecycle posts in the transaction that moves the money:
+   request debits the seller and credits `seller_pending` (the money is *scheduled*,
+   not sent — booking it to `bank_clearing` would report a transfer that has not
+   happened); settlement debits `seller_pending` and credits `bank_clearing`; a
+   failure is the exact mirror of the request and releases the reservation. The
+   repository methods that used to do this in their own transaction are **deleted**,
+   not deprecated, because a repository cannot reach the ledger and a caller using
+   them would move money with no accounting record and no way to add one.
+   *Still open: the schedule itself. `payout_batches` exists but nothing builds
+   one — the T+2/T+7 batch run, the reserve for COD and disputes, and the
+   automatic release of reservations once a lag passes with no open return or
+   dispute are not implemented.*
 10. **No COD reconciliation.** COD is implemented with no fee, no aging report
     and no remittance file — so uncollected cash is invisible.
 11. **Search relevance is English-stemmed** and recommendations are global

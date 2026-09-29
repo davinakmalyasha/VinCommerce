@@ -1248,13 +1248,39 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 	if err := s.payments.CreatePayoutTx(ctx, tx.PgTx(), payout); err != nil {
 		return nil, err
 	}
+	// The reservation is the point of the step. Without it a seller can request a
+	// payout, and then a return comes in against the same balance: the reversal
+	// finds nothing to claw back, because the money was already marked as sent.
+	// Real marketplaces hold the balance for a T+n lag with no open return or
+	// dispute, and this row is what makes that hold visible and releasable rather
+	// than implicit in a balance column.
+	if err := s.payments.ReserveSellerPending(ctx, tx.PgTx(), userID, payout.ID, amount); err != nil {
+		return nil, err
+	}
+	// Payout journal, inside the payout transaction.
+	//
+	// Debit the seller's personal account, credit seller_pending. The money has
+	// left what the seller can spend and entered the pipeline, but it has NOT left
+	// the platform: it is cash we owe the seller, scheduled to go out. Booking it
+	// straight to bank_clearing would report the transfer as already made when no
+	// transfer has been attempted.
+	s.postLedger(ctx, tx.PgTx(), JournalSpec{
+		IdempotencyKey: "payout:" + payout.ID,
+		TxType:         TxTypePayout,
+		RefType:        "payout",
+		RefID:          payout.ID,
+		Note:           "payout requested; balance moved to the payout pipeline",
+		Entries: withMeta(payoutRequestedEntries(userID, amount), map[string]any{
+			"payout_id": payout.ID, "seller_id": userID, "amount": amount,
+		}),
+	})
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
 	// Sandbox/dev only: simulate an instant successful transfer.
 	if s.sandboxAutoSend {
-		if err := s.payments.MarkPayoutSent(ctx, payout.ID, fmt.Sprintf("payout_%s", payout.ID[:8])); err != nil {
+		if err := s.postPayoutSettled(ctx, payout.ID, fmt.Sprintf("payout_%s", payout.ID[:8])); err != nil {
 			return nil, err
 		}
 		payout.Status = "sent"
@@ -1262,6 +1288,102 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 		payout.ProcessedAt = &now
 	}
 	return payout, nil
+}
+
+// ProcessPayout finalizes a pending withdrawal: 'sent' records the real transfer
+// reference; 'failed' rejects it and returns the amount to the seller's wallet.
+//
+// Both branches run in a transaction that the ledger joins, because both move
+// money. Previously the status change was one statement on the pool and the
+// wallet credit was a separate transaction inside the repository, so the two could
+// not be posted together and the ledger could not be told about either.
+func (s *PaymentService) ProcessPayout(ctx context.Context, payoutID, action, ref string) error {
+	switch action {
+	case "sent":
+		if strings.TrimSpace(ref) == "" {
+			return domain.E(domain.KindInvalid, "REF_REQUIRED", "transfer reference is required to mark a payout sent")
+		}
+		return s.postPayoutSettled(ctx, payoutID, strings.TrimSpace(ref))
+	case "failed":
+		return s.failPayout(ctx, payoutID)
+	default:
+		return domain.E(domain.KindInvalid, "BAD_ACTION", "action must be sent or failed")
+	}
+}
+
+// postPayoutSettled records a payout as transferred and posts the journal that
+// closes it out.
+//
+// Debit seller_pending, credit bank_clearing. The money leaves a liability we
+// still owe and becomes cash in the platform's own bank account, which is the
+// point at which it genuinely has left.
+func (s *PaymentService) postPayoutSettled(ctx context.Context, payoutID, ref string) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	p, err := s.payments.PayoutForUpdate(ctx, q, payoutID)
+	if err != nil {
+		return err
+	}
+	if err := s.payments.MarkPayoutSentTx(ctx, q, payoutID, ref); err != nil {
+		return err
+	}
+	s.postLedger(ctx, q, JournalSpec{
+		IdempotencyKey: "payout-sent:" + payoutID,
+		TxType:         TxTypePayout,
+		RefType:        "payout",
+		RefID:          payoutID,
+		Note:           "payout transferred: " + ref,
+		Entries: withMeta(payoutSettledEntries(p.WalletID, p.Amount), map[string]any{
+			"payout_id": payoutID, "seller_id": p.WalletID, "transfer_ref": ref,
+		}),
+	})
+	return tx.Commit(ctx)
+}
+
+// failPayout rejects a pending payout and returns the amount to the seller.
+//
+// The reversal is the mirror of postPayoutSettled: credit the seller's account
+// again, debit seller_pending, and release the reservation. Without the
+// reservation release the held amount stays claimed forever, and without the
+// journal the money reappears in the wallet with no record of where it came from.
+func (s *PaymentService) failPayout(ctx context.Context, payoutID string) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	p, err := s.payments.PayoutForUpdate(ctx, q, payoutID)
+	if err != nil {
+		return err
+	}
+	if err := s.payments.MarkPayoutFailedTx(ctx, q, payoutID); err != nil {
+		return err
+	}
+	if err := s.payments.WalletTxOn(ctx, q, p.WalletID, "credit",
+		domain.TxReasonAdjustment, p.Amount, payoutID); err != nil {
+		return err
+	}
+	s.postLedger(ctx, q, JournalSpec{
+		IdempotencyKey: "payout-failed:" + payoutID,
+		TxType:         TxTypeReversal,
+		RefType:        "payout",
+		RefID:          payoutID,
+		Note:           "payout failed; balance returned to the seller",
+		Entries: withMeta(payoutFailedEntries(p.WalletID, p.Amount), map[string]any{
+			"payout_id": payoutID, "seller_id": p.WalletID,
+		}),
+	})
+	if err := s.payments.ReleaseSellerReservation(ctx, q, payoutID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Payouts lists the user's withdrawals.
@@ -1272,22 +1394,6 @@ func (s *PaymentService) Payouts(ctx context.Context, userID string) ([]*domain.
 // AdminPayouts lists withdrawal requests for the operations queue.
 func (s *PaymentService) AdminPayouts(ctx context.Context, status string) ([]*repository.AdminPayout, error) {
 	return s.payments.PayoutsByStatus(ctx, status, 100)
-}
-
-// ProcessPayout finalizes a pending withdrawal: 'sent' records the real
-// transfer reference; 'failed' rejects it and refunds the seller's wallet.
-func (s *PaymentService) ProcessPayout(ctx context.Context, payoutID, action, ref string) error {
-	switch action {
-	case "sent":
-		if strings.TrimSpace(ref) == "" {
-			return domain.E(domain.KindInvalid, "REF_REQUIRED", "transfer reference is required to mark a payout sent")
-		}
-		return s.payments.CompletePayout(ctx, payoutID, strings.TrimSpace(ref))
-	case "failed":
-		return s.payments.FailPayout(ctx, payoutID)
-	default:
-		return domain.E(domain.KindInvalid, "BAD_ACTION", "action must be sent or failed")
-	}
 }
 
 // IntentForOrder returns the intent for an order.
