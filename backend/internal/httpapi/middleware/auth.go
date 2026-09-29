@@ -25,6 +25,20 @@ func UserFrom(ctx context.Context) *domain.User {
 	return u
 }
 
+// ActorFrom returns the authenticated caller as a domain.Actor, or the zero
+// Actor when the request is anonymous.
+//
+// Handlers should pass this to services rather than a user id plus a role
+// boolean. The zero Actor's IsZero/CanReadOrder/HasRole all return false, so a
+// service that forgets to check for anonymous fails closed.
+func ActorFrom(ctx context.Context) domain.Actor {
+	u := UserFrom(ctx)
+	if u == nil {
+		return domain.Actor{}
+	}
+	return domain.ActorFrom(u)
+}
+
 // VerChecker reports whether a token's ver claim is still current.
 type VerChecker func(userID string, ver int) bool
 

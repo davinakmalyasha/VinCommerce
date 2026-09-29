@@ -104,13 +104,6 @@ func (t *OrderTx) ClearCart(ctx context.Context, cartID string) error {
 	return err
 }
 
-// NextOrderNumber fetches the next value of the order number sequence.
-func (t *OrderTx) NextOrderNumber(ctx context.Context) (int64, error) {
-	var n int64
-	err := t.tx.QueryRow(ctx, `SELECT nextval('order_number_seq')`).Scan(&n)
-	return n, err
-}
-
 // CreateOrder inserts an order and returns it.
 func (t *OrderTx) CreateOrder(ctx context.Context, o *domain.Order) error {
 	addr, err := json.Marshal(o.ShippingAddress)
@@ -280,13 +273,7 @@ func (r *OrderRepository) ListByBuyer(ctx context.Context, userID string, page, 
 		`SELECT COUNT(*) FROM orders WHERE buyer_id = $1`, userID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.pool.Query(ctx, `
-		SELECT o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
-		       o.subtotal, o.discount_amount, o.shipping_fee, o.total_amount, o.payment_status,
-		       COALESCE(o.coupon_code,''), o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
-		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
-		       o.created_at, o.updated_at, u.full_name,
-		       COALESCE(o.external_payment_ref,''), o.external_paid_at
+	rows, err := r.pool.Query(ctx, orderSelect(`u.full_name`)+`
 		FROM orders o
 		JOIN users u ON u.id = o.seller_id
 		WHERE o.buyer_id = $1
@@ -328,13 +315,7 @@ func (r *OrderRepository) ListBySeller(ctx context.Context, sellerID string, sta
 		return nil, 0, err
 	}
 	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := r.pool.Query(ctx, `
-		SELECT o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
-		       o.subtotal, o.discount_amount, o.shipping_fee, o.total_amount, o.payment_status,
-		       COALESCE(o.coupon_code,''), o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
-		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
-		       o.created_at, o.updated_at, b.full_name,
-		       COALESCE(o.external_payment_ref,''), o.external_paid_at
+	rows, err := r.pool.Query(ctx, orderSelect(`b.full_name`)+`
 		FROM orders o
 		JOIN users b ON b.id = o.buyer_id
 		WHERE `+where+`
@@ -365,69 +346,81 @@ func (r *OrderRepository) ByID(ctx context.Context, orderID string) (*domain.Ord
 	return r.loadItems(ctx, o)
 }
 
-// OrderByNumber fetches an order by its human-readable number.
-func (r *OrderRepository) OrderByNumber(ctx context.Context, orderNumber string) (*domain.Order, error) {
+// ByNumberForViewer is the ONLY way to look an order up by its human-readable
+// number. There is deliberately no unscoped sibling: the previous
+// `OrderByNumber(ctx, number)` was reachable from a public handler, and a
+// number that is a global sequence plus a number-only lookup is a
+// platform-wide enumeration primitive. If you need an unscoped read (an admin
+// tool, a reconciliation job) add it explicitly and give it a name that makes
+// the missing ownership check obvious in review.
+
+func (r *OrderRepository) byOrderID(ctx context.Context, orderID string) (*domain.Order, error) {
+	o, err := scanOrder(r.pool.QueryRow(ctx, orderSelect(`u.full_name`)+`
+		FROM orders o
+		JOIN users u ON u.id = o.seller_id
+		WHERE o.id = $1`, orderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	o.Seller = &domain.StoreSummary{ID: o.SellerID, Name: o.SellerName}
+	return o, nil
+}
+
+// byNumber looks an order up by its human-facing order number.
+//
+// `viewerID` is the authenticated caller. When it is empty the lookup is
+// unowned and the caller MUST NOT use the result for anything a stranger may
+// see — see ByNumberForViewer, which is the only entry point that reaches a
+// public response.
+//
+// Why this is scoped: the order number used to be `nextval('order_number_seq')`
+// (migration 00004, `START 1000`), a global sequential counter, and this query
+// was `WHERE o.order_number = $1` with nothing else. `GET /orders/tracking/{number}`
+// passed the row straight to the response after stripping only the shipping
+// address, the notes, the external payment reference and the SKUs. So any
+// account that could register for free could walk `…-1000`, `…-1001`, `…-1002`
+// and read every order on the platform: the order UUID, the BUYER's UUID, the
+// seller's UUID, the full subtotal/discount/shipping/total breakdown, the
+// payment status, the coupon code, the seller's name, and the entire event
+// timeline (which carries the escrow-release and refund notes). Sequential
+// identifiers plus an unscoped lookup is a platform-wide data harvest, not a
+// single leaked record.
+func (r *OrderRepository) byNumber(ctx context.Context, orderNumber string) (*domain.Order, error) {
+	o, err := scanOrder(r.pool.QueryRow(ctx, orderSelect(`u.full_name`)+`
+		FROM orders o
+		JOIN users u ON u.id = o.seller_id
+		WHERE o.order_number = $1`, orderNumber))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	o.Seller = &domain.StoreSummary{ID: o.SellerID, Name: o.SellerName}
+	return o, nil
+}
+
+// ByNumberForViewer is the ownership-scoped order-number lookup.
+//
+// The viewer may read the order if they are the buyer, the seller, or hold any
+// staff/admin role. A non-match is reported as NOT_FOUND rather than FORBIDDEN
+// on purpose: telling an anonymous caller "that order exists but is not yours"
+// confirms the number is valid, which is exactly the oracle the enumeration
+// attack needs.
+func (r *OrderRepository) ByNumberForViewer(
+	ctx context.Context, orderNumber string, viewer domain.Actor,
+) (*domain.Order, error) {
 	o, err := r.byNumber(ctx, orderNumber)
 	if err != nil {
 		return nil, err
 	}
+	if !viewer.CanReadOrder(o.BuyerID, o.SellerID) {
+		return nil, domain.ErrNotFound
+	}
 	return r.loadItems(ctx, o)
-}
-
-func (r *OrderRepository) byOrderID(ctx context.Context, orderID string) (*domain.Order, error) {
-	var o domain.Order
-	var sellerName string
-	err := r.pool.QueryRow(ctx, `
-		SELECT o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
-		       o.subtotal, o.discount_amount, o.shipping_fee, o.total_amount, o.payment_status,
-		       COALESCE(o.coupon_code,''), o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
-		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
-		       o.created_at, o.updated_at, u.full_name,
-		       COALESCE(o.external_payment_ref,''), o.external_paid_at
-		FROM orders o
-		JOIN users u ON u.id = o.seller_id
-		WHERE o.id = $1`, orderID).
-		Scan(&o.ID, &o.OrderNumber, &o.BuyerID, &o.SellerID, &o.Status, &o.Currency,
-			&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.TotalAmount, &o.PaymentStatus,
-			&o.CouponCode, &o.ShippingAddressJSON, &o.ShippingMethod, &o.Notes,
-			&o.TrackingNumber, &o.Carrier, &o.PlacedAt, &o.PaidAt, &o.ShippedAt, &o.DeliveredAt, &o.CompletedAt, &o.CancelledAt,
-			&o.CreatedAt, &o.UpdatedAt, &sellerName, &o.ExternalPaymentRef, &o.ExternalPaidAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	o.Seller = &domain.StoreSummary{ID: o.SellerID, Name: sellerName}
-	return &o, nil
-}
-
-func (r *OrderRepository) byNumber(ctx context.Context, orderNumber string) (*domain.Order, error) {
-	var o domain.Order
-	var sellerName string
-	err := r.pool.QueryRow(ctx, `
-		SELECT o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
-		       o.subtotal, o.discount_amount, o.shipping_fee, o.total_amount, o.payment_status,
-		       COALESCE(o.coupon_code,''), o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
-		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
-		       o.created_at, o.updated_at, u.full_name,
-		       COALESCE(o.external_payment_ref,''), o.external_paid_at
-		FROM orders o
-		JOIN users u ON u.id = o.seller_id
-		WHERE o.order_number = $1`, orderNumber).
-		Scan(&o.ID, &o.OrderNumber, &o.BuyerID, &o.SellerID, &o.Status, &o.Currency,
-			&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.TotalAmount, &o.PaymentStatus,
-			&o.CouponCode, &o.ShippingAddressJSON, &o.ShippingMethod, &o.Notes,
-			&o.TrackingNumber, &o.Carrier, &o.PlacedAt, &o.PaidAt, &o.ShippedAt, &o.DeliveredAt, &o.CompletedAt, &o.CancelledAt,
-			&o.CreatedAt, &o.UpdatedAt, &sellerName, &o.ExternalPaymentRef, &o.ExternalPaidAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	o.Seller = &domain.StoreSummary{ID: o.SellerID, Name: sellerName}
-	return &o, nil
 }
 
 func (r *OrderRepository) loadItems(ctx context.Context, o *domain.Order) (*domain.Order, error) {
@@ -864,14 +857,10 @@ func (r *OrderRepository) SearchOrders(ctx context.Context, q, status string, pa
 		return nil, 0, err
 	}
 	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := r.pool.Query(ctx, `
-		SELECT o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
-		       o.subtotal, o.discount_amount, o.shipping_fee, o.total_amount, o.payment_status,
-		       o.coupon_code, o.shipping_address, o.shipping_method, COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
-		       o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
-		       o.created_at, o.updated_at, b.full_name,
-		       u.full_name,
-		       COALESCE(o.external_payment_ref,''), o.external_paid_at
+	// Two counterparty names (seller AND buyer), so this is one column wider
+	// than scanOrder and needs its own scanner — but it still shares
+	// `orderSelect`, so it can never drift on the order's own columns.
+	rows, err := r.pool.Query(ctx, orderSelect(`b.full_name, u.full_name`)+`
 		FROM orders o
 		JOIN users u ON u.id = o.buyer_id
 		JOIN users b ON b.id = o.seller_id
@@ -887,7 +876,7 @@ func (r *OrderRepository) SearchOrders(ctx context.Context, q, status string, pa
 	for rows.Next() {
 		var o domain.Order
 		if err := rows.Scan(&o.ID, &o.OrderNumber, &o.BuyerID, &o.SellerID, &o.Status, &o.Currency,
-			&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.TotalAmount, &o.PaymentStatus,
+			&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.InsuranceFee, &o.TotalAmount, &o.PaymentStatus,
 			&o.CouponCode, &o.ShippingAddressJSON, &o.ShippingMethod, &o.Notes,
 			&o.TrackingNumber, &o.Carrier, &o.PlacedAt, &o.PaidAt, &o.ShippedAt, &o.DeliveredAt, &o.CompletedAt, &o.CancelledAt,
 			&o.CreatedAt, &o.UpdatedAt, &o.SellerName, &o.BuyerName, &o.ExternalPaymentRef, &o.ExternalPaidAt); err != nil {
@@ -955,10 +944,47 @@ type orderRow interface {
 	Scan(dest ...any) error
 }
 
+// orderColumns is the ONE canonical projection of an `orders` row.
+//
+// It used to be hand-copied into five separate queries — ListByBuyer,
+// ListBySeller, byOrderID, byNumber and SearchOrders — and the copies had
+// drifted. None of them selected `o.insurance_fee`, which CreateOrder *does*
+// write, so `domain.Order.InsuranceFee` was 0 on every single read path. That
+// is not cosmetic: `total_amount` is computed as
+//
+//	subtotal - discount + shipping + insurance
+//
+// and `handler/invoice.go` prints `Subtotal - Diskon + Ongkir = TOTAL` with no
+// insurance line, so every insured order shipped an invoice whose TOTAL was
+// higher than the sum of its own printed lines, by exactly the insurance fee the
+// buyer had been charged.
+//
+// A duplicated column list cannot be kept in sync with a schema; only being
+// unable to duplicate it can prevent this class of bug. If you add a column to
+// `orders`, add it here and to `scanOrder` — the compiler will then point at
+// every reader that needs updating.
+const orderColumns = `
+		o.id, o.order_number, o.buyer_id, o.seller_id, o.status, o.currency,
+		o.subtotal, o.discount_amount, o.shipping_fee, o.insurance_fee, o.total_amount, o.payment_status,
+		COALESCE(o.coupon_code,''), o.shipping_address, o.shipping_method,
+		COALESCE(o.notes,''), COALESCE(o.tracking_number,''), COALESCE(o.carrier,''),
+		o.placed_at, o.paid_at, o.shipped_at, o.delivered_at, o.completed_at, o.cancelled_at,
+		o.created_at, o.updated_at, %s,
+		COALESCE(o.external_payment_ref,''), o.external_paid_at`
+
+// orderSelect builds the canonical projection with a caller-chosen
+// counterparty display-name expression. The single `%s` is the name column:
+// `u.full_name` where `u` is joined to the seller, `b.full_name` where `b` is
+// joined to the buyer. Keeping that the only variable part means every
+// difference between the five queries is visible in the call site.
+func orderSelect(counterpartyNameExpr string) string {
+	return "SELECT" + fmt.Sprintf(orderColumns, counterpartyNameExpr)
+}
+
 func scanOrder(row orderRow) (*domain.Order, error) {
 	var o domain.Order
 	err := row.Scan(&o.ID, &o.OrderNumber, &o.BuyerID, &o.SellerID, &o.Status, &o.Currency,
-		&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.TotalAmount, &o.PaymentStatus,
+		&o.Subtotal, &o.DiscountAmount, &o.ShippingFee, &o.InsuranceFee, &o.TotalAmount, &o.PaymentStatus,
 		&o.CouponCode, &o.ShippingAddressJSON, &o.ShippingMethod, &o.Notes,
 		&o.TrackingNumber, &o.Carrier, &o.PlacedAt, &o.PaidAt, &o.ShippedAt, &o.DeliveredAt, &o.CompletedAt, &o.CancelledAt,
 		&o.CreatedAt, &o.UpdatedAt, &o.SellerName, &o.ExternalPaymentRef, &o.ExternalPaidAt)

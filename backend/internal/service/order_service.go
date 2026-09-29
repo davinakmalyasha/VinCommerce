@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,62 @@ import (
 	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/stream"
 )
+
+// orderNumberAlphabet is Crockford base32 minus the ambiguous glyphs
+// (I, L, O, U), so a number read aloud or copied from a support chat
+// screenshot cannot be mistyped into a wrong order.
+const orderNumberAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// newOrderNumber returns a customer-facing order reference with an
+// UNGUESSABLE suffix: VC-YYYYMMDD-XXXXXXXX, where the 8 characters are
+// base32 of 5 crypto/rand bytes (40 bits, ~1.1 trillion values per day-part).
+//
+// It used to be `VC-YYYYMMDD-%04d` over `nextval('order_number_seq')` — a
+// global monotonic counter starting at 1000, shared by every order the platform
+// has ever created. That number is the primary key a buyer types into
+// `GET /orders/tracking/{number}`, so its predictability turned any missing
+// ownership check on that endpoint into a platform-wide enumeration: a loop over
+// four digits walks the entire order table. The day prefix did not help; it
+// narrows the range rather than hiding it, and the counter is reset by nothing
+// so a determined scan covers every date.
+//
+// Keeping the human-readable prefix is worth it: support needs a date the
+// buyer can read, and the suffix is what has to carry the entropy. 40 bits is
+// chosen so that even an endpoint with NO rate limit and NO ownership check
+// would be infeasible to enumerate, rather than relying on the two controls
+// above it to both be present and correct.
+func newOrderNumber(now time.Time) (string, error) {
+	var b [5]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand does not fail in practice, but a predictable fallback
+		// would silently reintroduce the exact bug this fixes. Fail the
+		// checkout instead.
+		return "", domain.Wrap(domain.KindInternal, "ORDER_NUMBER_FAILED", "could not generate order number", err)
+	}
+	var sb strings.Builder
+	sb.Grow(len("VC-20060102-") + 8)
+	sb.WriteString("VC-")
+	sb.WriteString(now.UTC().Format("20060102"))
+	sb.WriteByte('-')
+	// 5 bytes = 40 bits, and base32 consumes exactly 5 bits per symbol, so the
+	// suffix is exactly 8 symbols with no padding.
+	//
+	// Pack the bytes into a 40-bit value and peel off five bits at a time from
+	// the top. The obvious-looking alternative -- two symbols per byte, one from
+	// `x>>3` and one from `x&0x07` -- is wrong in a way that is easy to miss:
+	// it emits TEN symbols, and the low half of each pair has only 8 possible
+	// values instead of 32. Total entropy is the same 40 bits, but the alphabet
+	// is not uniform across positions, so the format is undocumented and a
+	// caller that assumes "8 characters, 32 options each" mis-models it.
+	var bits uint64
+	for _, x := range b {
+		bits = bits<<8 | uint64(x)
+	}
+	for i := 0; i < 8; i++ {
+		sb.WriteByte(orderNumberAlphabet[(bits>>uint(35-5*i))&0x1F])
+	}
+	return sb.String(), nil
+}
 
 // OrderService implements cart, quote, checkout and order lifecycle.
 type OrderService struct {
@@ -700,11 +757,10 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 	shipIdx := 0
 	for _, sid := range sellerIDs {
 		orderID := uuid.NewString()
-		seq, err := tx.NextOrderNumber(ctx)
+		orderNumber, err := newOrderNumber(time.Now())
 		if err != nil {
 			return nil, err
 		}
-		orderNumber := fmt.Sprintf("VC-%s-%04d", time.Now().UTC().Format("20060102"), seq)
 		bundle := sellerBundles[sid]
 
 		subtotal := 0.0
@@ -1123,23 +1179,53 @@ func (s *OrderService) ListBySeller(ctx context.Context, sellerID, status string
 }
 
 // ByID fetches an order if it belongs to the user (buyer or seller).
-func (s *OrderService) ByID(ctx context.Context, orderID, requesterID string, isSeller bool) (*domain.Order, error) {
+// ByID loads an order the caller is entitled to see.
+//
+// The signature used to be `ByID(ctx, orderID, requesterID string, isSeller
+// bool)`, and the `bool` was the bug: the handler computed it with
+// `user.HasRole(RoleSeller)` and passed it inward, so authorization was decided
+// in the transport layer from a role the service could not re-derive. Two
+// consequences. A user who holds BOTH roles — which is the normal case for any
+// active seller, since sellers also buy — was routed down the seller branch for
+// their own purchase and denied, because `o.SellerID != requesterID`. And
+// `paid -> cancelled` is a legal transition, so a seller reaching their own
+// sub-order through the buyer-facing cancel endpoint was authorised to cancel
+// it, with only the escrow guard standing between them and a refund.
+//
+// The caller is now a domain.Actor, so every decision below is re-derivable
+// from data the service received rather than data it was told to believe.
+func (s *OrderService) ByID(ctx context.Context, orderID string, actor domain.Actor) (*domain.Order, error) {
+	if actor.IsZero() {
+		return nil, domain.ErrNotFound
+	}
 	o, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
-	if !isSeller && o.BuyerID != requesterID {
-		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "order does not belong to user")
-	}
-	if isSeller && o.SellerID != requesterID {
-		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "order does not belong to store")
+	if !actor.CanReadOrder(o.BuyerID, o.SellerID) {
+		return nil, domain.ErrNotFound
 	}
 	return o, nil
 }
 
-// ByNumber fetches an order by number (tracking).
-func (s *OrderService) ByNumber(ctx context.Context, orderNumber string) (*domain.Order, error) {
-	return s.orders.OrderByNumber(ctx, orderNumber)
+// ByNumber fetches an order by its human-facing number, scoped to the caller.
+//
+// This backs `GET /orders/tracking/{number}`. It was previously unscoped: the
+// query was a bare `WHERE o.order_number = $1` and the order number came from
+// `nextval('order_number_seq')` (migration 00004, START 1000). Any account that
+// could register for free could therefore walk the counter and read every order
+// on the platform, including each buyer's UUID, the full money breakdown, the
+// payment status, the coupon code, the seller name, and the full event timeline
+// including the escrow-release and refund notes.
+//
+// A non-match is reported as NOT_FOUND rather than FORBIDDEN: "that order
+// exists but is not yours" is a validity oracle, which is precisely what makes
+// enumeration worth automating.
+func (s *OrderService) ByNumber(ctx context.Context, orderNumber string, actor domain.Actor) (*domain.Order, error) {
+	if actor.IsZero() {
+		return nil, domain.ErrNotFound
+	}
+	return s.orders.ByNumberForViewer(ctx, orderNumber, actor)
 }
 
 // Events returns the timeline for an order.

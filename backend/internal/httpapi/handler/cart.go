@@ -457,8 +457,8 @@ func (h *Orders) SellerList(w http.ResponseWriter, r *http.Request) {
 
 // ByID handles GET /orders/{id}.
 func (h *Orders) ByID(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFrom(r.Context())
-	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -467,11 +467,30 @@ func (h *Orders) ByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // ByNumber handles GET /orders/tracking/{number}.
-// Public tracking is intentionally MINIMAL: only status/logistics data —
-// never buyer PII (address, phone), payment refs or notes. Full detail
-// requires ownership (see ByID).
+// ByNumber handles GET /orders/tracking/{number}.
+//
+// Two independent defects used to meet here, and either alone was enough.
+//
+// The first was that there was no ownership check: the service method took no
+// caller identity at all, the query was a bare `WHERE o.order_number = $1`, and
+// this handler passed the row to the response after stripping four fields.
+//
+// The second was that the order number was guessable. `order_number` came from
+// `nextval('order_number_seq')` -- migration 00004, `START 1000`, a global
+// monotonic counter shared by every order on the platform. Enumerating it was a
+// loop.
+//
+// Together they were a platform-wide read: the buyer's UUID, the seller's UUID,
+// the subtotal/discount/shipping/total breakdown, the payment status, the coupon
+// code, the seller's display name, and the whole event timeline (which carries
+// the escrow-release and refund notes) for every order that had ever been
+// placed. Defect 2 is being closed at the number-generation layer; defect 1 is
+// closed here, and closing only one of them would still have been broken.
+//
+// The response is also narrowed, because a scoped lookup still should not echo
+// identifiers the tracking UI has no use for.
 func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
-	o, err := h.svc.ByNumber(r.Context(), chi.URLParam(r, "number"))
+	o, err := h.svc.ByNumber(r.Context(), chi.URLParam(r, "number"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -485,6 +504,8 @@ func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
 	o.ShippingAddressJSON = nil
 	o.Notes = ""
 	o.ExternalPaymentRef = ""
+	o.BuyerID = ""
+	o.SellerID = ""
 	for _, it := range o.Items {
 		it.SKU = ""
 	}
@@ -494,7 +515,7 @@ func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
 // Cancel handles POST /orders/{id}/cancel.
 func (h *Orders) Cancel(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
-	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -563,8 +584,8 @@ func (h *Orders) Complete(w http.ResponseWriter, r *http.Request) {
 
 // Events handles GET /orders/{id}/events — the state-machine timeline.
 func (h *Orders) Events(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFrom(r.Context())
-	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -615,8 +636,8 @@ func (h *Orders) Reorder(w http.ResponseWriter, r *http.Request) {
 
 // Invoice handles GET /orders/{id}/invoice — printable invoice.
 func (h *Orders) Invoice(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFrom(r.Context())
-	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -627,7 +648,7 @@ func (h *Orders) Invoice(w http.ResponseWriter, r *http.Request) {
 // PackingSlip handles GET /orders/{id}/packing-slip — seller picking sheet.
 func (h *Orders) PackingSlip(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
-	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), user.ID, user.HasRole(domain.RoleSeller))
+	o, err := h.svc.ByID(r.Context(), chi.URLParam(r, "id"), middleware.ActorFrom(r.Context()))
 	if err != nil {
 		writeErr(w, r, err)
 		return
