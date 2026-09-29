@@ -96,6 +96,7 @@ type Repositories struct {
 	Disputes      *repository.DisputeRepository
 	Gamification  *repository.GamificationRepository
 	Live          *repository.LiveRepository
+	Ledger        *repository.LedgerRepository
 }
 
 // DomainServices is the wired service layer.
@@ -117,6 +118,7 @@ type DomainServices struct {
 	Notification *service.NotificationService
 	Seo          *service.SeoService
 	FeatureFlags *service.FeatureFlagService
+	Ledger       *service.LedgerService
 }
 
 // Build wires the entire application. It is called by both binaries.
@@ -160,6 +162,12 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 		Disputes:      repository.NewDisputeRepository(pool),
 		Gamification:  repository.NewGamificationRepository(pool),
 		Live:          repository.NewLiveRepository(pool),
+		// The ledger. Registered alongside the others rather than lazily inside
+		// the payment service, because a money subsystem that exists only on some
+		// code paths is the same class of defect as the sandbox gateway: a process
+		// that does not build a router gets no gateway list, and nobody notices
+		// until a refund posts no journal.
+		Ledger: repository.NewLedgerRepository(pool),
 	}
 
 	// --- gateways -----------------------------------------------------------
@@ -235,6 +243,10 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	}
 	chatSvc := service.NewChatService(r.Chat, r.Orders, broker)
 	liveSvc := service.NewLiveService(r.Live, r.Products)
+	// The ledger takes a logger rather than none, because an unbalanced journal
+	// from a future code path is exactly the kind of event that must reach the
+	// log even when the caller swallows the returned error.
+	ledgerSvc := service.NewLedgerService(r.Ledger, logger)
 	if store != nil {
 		catalogSvc.SetCache(store)
 		engagementSvc.SetCache(store)
@@ -351,6 +363,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 			Notification: notificationSvc,
 			Seo:          seoSvc,
 			FeatureFlags: featureFlags,
+			Ledger:       ledgerSvc,
 		},
 		Broker:   broker,
 		Password: password,

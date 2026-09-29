@@ -272,7 +272,13 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/{id}/invoice", ordersH.Invoice)
 			r.Get("/{id}/packing-slip", ordersH.PackingSlip)
 			r.Post("/{id}/cancel", ordersH.Cancel)
-			r.Post("/{id}/external-payment", ordersH.ExternalPayment)
+			// 5 per minute, keyed per user rather than per IP: this is a
+			// self-asserted "I paid by bank transfer" claim, so the thing being
+			// throttled is a buyer trying many order ids, not a shared NAT.
+			// It was previously unmetered, so one account could walk the whole
+			// order table at wire speed and self-mark every pending order paid.
+			r.With(rateLimiter.Limit(5, time.Minute, userKey), auditMw).
+				Post("/{id}/external-payment", ordersH.ExternalPayment)
 			r.Post("/{id}/confirm-delivery", ordersH.ConfirmDelivery)
 			r.Post("/{id}/complete", ordersH.Complete)
 			r.Post("/{id}/reviews", ordersH.ReviewOrderItem)

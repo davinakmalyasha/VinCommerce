@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/vincommerce/backend/internal/config"
@@ -78,4 +79,126 @@ func TestBuildWiresEveryService(t *testing.T) {
 	t.Skip("the nil-sweep for a successfully built graph needs a live pool and " +
 		"belongs in the integration harness; the structural guarantee is that only " +
 		"internal/app and cmd/seed construct services")
+}
+
+// The ledger is composed here, not constructed inside the payment service on
+// demand. This asserts the wiring statically, by reading the source, because the
+// alternative failure -- a ledger repository that exists on one code path and not
+// another -- cannot be caught by a unit test at all: both paths compile, both
+// return no error, and the omission is only visible in production when a refund
+// posts no journal.
+//
+// The specific incident this guards: the sandbox gateway was registered in the
+// router rather than in Build, so a process that built no router had no gateway
+// list at all and the worker's payment service had nothing to charge with. The
+// ledger has the same shape of hazard, and the same fix.
+func TestLedgerIsWiredInTheCompositionRoot(t *testing.T) {
+	src, err := os.ReadFile("services.go")
+	if err != nil {
+		t.Fatalf("read services.go: %v", err)
+	}
+	body := string(src)
+
+	for _, want := range []struct {
+		fragment string
+		why      string
+	}{
+		{
+			"repository.NewLedgerRepository(pool)",
+			"the repository must be constructed from the shared pool like every " +
+				"other repository, or it silently uses a different connection",
+		},
+		{
+			"service.NewLedgerService(r.Ledger, logger)",
+			"the service must be constructed here, not lazily inside a caller; a " +
+				"lazily-constructed ledger is a ledger that some paths do not have",
+		},
+		{
+			"Ledger:       ledgerSvc,",
+			"the service must be returned on the graph, or every caller receives nil",
+		},
+	} {
+		if !strings.Contains(body, want.fragment) {
+			t.Errorf("services.go no longer contains %q: %s", want.fragment, want.why)
+		}
+	}
+}
+
+// isFieldName reports whether s looks like a struct field name rather than Go
+// syntax. Struct fields here are exported Go identifiers; anything else on the
+// line is the `type X struct {` header or a comment continuation.
+func isFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	if c < 'A' || c > 'Z' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// A repository or service field left nil in its struct is the same defect wearing
+// a different hat: the field exists, code compiles against it, and it panics or
+// silently no-ops at runtime. Struct fields are cheap to assert and are the part
+// of the wiring a source scan cannot prove.
+func TestRepositoriesAndDomainServicesHaveNoUnsetFields(t *testing.T) {
+	src, err := os.ReadFile("services.go")
+	if err != nil {
+		t.Fatalf("read services.go: %v", err)
+	}
+	body := string(src)
+
+	// Every field in Repositories and DomainServices must appear on the
+	// construction site. A field present in the struct but absent from the
+	// literal is silently nil.
+	//
+	// This is a source scan rather than a runtime assertion, and deliberately so:
+	// the runtime version needs a live pool, and a pool is exactly what the
+	// package does not have. The scan's real virtue is that it does not need one.
+	for _, block := range []struct {
+		name string
+		open string
+	}{
+		{"Repositories", "type Repositories struct {"},
+		{"DomainServices", "type DomainServices struct {"},
+	} {
+		start := strings.Index(body, block.open)
+		if start < 0 {
+			t.Fatalf("%s: struct not found", block.name)
+		}
+		end := strings.Index(body[start:], "\n}")
+		if end < 0 {
+			t.Fatalf("%s: struct end not found", block.name)
+		}
+		fields := body[start : start+end]
+
+		for _, line := range strings.Split(fields, "\n") {
+			line = strings.TrimSpace(line)
+			// The `type X struct {` line itself, blanks, and comments are not
+			// fields. Skipping on a non-identifier first token handles the header.
+			if line == "" || strings.HasPrefix(line, "//") {
+				continue
+			}
+			first, _, _ := strings.Cut(line, " ")
+			if !isFieldName(first) {
+				continue
+			}
+			// The field must be assigned in a composite literal somewhere in the
+			// file. A field with no `Name:` assignment is nil at runtime, and
+			// nothing in the compiler objects.
+			if !strings.Contains(body, first+":") {
+				t.Errorf("%s field %q is never assigned in a composite literal; "+
+					"it will be nil at runtime", block.name, first)
+			}
+		}
+	}
 }

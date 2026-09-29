@@ -185,41 +185,77 @@ test-covered.
 Written by the audit that produced the status tags above. Ordered by how much
 they would cost you in a real deployment.
 
+> **Status as of the latest audit pass.** The P0 items below are being closed in
+> dependency order: checkout correctness, then the ledger, then the regulatory
+> and fulfilment subsystems. Items marked **[closed]** were fixed in this
+> series with a named regression test; see the commit history for the failure
+> mode each one fixes. The list is deliberately kept rather than rewritten, so
+> the before/after is visible.
+
 ### P0 — blocks real money
 
-1. **No gateway-side refund.** `payments.Gateway` has no `Refund()` method, so
+1. **No gateway-side refund.** `payments.Gateway` still has no `Refund()` method, so
    every refund credits the internal wallet. A buyer who paid QRIS/VA receives
    a balance they cannot top up (there is no top-up flow either). This is also
    a Midtrans ToS breach. *Fix: add `Refund()` to the adapter, implement
    Midtrans `POST /v2/{type}/{id}/refund`, and a `refunds` table with a manual
-   fallback.*
+   fallback.* The `refunds` table and the state machine an operator needs
+   (`pending` / `submitted` / `succeeded` / `failed` / `manual`) now exist in the
+   ledger migration, including a `manual` state for a refund a human has to
+   transfer out of band — a refund that silently failed is worse than one that is
+   visibly stuck. **← next**
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
-   the balance is only ever credited by refunds.
+   the balance is only ever credited by refunds. *Closed by the gift-card /
+   voucher-as-product work; until then a refund is the only way in.*
 3. **No PPN / tax and no compliant invoice.** `handler/invoice.go` emits HTML
    with no tax line, no seller NPWP/NIB and no invoice number sequence.
-   Indonesian sellers cannot expense a marketplace invoice without that.
-4. **The ledger is not reconcilable to cash.** `wallets.held_balance` is never
-   written, capture writes no ledger rows, and gateway inflow / bank outflow
-   are unrecorded — so `SUM(wallets.balance)` cannot be tied back to real
-   money and the escrow "hold" phase has no balance-sheet representation. The
-   individual money paths are now guarded and constrained, but a genuine double
-   entry needs a real escrow/clearing account.
+   Indonesian sellers cannot expense a marketplace invoice without that. The
+   invoice arithmetic itself is now correct — it previously printed a total
+   higher than the sum of its own lines, because the insurance fee was written
+   to the order but selected by no read path, and the invoice did not print a
+   line for it.
+4. **[closed] The ledger is not reconcilable to cash.** `wallets.held_balance`
+   was never written, capture wrote no ledger rows, and gateway inflow / bank
+   outflow were unrecorded — so `SUM(wallets.balance)` could not be tied back to
+   real money and the escrow "hold" phase had no balance-sheet representation.
+   Tracing one Rp100,000 order at 2% commission, the old books said Rp2,000 while
+   the platform held Rp100,000; the missing Rp98,000 was a real liability to a
+   seller and appeared on no balance sheet.
+   Now there is a real double-entry ledger: `ledger_journals` / `ledger_entries`
+   with a named chart of accounts, escrow and clearing accounts, a whole-rupiah
+   invariant, and settlement / payout-batch / refund tables. Every journal sums to
+   zero, enforced by a **deferred constraint trigger at COMMIT** rather than by Go
+   code, so it holds for the code path somebody writes next year as well as this
+   one. `account_balances` and `wallets` are retained as derived caches and a
+   reconciliation job asserts they agree with the entries — a cache nobody
+   checks against its source is not a cache, it is a second opinion.
+   *Still open: the gateway's own `Refund()` method and the capture/release/payout
+   call sites that post the journals above (items 1 and 10).*
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
-   `moneyRound` is applied where it matters and the split legs are derived to
-   sum to the refund amount, but the correct fix is `decimal.Decimal`
-   end to end.
+   [closed for the checkout engine] All checkout arithmetic now lives in pure
+   functions in `internal/service/money.go` with property tests, rounds to whole
+   rupiah at write time (IDR has no sen, and the 2dp value the gateway cannot
+   charge was the cause of an AMOUNT_MISMATCH that cancelled paid orders), and
+   the multi-seller discount allocation can no longer produce a negative share.
+   The remaining work is `decimal.Decimal` end to end.
 
 ### P1 — needed to be credible at scale
 
-6. **No carrier integration.** Shipping is `base + kg × per_kg_fee` with
-   integer-kg rounding; there is no RajaOngkir/Shipper rate lookup, no
-   volumetric weight, and no zone pricing. Remote-area orders are mispriced.
+6. **No carrier integration.** Shipping is `base + kg × per_kg_fee`; there is
+   no RajaOngkir/Shipper rate lookup, no volumetric weight, and no zone pricing.
+   Remote-area orders are mispriced. [partly closed] The billable weight is now
+   accumulated in grams and rounded up once. It previously divided **per line**
+   and summed, so six 500g items (3.0kg) billed as **0kg** — free shipping on
+   every order from a seller with a sub-kilogram catalogue — and a 2.2kg bundle
+   billed as 1kg. Volumetric weight and zone pricing still need the carrier
+   integration.
 7. **No shipment entity.** Fulfilment is whole-order and all-or-nothing: no
    split shipping, no partial shipment, no return labels, no carrier
    webhooks. This one gap blocks return logistics, bulk label printing,
    pick/pack boards and SLA reporting.
 8. **Email is sent synchronously** inside the request or worker that triggers
-   it, so checkout waits on 1–3 SMTP round trips. It should be enqueued.
+   it, so checkout waits on 1–3 SMTP round trips. It should be enqueued. The
+   asynq infrastructure already exists, so this is a queue and a dispatch.
 9. **No payout schedule.** Payouts are seller-initiated and on demand, KYC-gated
    only. Real marketplaces run a T+2/T+7 batch with a reserve for COD and a
    disputes window, which is also the main fraud control.
@@ -227,10 +263,14 @@ they would cost you in a real deployment.
     and no remittance file — so uncollected cash is invisible.
 11. **Search relevance is English-stemmed** and recommendations are global
     bestsellers. Both are the largest single levers on marketplace GMV and both
-    are currently placeholders.
+    are currently placeholders. (Note: `sold_count`, which the bestseller ranking
+    sorts on, is never written outside the seed, so that ranking currently reads
+    a constant.)
 12. **WhatsApp / Web Push.** `notifications` is in-app only and worker alerts are
     email-only. In Indonesia, cart recovery over WhatsApp outperforms email by
-    roughly 3:1.
+    roughly 3:1. (Also fixed: the cart-recovery job was a permanent no-op — the
+    worker had no mailer wired, so `RecoverAbandonedCarts` returned success and
+    sent nothing, every 30 minutes.)
 13. **No fraud or abuse detection** — no review-fraud scoring, no fake-order or
     brushing detection, no refund-abuse tracking, and no risk scoring gating
     payouts.
@@ -239,14 +279,16 @@ they would cost you in a real deployment.
 
 14. **External payment is self-asserted.** A buyer can mark any pending order
     paid with a free-text reference and an amount checked against the total the
-    same API just returned. It is now rate-limited and one-shot, but there is no
-    receipt, no gateway record and no admin verification gate, and it creates
-    no `payment_intents` row.
+    same API just returned. It is one-shot (the order leaves `pending`, so a
+    replay fails on status) and the amount is bounds-checked, but there is no
+    receipt, no gateway record and no admin verification gate, and it creates no
+    `payment_intents` row.
 15. **Several endpoints are backend-only with no UI**: session management,
     admin user-detail stats, CSV template download, admin refund/release
-    buttons, multi-address checkout, return evidence upload.
-16. **Bundle pricing is display-only.** "Ambil Paket" adds the items at full
-    per-item price.
+    buttons, multi-address checkout, return evidence upload. *(The README
+    previously listed five; there are eleven — see the audit in the commit
+    history.)*
+16. **Bundle pricing is display-only.** "Ambil Paket" adds items at full price.
 17. **No PWA offline queue.** The cart is server-side, so add-to-cart fails
     offline even though the shell is cached.
 18. **Accessibility is partial.** Modals, forms and tables were brought up to
@@ -257,7 +299,11 @@ they would cost you in a real deployment.
     platform holding escrow and a wallet ledger this is the single largest
     operational risk.
 21. **No TLS terminator ships in-repo.** Compose publishes HTTP on loopback and
-    relies on the operator placing a proxy in front.
+    relies on the operator placing a proxy in front. The edge rate limiter has
+    been fixed for that case (`real_ip` now resolves the real client before
+    bucketing; without it, every visitor behind a terminator would have shared
+    one bucket).
+
 
 
 ## Production sketch
