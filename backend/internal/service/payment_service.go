@@ -43,6 +43,10 @@ type PaymentService struct {
 	// defect this ledger was built to end, and reintroducing it as a "safe"
 	// fallback would be worse than the original because it would look deliberate.
 	ledger *LedgerService
+	// statuses records refund state transitions. An interface rather than a
+	// direct repository call so the DECISION of which transition to make is
+	// testable without a database; see refundStatusWriter.
+	statuses refundStatusWriter
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -55,7 +59,10 @@ func NewPaymentService(payRepo *repository.PaymentRepository, orders *repository
 	if primary == "" {
 		primary = "sandbox"
 	}
-	return &PaymentService{payments: payRepo, orders: orders, gateways: reg, defaultGW: primary, baseURL: baseURL}
+	return &PaymentService{
+		payments: payRepo, orders: orders, gateways: reg, defaultGW: primary, baseURL: baseURL,
+		statuses: paymentRefundStatuses{payments: payRepo},
+	}
 }
 
 // SetUsers enables buyer lookup for transactional emails.
@@ -415,6 +422,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 // particular let a buyer mark a Rp1,000,000 order paid by reporting 999,999.00,
 // and on a 100%-discount order the minimum accepted claim was Rp0.01. Those
 // should become exact equality, which is the real fix; absDiff remains for the
+// few comparisons that are genuinely about tolerance rather than equality.
 // (see absDiff above)
 
 // moneyRound is defined in money.go and rounds to WHOLE rupiah.
@@ -434,14 +442,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 // charge. The NUMERIC(14,2) columns still hold whole rupiah fine; tightening
 // them to NUMERIC(14,0) is a separate schema change.
 
-// absDiff is the absolute difference between two amounts.
-//
-// With whole-rupiah money the epsilon comparisons this used to guard --
-// `absDiff(x, y) > 0.01`, `> 1.0` -- are no longer load-bearing. `> 1.0` in
-// particular let a buyer mark a Rp1,000,000 order paid by reporting 999,999.00,
-// and on a 100%-discount order the minimum accepted claim was Rp0.01. Those
-// should become exact equality, which is the real fix; absDiff remains for the
-// (see absDiff above)// refundedTotal sums the refund legs already written to the ledger for an
+// refundedTotal sums the refund legs already written to the ledger for an
 // order.
 //
 // The intent status cannot answer this: a `partially_refunded` intent does not
@@ -906,33 +907,58 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 			"order is cancelled; reconcile the escrow with an operator before refunding")
 	}
 
-	tx, err := s.orders.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
+	// Route through ExecuteRefund, which returns the money through the gateway and
+	// records a durable `refunds` row.
+	//
+	// This used to credit a wallet directly. That is the behaviour being replaced:
+	// a buyer who paid by QRIS or bank transfer was refunded in platform credit
+	// they could not spend or withdraw, the money stayed with the platform, and
+	// for Midtrans it was a terms-of-service breach.
+	refund, rerr := s.ExecuteRefund(ctx, orderID, reason, refundToBuyer, amount, "")
 
-	if err := s.refundInTx(ctx, tx, order, intent.ID, amount, reason, refundToBuyer, true); err != nil {
-		return err
+	// The notification is sent whether or not the gateway confirmed, because the
+	// two mean different things to the buyer and conflating them is its own bug:
+	//
+	//   succeeded  the money is on its way back to their card or account
+	//   submitted  the provider accepted it and will settle it
+	//   manual     an operator is handling it personally
+	//
+	// Saying "your refund is processed" when it is queued for a human is how a
+	// support queue fills with buyers who were told the money had moved.
+	switch {
+	case rerr != nil:
+		return rerr
+	case refund == nil:
+		return nil
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	// Post-commit side effects. The money is already durable, so a failure here
-	// is deliberately swallowed rather than returned: the caller would otherwise
-	// see an error for a refund that succeeded, and the natural response is to
-	// retry -- which is the one thing that must not happen with a refund. The
-	// reconciliation view and the order event are the durable record; the email
-	// and the notification are conveniences.
-	s.emailOrder(ctx, order, "order", "Refund diproses - VinCommerce",
-		map[string]any{"RefundReason": reason, "RefundAmount": moneyRound(amount)})
-	if s.notifications != nil {
-		_ = s.notifications.Notify(ctx, order.BuyerID, "order", "Refund diproses",
-			fmt.Sprintf("Refund Rp%.0f untuk pesanan %s telah diproses.", moneyRound(amount), order.OrderNumber),
-			map[string]any{"order_id": orderID})
-	}
+	s.notifyRefund(ctx, order, refund, reason)
 	return nil
+}
+
+// notifyRefund tells the buyer what actually happened to their money.
+func (s *PaymentService) notifyRefund(ctx context.Context, order *domain.Order, refund *repository.Refund, reason string) {
+	if s.notifications == nil {
+		return
+	}
+	var body string
+	switch refund.Status {
+	case RefundStateSucceeded:
+		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s telah dikirim ke metode pembayaran Anda.",
+			refund.Amount, order.OrderNumber)
+	case RefundStateManual:
+		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s sedang diproses manual oleh tim kami.",
+			refund.Amount, order.OrderNumber)
+	default:
+		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s sedang diproses oleh penyedia pembayaran.",
+			refund.Amount, order.OrderNumber)
+	}
+	_ = s.notifications.Notify(ctx, order.BuyerID, "order", "Refund diproses", body,
+		map[string]any{
+			"order_id":   order.ID,
+			"refund_id":  refund.ID,
+			"refund_amt": refund.Amount,
+			"status":     refund.Status,
+		})
 }
 
 // RefundOrderInTx applies a refund inside a transaction the CALLER owns.

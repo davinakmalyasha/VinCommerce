@@ -994,6 +994,20 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 		// refund. The return's own claim is already marked refunded above; if the
 		// refund fails, the whole transaction rolls back including that UPDATE, so
 		// the claim is not left in a state where it cannot be retried.
+		//
+		// This credits the wallet rather than calling the gateway, which is a
+		// KNOWN and DELIBERATE divergence from RefundOrder. A gateway call is
+		// network I/O and cannot sit inside this transaction: holding a row lock
+		// on the return claim and the payment intent across an HTTP call to
+		// Midtrans means a 15-second timeout stalls every other refund and every
+		// admin click that touches the order.
+		//
+		// The cost is real and stated plainly: a return refund credits platform
+		// balance rather than returning money to the buyer's card. Closing that
+		// means making the return approval and the refund two steps -- approve,
+		// commit, then refund through the gateway -- which is the right design but
+		// changes the admin flow and the return's state machine, so it is its own
+		// change rather than a quiet substitution here.
 		if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, req.Amount,
 			"return refund: "+returnID); err != nil {
 			return err
