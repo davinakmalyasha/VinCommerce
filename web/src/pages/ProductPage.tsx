@@ -75,6 +75,26 @@ export function ProductPage() {
   })
   const { data } = productQuery
 
+  // `selected` is the single source of truth for "which variant is this page
+  // acting on", and it is declared HERE — before every mutation that needs it,
+  // and before the early return that guards the render.
+  //
+  // It used to be declared at line 286, after the addToCart / buyNow /
+  // addToWishlist mutations, and those mutations read the raw `variantId` state
+  // instead. `variantId` starts as `null` and is only ever set by clicking a
+  // variant chip, so on a product the buyer never clicks — i.e. every
+  // single-variant product — `selected` fell back to `variants[0]`, the
+  // "+ Keranjang" button rendered ENABLED (it tested `!selected`), and the one
+  // chip rendered as already-selected (`!variantId && v.id === selected?.id`).
+  // Clicking it then ran `if (!variantId) throw new Error('Pilih varian dulu')`
+  // inside `mutationFn`, which rejects with no `onError` attached, so the
+  // request never left the browser and the user saw nothing happen. Ten of the
+  // thirty seeded products are single-variant, so add-to-cart was broken on a
+  // third of the catalogue.
+  const product = data
+  const selected = product?.variants?.find((v) => v.id === variantId) ?? product?.variants?.[0] ?? null
+  const selectedId = selected?.id ?? null
+
 
   const { data: related } = useQuery({
     queryKey: ['related', data?.id],
@@ -154,7 +174,7 @@ export function ProductPage() {
 
   const watchPrice = useMutation({
     mutationFn: async () => {
-      await api.post('/price-alerts', { variant_id: variantId ?? selected?.id, target_price: Number(alertTarget) })
+      await api.post('/price-alerts', { variant_id: selectedId, target_price: Number(alertTarget) })
       setNotice('Kami akan kabari saat harga turun!')
       setAlertTarget('')
     },
@@ -240,14 +260,17 @@ export function ProductPage() {
 
   const addToCart = useMutation({
     mutationFn: async () => {
-      if (!variantId) throw new Error('Pilih varian dulu')
-      await api.post('/cart/items', { variant_id: variantId, quantity: qty })
+      if (!selectedId) throw new Error('Pilih varian dulu')
+      await api.post('/cart/items', { variant_id: selectedId, quantity: qty })
     },
     onSuccess: () => {
       setNotice('Ditambahkan ke keranjang!')
       queryClient.invalidateQueries({ queryKey: ['cart'] })
       setTimeout(() => setNotice(''), 2500)
     },
+    // Was absent: a locally-thrown error (no variant) rejected into the void
+    // and the button appeared to do nothing at all.
+    onError: (e: Error) => setNotice(e.message || 'Gagal menambah ke keranjang'),
   })
 
   // Mount-stable idempotency key (same pattern as CheckoutPage): retries and
@@ -256,11 +279,11 @@ export function ProductPage() {
 
   const buyNow = useMutation({
     mutationFn: async () => {
-      if (!variantId || !user) throw new Error('Pilih varian dulu')
+      if (!selectedId || !user) throw new Error('Pilih varian dulu')
       return (
         await api.post<{ orders: { id: string }[] }>(
           '/checkout/buy-now',
-          { variant_id: variantId, quantity: qty },
+          { variant_id: selectedId, quantity: qty },
           { headers: { 'X-Idempotency-Key': buyNowIdemKey } },
         )
       ).data
@@ -273,8 +296,8 @@ export function ProductPage() {
 
   const addToWishlist = useMutation({
     mutationFn: async () => {
-      if (!variantId) throw new Error('Pilih varian dulu')
-      await api.post(`/wishlist/items/${variantId}`)
+      if (!selectedId) throw new Error('Pilih varian dulu')
+      await api.post(`/wishlist/items/${selectedId}`)
     },
     onSuccess: () => setNotice('Disimpan ke wishlist!'),
     onError: (e: Error) => setNotice(e.message),
@@ -282,8 +305,7 @@ export function ProductPage() {
 
   // Derived values are computed BEFORE the early return: hooks must run
   // unconditionally, and this page used to sit on the other side of one.
-  const product = data
-  const selected = product?.variants?.find((v) => v.id === variantId) ?? product?.variants?.[0]
+  // (`product` and `selected` are declared at the top of the component now.)
   // Memoised: this array was rebuilt on every render, so the flash-sale
   // countdown's per-second tick turned into a full re-render of this 800-line
   // page including every ProductCard in "Produk Serupa".
@@ -473,8 +495,9 @@ export function ProductPage() {
                     key={v.id}
                     onClick={() => setVariantId(v.id)}
                     disabled={!v.is_active || v.stock === 0}
+                    aria-pressed={v.id === selectedId}
                     className={`px-4 py-2 rounded-lg border text-sm ${
-                      variantId === v.id || (!variantId && v.id === selected?.id)
+                      v.id === selectedId
                         ? 'border-amber-500 bg-amber-50 text-amber-700'
                         : 'border-gray-300 hover:border-amber-400'
                     } disabled:opacity-40 disabled:cursor-not-allowed`}
