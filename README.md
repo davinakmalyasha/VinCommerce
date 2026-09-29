@@ -194,16 +194,26 @@ they would cost you in a real deployment.
 
 ### P0 — blocks real money
 
-1. **No gateway-side refund.** `payments.Gateway` still has no `Refund()` method, so
-   every refund credits the internal wallet. A buyer who paid QRIS/VA receives
-   a balance they cannot top up (there is no top-up flow either). This is also
-   a Midtrans ToS breach. *Fix: add `Refund()` to the adapter, implement
-   Midtrans `POST /v2/{type}/{id}/refund`, and a `refunds` table with a manual
-   fallback.* The `refunds` table and the state machine an operator needs
-   (`pending` / `submitted` / `succeeded` / `failed` / `manual`) now exist in the
-   ledger migration, including a `manual` state for a refund a human has to
-   transfer out of band — a refund that silently failed is worse than one that is
-   visibly stuck. **← next**
+1. **[partly closed] No gateway-side refund.** `payments.Gateway` had no
+   `Refund()` method, so every refund was an internal book transfer: a buyer who
+   paid QRIS or bank VA was refunded to a wallet balance they cannot top up
+   (there is no top-up flow either). This is also a Midtrans ToS breach.
+   Now implemented: `Gateway.Refund` with the Midtrans
+   `POST /v2/{type}/{id}/refund` call, a `refunds` table, and the state machine an
+   operator needs — `pending` / `submitted` / `succeeded` / `failed` / `manual`,
+   where `manual` means a human must transfer the money out of band. A refund that
+   silently failed is worse than one that is visibly stuck.
+   Three details that are easy to get wrong and are covered by tests:
+   a 200 means the refund was **accepted, not settled**, so it maps to `pending`
+   and the durable signal is a later provider notification; a 404 is reported as
+   the order-id-instead-of-transaction-id mistake rather than a bare 404; and a
+   409 conflict is `manual`, not retryable, because a conflict usually means a
+   refund already went through under another attempt and retrying double-refunds
+   the buyer. `GatewayStatusProvider.RefundStatus` reads the provider's own view
+   for reconciliation.
+   *Still open: the payment service does not yet call `Gateway.Refund` — the
+   money paths still credit a wallet directly, and the `refunds` table has no
+   writer.*
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*

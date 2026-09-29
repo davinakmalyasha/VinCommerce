@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,301 @@ func (g *MidtransGateway) CreatePayment(ctx context.Context, in CreatePaymentInp
 		RedirectURL: out.RedirectURL,
 		Status:      "pending",
 	}, nil
+}
+
+// snapRefundRequest is the body of POST /v2/{type}/{id}/refund.
+type snapRefundRequest struct {
+	// Amount is a string in Midtrans's API even though it is a number, and
+	// "0.00" is the documented form. It is sent as an integer-rupiah string.
+	Amount string `json:"amount"`
+	Reason string `json:"reason,omitempty"`
+	// RefundRequestedAt is optional; Midtrans accepts RFC3339. Omitted rather than
+	// defaulted, because a wrong timestamp here is harder to explain than none.
+	RefundRequestedAt string `json:"refund_requested_at,omitempty"`
+}
+
+// snapRefundResponse is the provider's reply.
+type snapRefundResponse struct {
+	StatusCode    string `json:"status_code"`
+	StatusMessage string `json:"status_message"`
+	// RefundID identifies THIS refund, distinct from the charge's transaction_id.
+	RefundID      string   `json:"refund_id"`
+	ErrorMessages []string `json:"error_messages"`
+	RefundTime    string   `json:"refund_time"`
+}
+
+// snapTransactionStatusResponse is the GET /v2/{id}/status shape, used to confirm
+// the resulting state of a charge after a refund is submitted.
+type snapTransactionStatusResponse struct {
+	TransactionStatus string          `json:"transaction_status"`
+	GrossAmount       string          `json:"gross_amount"`
+	Refunds           []snapRefundDTO `json:"refunds"`
+}
+
+type snapRefundDTO struct {
+	RefundID      string `json:"refund_id"`
+	RefundAmount  string `json:"refund_amount"`
+	RefundStatus  string `json:"refund_status"`
+	RefundReason  string `json:"refund_reason"`
+	RefundTime    string `json:"refund_time"`
+	TransactionID string `json:"transaction_id"`
+}
+
+// Refund submits a refund to Midtrans.
+//
+// Endpoint: POST /v2/{type}/{id}/refund, where {id} MUST be the transaction_id
+// from the original charge -- not our order_id. This is the single most common
+// integration mistake with this API and it fails confusingly: refunding by
+// order_id returns 404 for orders that are plainly paid, and refunding by the
+// wrong id moves a real amount against an unrelated transaction.
+//
+// Success is 200 with status_code "200". The response is NOT a confirmation that
+// money has moved: Midtrans settles later, and the durable signal is a
+// refund notification. So a successful call maps to RefundStatusPending, and only
+// an explicit refund status from a later lookup or notification maps to
+// Succeeded. Reporting Succeeded here would let a caller mark a refund done days
+// before the money is actually returned.
+func (g *MidtransGateway) Refund(ctx context.Context, in RefundInput) (*RefundResult, error) {
+	if strings.TrimSpace(in.Reference) == "" {
+		return nil, fmt.Errorf("midtrans: refund requires the charge reference (transaction_id)")
+	}
+	if in.Amount <= 0 {
+		return nil, fmt.Errorf("midtrans: refund amount must be positive, got %v", in.Amount)
+	}
+	amount := idrAmount(in.Amount)
+	if amount <= 0 {
+		// A sub-rupiah amount rounds to zero. Posting it would be a 400, and
+		// silently dropping it would be worse.
+		return nil, fmt.Errorf("midtrans: refund amount Rp%v rounds to zero", in.Amount)
+	}
+
+	body, err := json.Marshal(snapRefundRequest{
+		Amount: strconv.FormatInt(amount, 10),
+		Reason: truncateString(in.Reason, 255),
+	})
+	if err != nil {
+		return nil, err
+	}
+	url := g.apiBase + "/v2/" + refundResourceType(in.Reference) + "/" +
+		url.PathEscape(in.Reference) + "/refund"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.SetBasicAuth(g.serverKey, "")
+
+	resp, err := g.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("midtrans: read refund response: %w", err)
+	}
+	var out snapRefundResponse
+	// A non-JSON error body must not mask the HTTP status, which is the part
+	// that actually diagnoses the failure.
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("midtrans: refund %s returned HTTP %d with an undecodable body: %w",
+			in.Reference, resp.StatusCode, err)
+	}
+
+	result := &RefundResult{
+		ProviderRef: out.RefundID,
+		Message:     out.StatusMessage,
+		Raw: map[string]any{
+			"http_status":    resp.StatusCode,
+			"status_code":    out.StatusCode,
+			"status_message": out.StatusMessage,
+			"refund_id":      out.RefundID,
+			"refund_time":    out.RefundTime,
+			"transaction_id": in.Reference,
+			"amount":         amount,
+		},
+	}
+
+	switch {
+	case resp.StatusCode == http.StatusOK && out.StatusCode == "200":
+		// Accepted, not completed. See the method comment.
+		result.Status = RefundStatusPending
+	case resp.StatusCode == http.StatusNotFound:
+		// The charge id is unknown. This is the order-id-instead-of-transaction-id
+		// mistake, so the message says so rather than reporting a bare 404.
+		result.Status = RefundStatusFailed
+		result.Message = "midtrans: charge not found; the reference must be the " +
+			"transaction_id from the original charge, not the order id"
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		// Credentials, not the refund. Retrying will never help.
+		result.Status = RefundStatusFailed
+		if len(out.ErrorMessages) > 0 {
+			result.Message = strings.Join(out.ErrorMessages, "; ")
+		}
+	case resp.StatusCode == http.StatusRequestEntityTooLarge,
+		resp.StatusCode == http.StatusConflict,
+		resp.StatusCode == http.StatusUnprocessableEntity:
+		// The refund exceeds what is left to refund, or conflicts with an existing
+		// one. A human has to look: a conflict is usually a refund that already
+		// went through under a different retry.
+		result.Status = RefundStatusManual
+		if len(out.ErrorMessages) > 0 {
+			result.Message = strings.Join(out.ErrorMessages, "; ")
+		}
+	case resp.StatusCode >= 500:
+		// The provider is down or erroring. Retryable, and the money has almost
+		// certainly not moved.
+		result.Status = RefundStatusFailed
+		result.Message = "midtrans: provider error, safe to retry"
+	case resp.StatusCode >= 400:
+		result.Status = RefundStatusFailed
+		if len(out.ErrorMessages) > 0 {
+			result.Message = strings.Join(out.ErrorMessages, "; ")
+		}
+	default:
+		result.Status = RefundStatusFailed
+	}
+
+	// A success with no refund id is not a success we can reconcile later: the
+	// uniqueness guard in the refunds table keys on this value, and without it a
+	// retry would create a second refund row for one refund.
+	if result.Status == RefundStatusPending && out.RefundID == "" {
+		return nil, fmt.Errorf("midtrans: refund accepted for %s but returned no refund_id; "+
+			"cannot be reconciled or retried safely", in.Reference)
+	}
+	return result, nil
+}
+
+// RefundStatus reports the authoritative state of every refund against a charge.
+//
+// This exists because Refund returns Pending and the only thing that ever moves it
+// to Succeeded is the provider's own report. Without a way to ask, a refund stays
+// pending forever and the reconciliation job has nothing to reconcile against --
+// the operator sees a queue of refunds that may or may not have been paid.
+//
+// It is the endpoint a reconciliation worker polls, and the endpoint an operator
+// hits when a refund has been "pending" for longer than the settlement window.
+//
+// Note this returns the refunds Midtrans knows about, not the ones we submitted.
+// A refund we submitted that Midtrans rejected will simply be absent, which is
+// exactly the signal needed to move it to failed rather than waiting forever.
+func (g *MidtransGateway) RefundStatus(ctx context.Context, reference string) ([]GatewayRefund, error) {
+	if strings.TrimSpace(reference) == "" {
+		return nil, fmt.Errorf("midtrans: refund status requires the charge reference")
+	}
+	url := g.apiBase + "/v2/" + refundResourceType(reference) + "/" +
+		url.PathEscape(reference) + "/status"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.SetBasicAuth(g.serverKey, "")
+
+	resp, err := g.http.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("midtrans: charge %s not found", reference)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("midtrans: read status response: %w", err)
+	}
+	var out snapTransactionStatusResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("midtrans: decode status for %s: %w", reference, err)
+	}
+
+	refunds := make([]GatewayRefund, 0, len(out.Refunds))
+	for _, r := range out.Refunds {
+		amount, err := strconv.ParseFloat(r.RefundAmount, 64)
+		if err != nil {
+			// One unparseable amount must not hide the other refunds; skip it and
+			// let the caller's reconciliation notice a refund is missing rather
+			// than failing the entire lookup.
+			continue
+		}
+		refunds = append(refunds, GatewayRefund{
+			ProviderRef: r.RefundID,
+			Amount:      amount,
+			Status:      normaliseRefundStatus(r.RefundStatus),
+			Reason:      r.RefundReason,
+			RequestedAt: r.RefundTime,
+		})
+	}
+	return refunds, nil
+}
+
+// normaliseRefundStatus maps Midtrans refund_status values onto ours.
+//
+// Midtrans reports "pending" and "success"; a refund it has accepted but not yet
+// moved stays "pending" for the settlement window. Anything else is a failure we
+// did not cause and cannot retry blind, so it is Manual.
+func normaliseRefundStatus(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "success", "succeeded":
+		return RefundStatusSucceeded
+	case "pending":
+		return RefundStatusPending
+	case "":
+		// No status means the provider could not place it. Guessing "succeeded"
+		// here would mark a refund paid that was never processed.
+		return RefundStatusManual
+	default:
+		return RefundStatusManual
+	}
+}
+
+// refundResourceType returns the first path segment of Midtrans's v2 API.
+//
+// The endpoint is /v2/{type}/{id}/refund, and {type} is the payment channel, not
+// an arbitrary string. Sending "snaps" for a bank transfer returns 404 against a
+// charge that is plainly paid, so the channel has to be resolved.
+//
+// It is derived from the transaction_id prefix because that is what Midtrans
+// encodes: va-*, qris-*, gop-*, dana-*, bca_*, cc-* and so on. That is a
+// heuristic on a string, and the honest thing is to be conservative about it:
+//
+//   - Separator-insensitive. The channel codes are not consistent about using
+//     "-" versus "_" (VA is "va-", several bank codes are "bca_"), and an earlier
+//     version of this function matched only one form. Every refund on the
+//     unmatched channel then 404s, which is the exact failure this mapping
+//     exists to avoid.
+//   - Defaults to "snaps", which is the product charges are created through in
+//     this integration and which Midtrans resolves to the underlying channel.
+//
+// A caller that knows the channel from the charge record should pass it rather
+// than rely on this; RefundInput has no such override yet, which is a known gap
+// rather than a settled design.
+func refundResourceType(reference string) string {
+	// Only the prefix up to the first separator carries the channel; the rest is
+	// the provider's own id.
+	head := reference
+	if i := strings.IndexAny(reference, "-_"); i >= 0 {
+		head = reference[:i]
+	}
+	switch strings.ToLower(head) {
+	case "va", "bsi", "bni", "bca", "bri", "mandiri", "permata", "cimb", "bnc":
+		return "bank_transfer"
+	case "qris":
+		return "qris"
+	case "gop", "ovo", "dana", "linkaja", "shopeepay":
+		return "ewallet"
+	case "indomaret", "alfamart":
+		return "retail"
+	case "cc":
+		return "credit_card"
+	default:
+		// Snap is the correct default: it is the product the charge was created
+		// through in this integration, and Midtrans resolves the underlying
+		// channel from the transaction id.
+		return "snaps"
+	}
 }
 
 // snapNotification is the HTTP notification Midtrans POSTs on status changes.
