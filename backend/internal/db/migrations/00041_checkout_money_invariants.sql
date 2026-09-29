@@ -187,6 +187,14 @@ END $$;
 -- correct writer can produce, so there is nothing meaningful to restore and
 -- inventing a "previous" value would be a guess.
 -- +goose Down
+
+-- Declared, not silently skipped: scripts/check-migration.mjs reads the marker
+-- below and understands that this constraint belongs to another migration. With
+-- it, the checker reports 00041 honestly. Without it, it forces a choice between
+-- a redundant DROP and a false failure, and a guard that has to be worked around
+-- is a guard people disable.
+-- goose-down: not-owned orders_discount_bounded
+
 ALTER TABLE orders        DROP CONSTRAINT IF EXISTS orders_money_foots;
 ALTER TABLE product_variants DROP CONSTRAINT IF EXISTS product_variants_weight_nonneg;
 ALTER TABLE product_variants DROP CONSTRAINT IF EXISTS product_variants_price_nonneg;

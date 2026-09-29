@@ -38,3 +38,11 @@ DROP TABLE IF EXISTS bundle_items;
 DROP TABLE IF EXISTS bundles;
 DROP TABLE IF EXISTS price_alerts;
 ALTER TABLE coupons DROP COLUMN IF EXISTS seller_id;
+-- `ALTER TABLE ... DROP COLUMN` removes the indexes that referenced the column,
+-- so `idx_coupons_seller` goes with the column. Dropped explicitly anyway,
+-- because "the column is gone so the index must be too" is an assumption about
+-- Postgres's implementation rather than a statement about this schema -- and a
+-- rollback that leaves an index behind is the case a DBA discovers at the worst
+-- moment. Caught by scripts/check-migration.mjs, which could not see it while
+-- the CI step was validating a different file.
+DROP INDEX IF EXISTS idx_coupons_seller;

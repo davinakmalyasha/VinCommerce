@@ -196,6 +196,13 @@ jobs:
         # added in Up that Down never removes.
         run: node ../scripts/check-migration.mjs
 
+      - name: Prove the migration check actually detects regressions
+        # Same argument as the nginx and compose checks: a validator that cannot
+        # fail is worse than none, because it is read as evidence of something.
+        # This is what was missing when the migration check was validating a
+        # fixed file nobody had touched for a long time.
+        run: node ../scripts/check-migration.test.mjs
+
       - name: Validate nginx config structurally
         # `nginx -t` needs the binary and runs in the docker job below. This
         # catches the failure modes that are structural and silent — an

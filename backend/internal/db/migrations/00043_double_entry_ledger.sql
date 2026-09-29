@@ -479,12 +479,19 @@ COMMENT ON TABLE wallets IS
 
 -- +goose Down
 --
+-- goose-down: retained
+--
 -- Deliberately NOT dropping the ledger tables. A Down that dropped them would
 -- discard the accounting history of every payout batch, refund and settlement
 -- processed while this migration was live, which is worse than leaving a schema
 -- an operator can inspect. The tables are retained; the new constraints on
 -- product_variants, orders and payment_intents live in 00041 and are reverted
 -- there.
+--
+-- The marker above is required by scripts/check-migration.mjs. Without it this
+-- Down looks identical to a migration whose rollback was simply forgotten, and
+-- `goose down` would report success having changed nothing -- a rollback that
+-- appears to work is the same failure as a check that cannot fail, one level up.
 --
 -- To actually remove the ledger, an operator must first archive:
 --   CREATE TABLE ledger_journals_archive AS TABLE ledger_journals;
