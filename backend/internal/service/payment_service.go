@@ -169,13 +169,13 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			return nil, nil, err
 		}
 		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
-		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima — VinCommerce",
+		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima â€” VinCommerce",
 			map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 		return intent, &payments.GatewayPayment{Reference: "wallet", Status: "paid"}, nil
 	}
 
 	// COD: payment happens on delivery, but fulfillment must start now.
-	// The order moves pending→paid with payment_status=pending (obligation
+	// The order moves pendingâ†’paid with payment_status=pending (obligation
 	// acknowledged, cash not yet collected) and the reservation is consumed
 	// so the sweeper doesn't cancel it. CaptureCOD finalizes money state at
 	// delivery confirmation.
@@ -201,14 +201,14 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		}
 		if err := tx.AddEvent(ctx, &domain.OrderEvent{
 			OrderID: order.ID, FromStatus: domain.OrderPending, ToStatus: domain.OrderPaid,
-			ActorID: &in.BuyerID, Note: "COD — bayar tunai saat barang diterima",
+			ActorID: &in.BuyerID, Note: "COD â€” bayar tunai saat barang diterima",
 		}); err != nil {
 			return nil, nil, err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, nil, err
 		}
-		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "COD — menunggu pelunasan saat diterima")
+		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "COD â€” menunggu pelunasan saat diterima")
 		return intent, &payments.GatewayPayment{Reference: "cod", Status: "pending"}, nil
 	}
 
@@ -270,8 +270,8 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 }
 
 // CaptureCOD finalizes payment when the buyer confirms delivery on a COD order.
-// COD capture must NOT touch order status — the order is already delivered;
-// only the money state (intent → captured, payment_status → paid) moves.
+// COD capture must NOT touch order status â€” the order is already delivered;
+// only the money state (intent â†’ captured, payment_status â†’ paid) moves.
 func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
@@ -307,7 +307,7 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 		return err
 	}
 	s.publish(ctx, intent.OrderID, "", "", "pembayaran COD tercatat")
-	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
+	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima â€” VinCommerce",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 	return nil
 }
@@ -347,7 +347,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 	switch ev.Type {
 	case payments.EventPaid:
 		// Never capture when the provider amount is missing or disagrees with
-		// the intent — a webhook without an amount must not move money.
+		// the intent â€” a webhook without an amount must not move money.
 		if ev.Amount <= 0 {
 			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
 				"webhook did not include a payable amount")
@@ -390,26 +390,40 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 	return nil
 }
 
-func absDiff(a, b float64) float64 {
-	if a > b {
-		return a - b
-	}
-	return b - a
-}
-
-// moneyRound rounds to 2 decimal places, half away from zero.
+// absDiff is the absolute difference between two amounts.
 //
-// The schema stores money as NUMERIC(14,2) but the Go layer is float64, so
-// every value that reaches SQL is silently re-rounded by Postgres. Rounding
-// in Go first makes the value the application logs, compares and stores all
-// agree, instead of differing by a sen in a way nobody can see. A proper
-// fix is a decimal type end to end; this is the interim that removes the
-// worst of the drift.
-func moneyRound(v float64) float64 {
-	return math.Round(v*100) / 100
-}
+// With whole-rupiah money the epsilon comparisons this used to guard --
+// `absDiff(x, y) > 0.01`, `> 1.0` -- are no longer load-bearing. `> 1.0` in
+// particular let a buyer mark a Rp1,000,000 order paid by reporting 999,999.00,
+// and on a 100%-discount order the minimum accepted claim was Rp0.01. Those
+// should become exact equality, which is the real fix; absDiff remains for the
+// (see absDiff above)
 
-// refundedTotal sums the refund legs already written to the ledger for an
+// moneyRound is defined in money.go and rounds to WHOLE rupiah.
+//
+// It used to live here and round to two decimals, on the reasoning that "the
+// schema stores NUMERIC(14,2) so round to 2dp". That reasoning is what caused
+// the gateway mismatch: the column can carry sen, the currency cannot, and
+// `payments/midtrans.go` charges `int64(math.Round(total))`. A 3% coupon on a
+// Rp12,345.67 cart produced a stored total of Rp11,975.30 and a Midtrans charge
+// of Rp11,975; the webhook compared the two with a 1-sen tolerance, rejected the
+// notification as AMOUNT_MISMATCH, and the expired-order sweeper then cancelled
+// the order at T+30min with the buyer's money already debited and settled to the
+// platform's bank.
+//
+// Rounding to whole rupiah everywhere closes that class of bug at the source:
+// there is no longer a value the application stores that the gateway cannot
+// charge. The NUMERIC(14,2) columns still hold whole rupiah fine; tightening
+// them to NUMERIC(14,0) is a separate schema change.
+
+// absDiff is the absolute difference between two amounts.
+//
+// With whole-rupiah money the epsilon comparisons this used to guard --
+// `absDiff(x, y) > 0.01`, `> 1.0` -- are no longer load-bearing. `> 1.0` in
+// particular let a buyer mark a Rp1,000,000 order paid by reporting 999,999.00,
+// and on a 100%-discount order the minimum accepted claim was Rp0.01. Those
+// should become exact equality, which is the real fix; absDiff remains for the
+// (see absDiff above)// refundedTotal sums the refund legs already written to the ledger for an
 // order.
 //
 // The intent status cannot answer this: a `partially_refunded` intent does not
@@ -475,9 +489,9 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	}); err != nil {
 		return err
 	}
-	// pending→paid ONLY. If the order moved on meanwhile (cancelled by the
+	// pendingâ†’paid ONLY. If the order moved on meanwhile (cancelled by the
 	// payment-timeout sweeper, or already paid via another path), the whole
-	// capture rolls back — a late webhook can never resurrect it.
+	// capture rolls back â€” a late webhook can never resurrect it.
 	if err := tx.SetStatusGuarded(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || domain.Is(err, domain.KindConflict, "") || domain.Is(err, domain.KindNotFound, "") {
 			return domain.E(domain.KindConflict, "ORDER_NOT_PENDING",
@@ -492,7 +506,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 		return err
 	}
 	s.publish(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
-	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
+	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima â€” VinCommerce",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 	return nil
 }
@@ -547,7 +561,7 @@ func (s *PaymentService) publish(ctx context.Context, orderID, from, to, message
 
 // ReleaseEscrow transfers funds to the seller wallet (on delivery completion),
 // deducting the platform commission. The status flip, fee split and both
-// wallet credits happen in ONE transaction — a crash can never release escrow
+// wallet credits happen in ONE transaction â€” a crash can never release escrow
 // without crediting the seller.
 func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
@@ -610,7 +624,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 
 	s.publish(ctx, orderID, order.Status, order.Status, "escrow released to seller")
-	s.emailFor(ctx, orderID, "order_completed", "Pesanan selesai — dana escrow dilepas",
+	s.emailFor(ctx, orderID, "order_completed", "Pesanan selesai â€” dana escrow dilepas",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", sellerAmount)})
 	return nil
 }
@@ -624,7 +638,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 //
 //  1. It ignored order.Status entirely. On a CANCELLED order whose intent was
 //     still captured, an admin could release the escrow (+seller) and then
-//     refund it (-seller, +buyer) — the seller's net was zero but their wallet
+//     refund it (-seller, +buyer) â€” the seller's net was zero but their wallet
 //     balance and payout eligibility had both grown, and a withdrawal in
 //     between turned the mint into real bank cash.
 //
@@ -641,7 +655,7 @@ func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason
 		return err
 	}
 	// partially_refunded MUST be accepted here, otherwise a partially-refunded
-	// intent can never be refunded again — not for the remainder, not at all.
+	// intent can never be refunded again â€” not for the remainder, not at all.
 	// The first version excluded it, which made the partial-refund branches
 	// below unreachable dead code and left a buyer who received a 30% gateway
 	// refund permanently stuck at 30% with no admin path either.
@@ -841,7 +855,7 @@ func (s *PaymentService) IntentByOrder(ctx context.Context, orderID string) (*do
 //  2. Bound the payout by what the platform actually earned on this order.
 //     The old formula paid intent.Amount/2, which on a Rp 500.000 order with a
 //     2% fee meant paying Rp 250.000 out of a commission that was only ever
-//     going to be Rp 10.000 — a ~25x amplification of a single dispute.
+//     going to be Rp 10.000 â€” a ~25x amplification of a single dispute.
 //
 //  3. Run the wallet movements and the settlement record in ONE transaction, so
 //     a crash cannot leave money moved with no marker (or a marker with no

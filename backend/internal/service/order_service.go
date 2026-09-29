@@ -431,10 +431,36 @@ type Quote struct {
 	PointsRedeemed     int     `json:"points_redeemed,omitempty"`
 
 	discountBySeller map[string]float64
+
+	// subtotalBySeller and gramsBySeller carry the per-bundle figures the quote
+	// computed, so PlaceOrder can build the sub-orders from the SAME numbers
+	// rather than re-deriving them from the cart.
+	//
+	// It used to recompute both, in a second loop over the same cart lines:
+	//
+	//	subtotal += l.Subtotal
+	//	weightKg += (l.WeightGrams * l.Quantity) / 1000
+	//
+	// which is a time-of-check/time-of-use split -- the quote is shown to the
+	// buyer, then a second pass over a re-read cart produces the amount that is
+	// actually persisted and charged. Any divergence between the two loops is a
+	// buyer charged a different number than they were quoted, and the two loops
+	// had already diverged on rounding. It is also why the weight bug was a
+	// money bug rather than a display bug: this is the loop whose result becomes
+	// `orders.total_amount`.
+	subtotalBySeller map[string]float64
+	gramsBySeller    map[string][]int
 }
 
 // DiscountFor returns the discount allocated to one seller bundle.
 func (q *Quote) DiscountFor(sid string) float64 { return q.discountBySeller[sid] }
+
+// SubtotalFor returns the merchandise subtotal the quote computed for one
+// seller bundle. PlaceOrder must use this rather than re-summing the cart.
+func (q *Quote) SubtotalFor(sid string) float64 { return q.subtotalBySeller[sid] }
+
+// BillableKgFor returns the billable weight the quote computed for one bundle.
+func (q *Quote) BillableKgFor(sid string) int { return billableKg(q.gramsBySeller[sid]) }
 
 // ShippingQuote is per-method fee for one seller bundle.
 type ShippingQuote struct {
@@ -550,57 +576,55 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 	// Allocate platform-level discounts (global coupon + points) across seller
 	// bundles proportionally to their subtotal share, so each sub-order carries
 	// its fair share instead of duplicating the full discount.
+	//
+	// This is allocateGlobal from money.go, extracted so it can be property
+	// tested. The inline version it replaced rounded each non-final share to the
+	// nearest rupiah, accumulated, and gave the last bundle the remainder; with
+	// enough sellers the accumulated up-rounding exceeded the amount and the
+	// last share went negative, which inflated that order's total AND tripped
+	// migration 00040's `CHECK (discount_amount >= 0 AND discount_amount <=
+	// subtotal)`, failing the whole multi-seller checkout with a 500.
 	bundleSubtotals := map[string]float64{}
+	bundleGrams := map[string][]int{}
 	for _, sid := range sellerIDs {
 		s2 := 0.0
 		for _, l := range sellerBundles[sid] {
-			s2 += l.Subtotal
+			s2 += moneyRound(l.Subtotal)
+			bundleGrams[sid] = append(bundleGrams[sid], l.WeightGrams*l.Quantity)
 		}
 		bundleSubtotals[sid] = s2
 	}
-	allocateGlobal := func(amount float64) {
-		if amount <= 0 || len(sellerIDs) == 0 {
-			return
-		}
-		var sumAll float64
-		for _, sid := range sellerIDs {
-			sumAll += bundleSubtotals[sid]
-		}
-		if sumAll <= 0 {
-			return
-		}
-		assigned := 0.0
-		for i, sid := range sellerIDs {
-			var share float64
-			if i == len(sellerIDs)-1 {
-				share = amount - assigned // remainder lands on the last bundle
-			} else {
-				share = math.Round(amount*bundleSubtotals[sid]/sumAll*100) / 100
-				assigned += share
-			}
+	quote.subtotalBySeller = bundleSubtotals
+	quote.gramsBySeller = bundleGrams
+	applyGlobalDiscount := func(amount float64) {
+		for sid, share := range allocateGlobal(amount, sellerIDs, bundleSubtotals) {
 			quote.discountBySeller[sid] += share
 		}
 	}
 	if coupon != nil && coupon.SellerID == nil {
-		allocateGlobal(quote.DiscountAmount)
+		applyGlobalDiscount(quote.DiscountAmount)
 	}
-	allocateGlobal(quote.PointsDiscount)
+	applyGlobalDiscount(quote.PointsDiscount)
 
 	quote.InsuranceAvailable = s.insurancePct > 0
 	quote.InsuranceSelected = insurance && quote.InsuranceAvailable
 
 	for _, sid := range sellerIDs {
 		bundleSubtotal := 0.0
-		weightKg := 0
-		for _, l := range sellerBundles[sid] {
-			bundleSubtotal += l.Subtotal
-			weightKg += (l.WeightGrams * l.Quantity) / 1000
-		}
+		// Accumulate grams and convert once, at the end. The previous
+		// `weightKg += (l.WeightGrams * l.Quantity) / 1000` divided per line
+		// and summed, which truncated instead of rounding up AND made
+		// truncate-per-line differ from truncate-of-sum: three 600g items plus
+		// one 400g item is 2.2kg and was billed as 1kg, and six 500g items is
+		// 3.0kg and was billed as 0kg -- free shipping on every order from a
+		// seller whose catalogue is entirely sub-kilogram.
+		weightKg := billableKg(bundleGrams[sid])
+		bundleSubtotal = bundleSubtotals[sid]
 		// store coupon discount scoped to this seller
 		if coupon != nil && coupon.SellerID != nil && *coupon.SellerID == sid {
 			d := couponDiscount(coupon, bundleSubtotal)
-			quote.DiscountAmount += d
-			total -= d
+			quote.DiscountAmount = moneyRound(quote.DiscountAmount + d)
+			total = moneyRound(total - d)
 			quote.discountBySeller[sid] += d
 		}
 		// free shipping threshold
@@ -615,19 +639,19 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 				WeightKg: weightKg, Fee: 0, MinDays: method.MinDays, MaxDays: method.MaxDays,
 			})
 		} else {
-			fee := method.BaseFee + float64(weightKg)*method.PerKgFee
+			fee := shippingFee(method.BaseFee, method.PerKgFee, weightKg)
 			quote.Shipping = append(quote.Shipping, &ShippingQuote{
 				MethodID: method.ID, Code: method.Code, Name: method.Name,
 				BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
 				WeightKg: weightKg, Fee: fee, MinDays: method.MinDays, MaxDays: method.MaxDays,
 			})
-			total += fee
+			total = moneyRound(total + fee)
 		}
 		if quote.InsuranceSelected {
-			sf := math.Round(bundleSubtotal*s.insurancePct) / 100
+			sf := insuranceFee(bundleSubtotal, s.insurancePct)
 			quote.Shipping[len(quote.Shipping)-1].InsuranceFee = sf
-			quote.InsuranceFee += sf
-			total += sf
+			quote.InsuranceFee = moneyRound(quote.InsuranceFee + sf)
+			total = moneyRound(total + sf)
 		}
 	}
 	quote.Total = total
@@ -762,12 +786,17 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 		}
 		bundle := sellerBundles[sid]
 
-		subtotal := 0.0
-		weightKg := 0
-		for _, l := range bundle {
-			subtotal += l.Subtotal
-			weightKg += (l.WeightGrams * l.Quantity) / 1000
-		}
+		// From the quote, not from a second pass over the cart. This used to be
+		// `subtotal += l.Subtotal; weightKg += (l.WeightGrams * l.Quantity) / 1000`
+		// in a loop of its own -- a time-of-check/time-of-use split where the
+		// numbers shown to the buyer came from QuoteCheckout and the numbers
+		// persisted and charged came from this second read. The two loops had
+		// already diverged on rounding, and the weight loop was the one that
+		// truncated per line, so a sub-kilogram bundle was persisted at 0kg.
+		//
+		// The billable weight is not needed here: shipping was already priced by
+		// the quote, and `bundle` below is only used to snapshot the line items.
+		subtotal := quote.SubtotalFor(sid)
 
 		discount := quote.DiscountFor(sid)
 		shippingFee := quote.Shipping[shipIdx].Fee
@@ -785,7 +814,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			DiscountAmount:  discount,
 			ShippingFee:     shippingFee,
 			InsuranceFee:    insuranceFee,
-			TotalAmount:     subtotal - discount + shippingFee + insuranceFee,
+			TotalAmount:     RoundIDR(subtotal - discount + shippingFee + insuranceFee),
 			PaymentStatus:   domain.PaymentUnpaid,
 			CouponCode:      quote.CouponCode,
 			ShippingAddress: addressMap(orderAddress(address, in.AddressesBySeller, sid)),
@@ -1370,6 +1399,18 @@ func (s *OrderService) validCoupon(ctx context.Context, userID, code string, sub
 	return coupon, true, nil
 }
 
+// couponDiscount is the discount a coupon grants on a subtotal.
+//
+// Rounded to whole rupiah. It previously returned the raw float, so a 3% coupon
+// on Rp12,345.67 produced 370.37010000000004 -- which was written to
+// `orders.discount_amount` and returned to the frontend as the quoted discount,
+// while the buyer was charged 370.37. The quote and the charge disagreed, and
+// the JSON the client rendered was a float the currency does not have.
+//
+// The clamp to `subtotal` is load-bearing for a 100% coupon combined with any
+// other discount source (loyalty points): without it the sum of the two
+// allocations exceeds the subtotal and migration 00040's
+// `CHECK (discount_amount <= subtotal)` rejects the order.
 func couponDiscount(c *domain.Coupon, subtotal float64) float64 {
 	var d float64
 	if c.Type == "percent" {
@@ -1383,7 +1424,10 @@ func couponDiscount(c *domain.Coupon, subtotal float64) float64 {
 	if d > subtotal {
 		d = subtotal
 	}
-	return d
+	if d < 0 {
+		d = 0
+	}
+	return RoundIDR(d)
 }
 
 func addressMap(a *domain.Address) map[string]any {
