@@ -35,6 +35,28 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Cause }
 
+// Is lets errors.Is match a *Error against a sentinel by kind and code rather
+// than by pointer identity.
+//
+// Without this, `errors.Is(err, domain.ErrNotFound)` silently degrades to
+// comparing two *pointers*, because *Error has no Is method and its Unwrap
+// returns Cause (usually nil). That fails even when the error IS the sentinel:
+// `E(KindNotFound, "NOT_FOUND", ...)` builds a fresh struct. Every sentinel in
+// this file is a package-level value, so no code path can ever return the same
+// pointer, and every `errors.Is(err, domain.ErrX)` in the codebase was
+// permanently false rather than occasionally false -- the worst failure mode
+// for a guard, because it compiles, type-checks, and reads as a real check.
+//
+// Prefer domain.Is(err, kind, code) where you want to match on kind alone, for
+// example a repository that reports "not found" with its own specific code.
+func (e *Error) Is(target error) bool {
+	t, ok := target.(*Error)
+	if !ok {
+		return false
+	}
+	return e.Kind == t.Kind && e.Code == t.Code
+}
+
 // E constructs a domain error.
 func E(kind ErrorKind, code, message string) *Error {
 	return &Error{Kind: kind, Code: code, Message: message}

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -993,10 +992,25 @@ func (s *OrderService) CancelOrder(ctx context.Context, orderID string, actorID 
 			return domain.E(domain.KindConflict, "REFUND_BEFORE_CANCEL",
 				"payment is already captured; refund the order before cancelling it")
 
-		case ierr != nil && !errors.Is(ierr, domain.ErrNotFound):
+		case ierr != nil && !domain.Is(ierr, domain.KindNotFound, ""):
 			// Not "no such intent" — a real failure. Refuse: the cost of a
 			// spurious refusal is one retry, the cost of a false "safe" is the
 			// buyer's money.
+			//
+			// This was `errors.Is(ierr, domain.ErrNotFound)`, which is
+			// ALWAYS false and so sent every failure down this arm. Two
+			// consequences: the `default` arm below was unreachable, so an
+			// order with payment_status='paid' and no payment_intents row
+			// could never be cancelled at all; and an externally-paid order
+			// creates no intent, so the buyer got a permanent 500 on cancel and
+			// the seller's stock stayed reserved against an order nobody could
+			// release.
+			//
+			// domain.Is matches on Kind alone, because IntentByOrder reports
+			// absence as `E(KindNotFound, "NO_INTENT", ...)`, a different Code
+			// from the ErrNotFound sentinel's "NOT_FOUND". Matching on the
+			// sentinel would need the codes unified; matching on the kind is
+			// the honest question, which is "is this a not-found, or a fault?".
 			return ierr
 
 		default:
@@ -1076,10 +1090,8 @@ func (s *OrderService) CancelExpired(ctx context.Context, limit int) (int, error
 	for _, id := range ids {
 		if err := s.CancelOrder(ctx, id, nil, "payment timeout"); err != nil {
 			failed++
-			if s.logger != nil {
-				s.logger.Warn("failed to cancel expired order",
-					"order_id", id, "error", err.Error())
-			}
+			s.log().Warn("failed to cancel expired order",
+				"order_id", id, "error", err.Error())
 			continue
 		}
 		cancelled++
@@ -1098,50 +1110,142 @@ func (s *OrderService) CancelExpired(ctx context.Context, limit int) (int, error
 // window elapses (ghost-buyer sweep). Without this, orders strand in
 // 'shipped' forever and escrow is never released to the seller. COD intents
 // are captured at this point too.
+//
+// This job was completely inert. It passed the actor literal "system", and
+// OrderTx.AddEvent casts it with `NULLIF($4,”)::uuid`, so Postgres raised
+// `22P02 invalid input syntax for type uuid` on every single order, the
+// surrounding transaction rolled back, and the error was discarded by a bare
+// `continue`. The job returned (0, nil), so asynq recorded every run as
+// SUCCESS. Net effect: no order was ever auto-delivered, no escrow was ever
+// auto-released, and no COD was ever captured for a ghost buyer -- while the
+// queue dashboard showed a healthy green job. The sibling sweep
+// `CompleteDelivered` passed "" (which NULLIF turns into NULL) and worked, which
+// is what the intent always was: an empty actor means "system", so the
+// attribution column is NULL rather than a fake user id.
+//
+// Failure handling now matches CancelExpired: count, log, and return an error so
+// the task is retried and shows up in queue metrics.
 func (s *OrderService) AdvanceShippedOrders(ctx context.Context, olderThan time.Duration, limit int) (int, error) {
 	ids, err := s.orders.ShippedBefore(ctx, time.Now().UTC().Add(-olderThan), limit)
 	if err != nil {
 		return 0, err
 	}
-	advanced := 0
+	advanced, failed := 0, 0
 	for _, id := range ids {
-		if err := s.orders.TransitionOrder(ctx, id, domain.OrderShipped, domain.OrderDelivered, "system"); err != nil {
+		// Empty string, not "system": AddEvent does NULLIF($4,'')::uuid, so ""
+		// becomes a NULL actor_id (a system action) whereas "system" is a
+		// malformed uuid and aborts the transaction.
+		if err := s.orders.TransitionOrder(ctx, id, domain.OrderShipped, domain.OrderDelivered, ""); err != nil {
+			failed++
+			s.log().Warn("failed to advance shipped order to delivered",
+				"order_id", id, "error", err.Error())
 			continue
 		}
 		s.publishOrderEvent(ctx, id, domain.OrderShipped, domain.OrderDelivered)
-		if s.payments != nil {
-			_ = s.payments.CaptureCOD(ctx, id)
+		if s.payments == nil {
+			// Not a "skip quietly" case. Without the payment service the COD
+			// capture below cannot run, which is the entire point of this sweep
+			// for COD orders. Surface it rather than reporting success.
+			failed++
+			s.log().Error("cannot capture COD: payment service is not wired",
+				"order_id", id, "hint", "cmd/worker builds services separately and must set the payment service")
+			continue
+		}
+		if err := s.payments.CaptureCOD(ctx, id); err != nil {
+			// The order is already delivered and the sweep's own predicate
+			// (status='shipped') will never select it again, so a failure here
+			// is permanent unless something retries it. Count it and let the
+			// returned error drive a retry; the guarded transition makes a
+			// second attempt a no-op for the status write and CaptureCOD is
+			// itself guarded on intent status.
+			failed++
+			s.log().Error("failed to capture COD for ghost-buyer order",
+				"order_id", id, "error", err.Error())
+			continue
 		}
 		advanced++
+	}
+	if failed > 0 {
+		return advanced, fmt.Errorf("advanced %d of %d shipped orders; %d failed", advanced, len(ids), failed)
 	}
 	return advanced, nil
 }
 
 // CompleteDelivered auto-completes delivered orders past the confirmation window.
+//
+// Ordering matters here and was wrong. This used to transition the order to
+// `completed` first and release escrow last, and it swallowed the release error
+// with a bare `continue`. The sweeper's own predicate is
+// `status = 'delivered'`, so an order whose escrow release failed was already
+// `completed`, was never selected again, and the seller was never paid -- with
+// no log line, no counter, and asynq recording SUCCESS. That is permanent
+// seller non-payment triggered by one transient database error.
+//
+// Escrow is therefore released BEFORE the status transition. If the release
+// fails the order stays `delivered`, the next sweep run selects it again, and
+// ReleaseEscrow is guarded on the intent's status so the retry is idempotent.
+// Releasing on `delivered` is also the correct semantic: the money moves when the
+// buyer has the goods, and the completion is a formality on top of that.
 func (s *OrderService) CompleteDelivered(ctx context.Context, olderThan time.Duration, limit int) (int, error) {
 	ids, err := s.orders.DeliveredBefore(ctx, time.Now().UTC().Add(-olderThan), limit)
 	if err != nil {
 		return 0, err
 	}
-	completed := 0
+	completed, failed := 0, 0
 	for _, id := range ids {
 		order, err := s.orders.ByID(ctx, id)
-		if err != nil || order.Status != domain.OrderDelivered {
+		if err != nil {
+			failed++
+			s.log().Warn("failed to load delivered order", "order_id", id, "error", err.Error())
+			continue
+		}
+		if order.Status != domain.OrderDelivered {
+			// Another actor (buyer confirm, admin) got there first. Not a
+			// failure -- the guarded transition below would reject it anyway.
+			continue
+		}
+		if s.payments == nil {
+			failed++
+			s.log().Error("cannot release escrow: payment service is not wired", "order_id", id)
+			continue
+		}
+		// Pay the seller FIRST. If this fails, the order stays `delivered` and
+		// the next run retries it. See the doc comment for why the order used
+		// to become permanently uncompletable.
+		if err := s.payments.ReleaseEscrow(ctx, id); err != nil {
+			failed++
+			s.log().Error("failed to release escrow; order left delivered for retry",
+				"order_id", id, "error", err.Error())
 			continue
 		}
 		if err := s.orders.TransitionOrder(ctx, id, domain.OrderDelivered, domain.OrderCompleted, ""); err != nil {
+			failed++
+			s.log().Warn("escrow released but status transition failed",
+				"order_id", id, "error", err.Error())
 			continue
 		}
 		s.publishOrderEvent(ctx, id, domain.OrderDelivered, domain.OrderCompleted)
 		s.awardPoints(ctx, id)
-		if s.payments != nil {
-			if err := s.payments.ReleaseEscrow(ctx, id); err != nil {
-				continue
-			}
-		}
 		completed++
 	}
+	if failed > 0 {
+		return completed, fmt.Errorf("completed %d of %d delivered orders; %d failed", completed, len(ids), failed)
+	}
 	return completed, nil
+}
+
+// log returns the service logger, never nil.
+//
+// A nil-logger guard is how the worker ended up silently discarding every
+// per-order failure: cmd/worker built its services without calling SetLogger,
+// so `if s.logger != nil` skipped the only line that would have shown the
+// problem. A sweeper that cannot report a failure is a sweeper that fails
+// silently, so this falls back to the default slog logger instead.
+func (s *OrderService) log() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 // Reorder re-adds a past order's items to the buyer's cart (Beli Lagi).
