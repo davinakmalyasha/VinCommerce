@@ -17,11 +17,16 @@ import (
 
 // SellerService implements store onboarding, product management and returns.
 type SellerService struct {
-	stores           *repository.StoreRepository
-	users            *repository.UserRepository
-	products         *repository.ProductRepository
-	orders           *repository.OrderRepository
-	payments         *repository.PaymentRepository
+	stores   *repository.StoreRepository
+	users    *repository.UserRepository
+	products *repository.ProductRepository
+	orders   *repository.OrderRepository
+	payments *repository.PaymentRepository
+	// paymentSvc is the payment SERVICE. Distinct from `payments` above: the
+	// repository is raw persistence, the service owns the money invariants
+	// (cumulative refund cap, leg derivation, state transitions). Anything that
+	// MOVES money must go through the service, never the repository.
+	paymentSvc       *PaymentService
 	sessions         *repository.SessionRepository
 	mailer           *mail.Client
 	webURL           string
@@ -67,6 +72,18 @@ func (s *SellerService) UpdatePresenceStats(ctx context.Context) error {
 func NewSellerService(stores *repository.StoreRepository, users *repository.UserRepository, products *repository.ProductRepository, orders *repository.OrderRepository, payments *repository.PaymentRepository) *SellerService {
 	return &SellerService{stores: stores, users: users, products: products, orders: orders, payments: payments}
 }
+
+// SetPaymentService gives the seller service the payment SERVICE, not just the
+// payment repository.
+//
+// It needs the service, not the repository, because RefundReturn has to go
+// through the same refund implementation as every other refund path. Holding
+// only the repository is what let RefundReturn become a second, independent
+// refund with none of the invariants: no cumulative cap, no debit, no
+// commission reversal, and a terminal intent status on the first refunded item.
+// Those are the properties of a refund, not of a table, so they belong behind
+// the service that owns them.
+func (s *SellerService) SetPaymentService(p *PaymentService) { s.paymentSvc = p }
 
 // SetSessions enables audit log access (admin).
 func (s *SellerService) SetSessions(sess *repository.SessionRepository) { s.sessions = sess }
@@ -902,8 +919,36 @@ func (s *SellerService) SellerDecideReturn(ctx context.Context, sellerID, return
 
 // RefundReturn finalizes a refund after the item is returned (admin).
 // Money movement is ledger-correct: the payment intent is flipped to
-// refunded (guarded), the seller wallet is clawed back when escrow was
-// already released, and the buyer is credited — all in ONE transaction.
+// RefundReturn refunds an approved return claim.
+//
+// This used to be a second, independent refund implementation, and it had NONE
+// of the invariants RefundOrder had. It was an unbounded money mint reachable
+// from a single admin click in the returns queue:
+//
+//   - No cumulative cap. It never consulted the ledger, so N approved returns on
+//     one order each credited `req.Amount`. A four-item order produced four
+//     credits; nothing bounded their sum against the charge.
+//   - No debit anywhere. The buyer's credit had no counterpart at all. For a
+//     Midtrans-funded order the real cash stayed at the gateway AND the buyer
+//     received a spendable wallet balance. Repeatable per return claim.
+//   - Gross seller debit. It debited the ITEM VALUE rather than the net the
+//     seller received, and reversed no commission -- so the platform kept its
+//     cut on a fully returned item and the seller paid the fee out of unrelated
+//     balance. This is the exact defect RefundOrder's own doc comment claimed
+//     had been fixed.
+//   - Terminal status on the first item. It set IntentRefunded rather than
+//     IntentPartiallyRefunded, so after refunding one Rp50,000 item of a
+//     Rp500,000 order the intent was `refunded` and every other path refused
+//     with NOT_REFUNDABLE. The remaining Rp450,000 was unrecoverable.
+//   - It collided with `uq_wallet_tx_business_event` (00040), a partial unique
+//     index on (wallet_id, ref_id, kind, reason): a second refund for the same
+//     order violated it and rolled the whole transaction back with a raw 23505.
+//
+// It now goes through the same plan as every other refund: lock the intent,
+// read the cumulative from the ledger inside the transaction, cap at the
+// remaining, derive the two reversal legs so they sum to the refund exactly, and
+// set the correct partial/terminal status. One implementation, so the invariants
+// cannot be satisfied on one path and not the other.
 func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note string) error {
 	req, err := s.stores.ReturnByID(ctx, returnID)
 	if err != nil {
@@ -925,10 +970,11 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 		return err
 	}
 	defer tx.Rollback(ctx)
+	q := tx.Querier()
 
-	// Claim the return atomically inside the same tx as the money movement:
-	// two concurrent admin clicks cannot double-credit.
-	tag, err := tx.PgTx().Exec(ctx,
+	// Claim the return atomically inside the same tx as the money movement, so
+	// two concurrent admin clicks cannot both proceed.
+	tag, err := q.Exec(ctx,
 		`UPDATE return_requests SET status = 'refunded', admin_note = NULLIF($2, ''), resolved_at = now(), updated_at = now()
 		 WHERE id = $1 AND status = 'approved' AND resolution = 'refund'`, returnID, note)
 	if err != nil {
@@ -940,32 +986,38 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 
 	intent, ierr := s.payments.IntentByOrder(ctx, req.OrderID)
 	switch {
-	case ierr == nil && (intent.Status == domain.IntentCaptured || intent.Status == domain.IntentReleased):
-		wasReleased := intent.Status == domain.IntentReleased
-		if err := s.payments.SetIntentStatusGuardedTx(ctx, tx.PgTx(), intent.ID,
-			[]string{domain.IntentCaptured, domain.IntentReleased}, domain.IntentRefunded); err != nil {
+	case ierr == nil && (intent.Status == domain.IntentCaptured ||
+		intent.Status == domain.IntentReleased ||
+		intent.Status == domain.IntentPartiallyRefunded):
+		// Delegate the money movement to the shared refund path so the cap, the
+		// leg derivation and the status transition are identical to every other
+		// refund. The return's own claim is already marked refunded above; if the
+		// refund fails, the whole transaction rolls back including that UPDATE, so
+		// the claim is not left in a state where it cannot be retried.
+		if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, req.Amount,
+			"return refund: "+returnID); err != nil {
 			return err
-		}
-		if wasReleased {
-			// escrow already paid out to the seller — claw the item value back
-			if err := s.payments.WalletTxOn(ctx, tx.PgTx(), req.SellerID, "debit", domain.TxReasonRefund, req.Amount, req.OrderID); err != nil {
-				return err
-			}
 		}
 	case ierr == nil:
 		return domain.E(domain.KindConflict, "INTENT_STATE", "payment intent for this order is not refundable")
 	default:
-		// No intent (legacy/external flows): wallet credit only.
+		// No intent at all: an externally-paid or legacy order. There is no
+		// captured money to reverse and no rate card to reverse, so the only
+		// correct action is to record that the return was approved and let an
+		// operator settle it out of band. Crediting a wallet for money the
+		// platform never received is how this path became a mint.
+		//
+		// Refusing is the honest behaviour. A wallet credit here would be funded
+		// by nothing, and "refund the buyer" for an order paid outside the system
+		// is an operator's decision with a bank transfer attached, not a button.
+		return domain.E(domain.KindConflict, "NO_PAYMENT_INTENT",
+			"this order has no payment record, so there is no money to reverse; "+
+				"settle the refund with the buyer out of band and mark the return resolved")
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), req.BuyerID, "credit", domain.TxReasonRefund, req.Amount, req.OrderID); err != nil {
-		return err
-	}
-	if err := tx.SetPaymentStatus(ctx, req.OrderID, domain.PaymentRefunded); err != nil {
-		return err
-	}
+
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: req.OrderID, FromStatus: order.Status, ToStatus: order.Status,
-		ActorID: nil, Note: fmt.Sprintf("return refund: item value Rp %.0f (%s)", req.Amount, returnID),
+		ActorID: nil, Note: fmt.Sprintf("return refund settled: %s", returnID),
 	}); err != nil {
 		return err
 	}
@@ -977,7 +1029,7 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 		map[string]any{"ReturnStatus": "refund", "ReturnNote": "Dana refund telah dikembalikan."})
 	if s.notifs != nil {
 		_ = s.notifs.Notify(ctx, req.BuyerID, "order", "Refund diproses",
-			"Refund untuk returanmu telah dikirim ke dompet.", map[string]any{"order_id": req.OrderID})
+			"Refund untuk returanmu telah diproses.", map[string]any{"order_id": req.OrderID})
 	}
 	return nil
 }

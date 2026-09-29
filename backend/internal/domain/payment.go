@@ -47,6 +47,27 @@ type PaymentIntent struct {
 
 	FeeAmount    float64 `json:"fee_amount"`
 	SellerAmount float64 `json:"seller_amount"`
+
+	// CommissionComputed distinguishes "the split has not been derived yet"
+	// from "the split was derived and the fee is genuinely zero".
+	//
+	// The code previously used `FeeAmount == 0` as that predicate, which is
+	// ambiguous. A promo-period order with a 0% commission has FeeAmount == 0
+	// after escrow release, and a refund on that order afterwards recomputed the
+	// fee from the CURRENTLY active rate and then debited it from the platform
+	// wallet -- taking commission earned on other sellers' orders, or failing
+	// the entire refund with INSUFFICIENT_BALANCE and leaving the buyer's return
+	// stuck with no retry path.
+	//
+	// A boolean cannot be ambiguous, and it is what lets the rate card be
+	// snapshotted onto the intent at creation rather than read at release time.
+	CommissionComputed bool `json:"commission_computed"`
+
+	// CommissionRatePct and CommissionRateFixed are the rate card values that
+	// were in force when the charge was created. A refund reverses the fee that
+	// was actually taken, not the fee that today's settings would produce.
+	CommissionRatePct   float64 `json:"commission_rate_pct"`
+	CommissionRateFixed float64 `json:"commission_rate_fixed"`
 }
 
 // Wallet holds seller balances.

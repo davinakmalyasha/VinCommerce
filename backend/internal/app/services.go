@@ -255,7 +255,20 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	orderSvc.SetNotificationService(notificationSvc)
 	orderSvc.SetUsers(r.Users)
 	orderSvc.SetMailer(d.Mailer, cfg.App.WebURL)
+	// The order service has post-commit paths (loyalty debit, email send) where
+	// the work is already durable, so the logger is the only way their failures
+	// stay visible. This is also the dependency the worker was silently missing
+	// before the graph was unified, which is why it is set here rather than in
+	// the router: a setter that is only called from one binary is a setter that
+	// can be forgotten.
 	orderSvc.SetLogger(logger)
+
+	// The seller service needs the payment SERVICE, not just its repository:
+	// RefundReturn has to go through the same refund implementation as every
+	// other refund path, and holding only the repository is what let it become a
+	// second, independent refund with no cumulative cap, no debit anywhere, and a
+	// terminal intent status on the first refunded item.
+	sellerSvc.SetPaymentService(paymentSvc)
 
 	sellerSvc.SetSessions(r.Sessions)
 	sellerSvc.SetReturnAutoApprove(cfg.Payments.ReturnAutoApproveMax)

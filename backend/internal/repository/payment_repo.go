@@ -44,14 +44,43 @@ func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.Payment
 }
 
 // CreateIntentTx inserts a payment intent inside a caller-managed transaction.
-func (r *PaymentRepository) CreateIntentTx(ctx context.Context, tx pgx.Tx, in *domain.PaymentIntent) error {
-	_, err := tx.Exec(ctx, `
+// CreateIntentTx inserts the payment intent, snapshotting the commission rate
+// card in force at CHARGE time.
+//
+// The snapshot is what a refund later reverses. The rate used to be read at
+// escrow RELEASE time from the currently-active `platform_fees` row, so an admin
+// changing the rate between the order and the delivery retroactively changed what
+// the seller was paid, and a refund recomputed the fee from today's rate rather
+// than reversing the fee that was actually taken. See migration 00042.
+//
+// The rate is read HERE rather than by the caller, deliberately. There are four
+// intent-creation sites (wallet, COD, gateway, and any repair path) and reading
+// the rate at each of them is a chance to forget one. A refund is the only thing
+// that needs the snapshot, so the write has to be unconditional.
+//
+// A missing rate card is not an error: the intent is created with a zero
+// snapshot and commission_computed stays false, so the refund path falls back to
+// the active rate. That is strictly better than failing a checkout over a
+// missing configuration row, and strictly better than the retroactive
+// behaviour.
+func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *domain.PaymentIntent) error {
+	// Caller-supplied snapshot wins (a caller that already knows the rate, or a
+	// repair path), otherwise read the active card.
+	if in.CommissionRatePct == 0 && in.CommissionRateFixed == 0 {
+		if cfg, err := r.ActiveFeeTx(ctx, q); err == nil && cfg != nil {
+			in.CommissionRatePct = cfg.Pct
+			in.CommissionRateFixed = cfg.Fixed
+		}
+	}
+	_, err := q.Exec(ctx, `
 		INSERT INTO payment_intents (id, order_id, buyer_id, amount, currency, status, gateway,
-			gateway_ref, snap_token, gateway_txn_id, redirect_url, method, idempotency_key)
+			gateway_ref, snap_token, gateway_txn_id, redirect_url, method, idempotency_key,
+			commission_computed, commission_rate_pct, commission_rate_fixed)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
-			NULLIF($12, ''), $13)`,
+			NULLIF($12, ''), $13, false, $14, $15)`,
 		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway,
-		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey)
+		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey,
+		in.CommissionRatePct, in.CommissionRateFixed)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return domain.E(domain.KindConflict, "INTENT_EXISTS", "this order already has a payment intent")
@@ -60,12 +89,33 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, tx pgx.Tx, in *d
 	return err
 }
 
+// ApplyFeeTx records the derived split and marks the commission computed.
+//
+// The boolean is set here and nowhere else. It is the predicate the refund path
+// uses to decide whether the split is authoritative; before it existed the code
+// used `fee_amount == 0`, which cannot distinguish "not derived" from "derived
+// and genuinely zero".
+func (r *PaymentRepository) ApplyFeeTx(ctx context.Context, q Querier, intentID string, fee, sellerAmount float64) error {
+	_, err := q.Exec(ctx, `
+		UPDATE payment_intents
+		SET fee_amount = $2, seller_amount = $3, commission_computed = true, updated_at = now()
+		WHERE id = $1`, intentID, fee, sellerAmount)
+	return err
+}
+
 // intentColumns are the shared SELECT columns for intent lookups.
+//
+// The commission snapshot columns are included here rather than read separately,
+// because a refund that recomputes the split from today's settings instead of
+// the rate card that was in force at charge time is a silent money bug. Having
+// them in the shared projection means every reader sees the same numbers.
 const intentColumns = `
 	id, order_id, buyer_id, amount, currency, status, gateway,
 	COALESCE(gateway_ref,''), COALESCE(snap_token,''), COALESCE(gateway_txn_id,''), COALESCE(redirect_url,''),
 	COALESCE(method,''), idempotency_key,
-	escrow_released_at, captured_at, refunded_at, fee_amount, seller_amount, created_at, updated_at`
+	escrow_released_at, captured_at, refunded_at, fee_amount, seller_amount,
+	commission_computed, commission_rate_pct, commission_rate_fixed,
+	created_at, updated_at`
 
 func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 	var in domain.PaymentIntent
@@ -73,6 +123,7 @@ func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 		&in.GatewayRef, &in.SnapToken, &in.GatewayTxnID, &in.RedirectURL,
 		&in.Method, &in.IdempotencyKey,
 		&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.FeeAmount, &in.SellerAmount,
+		&in.CommissionComputed, &in.CommissionRatePct, &in.CommissionRateFixed,
 		&in.CreatedAt, &in.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -131,8 +182,13 @@ func (r *PaymentRepository) SetIntentStatusGuarded(ctx context.Context, intentID
 }
 
 // SetIntentStatusGuardedTx is SetIntentStatusGuarded inside a transaction.
-func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, tx pgx.Tx, intentID string, expected []string, to string) error {
-	return setIntentStatusGuardedOn(tx, ctx, intentID, expected, to)
+//
+// It takes a Querier rather than a pgx.Tx so a service can pass whichever handle
+// it holds without naming the pgx type, and so the import-boundary check
+// (scripts/check-import-boundaries.mjs) can forbid pgx.Tx in a service signature
+// while still permitting pgx.ErrNoRows, which a repository legitimately matches.
+func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Querier, intentID string, expected []string, to string) error {
+	return setIntentStatusGuardedOn(q, ctx, intentID, expected, to)
 }
 
 // SumRefundedByOrder totals the refund credits already posted for an order, so
@@ -142,9 +198,18 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, tx pgx
 // because a `partially_refunded` intent does not record how much has already
 // gone back, and the ledger is the only record guaranteed to agree with the
 // money that actually moved.
-func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, orderID string, out *float64) error {
+// SumRefundedByOrder sums the refund legs already written for an order.
+//
+// `q` may be the pool or an open transaction, and the caller MUST pass the
+// transaction for the value to be correct under concurrency: the refund path
+// locks the intent row and then re-reads this total inside the same transaction
+// so a second concurrent refund sees the first one's ledger rows. Passing the
+// pool here reads on a DIFFERENT connection, outside the transaction and before
+// the lock is held, which is how two partial refunds could each be individually
+// valid and together exceed the charge.
+func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, q Querier, orderID string, out *float64) error {
 	var total float64
-	err := r.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount), 0)::float8
 		FROM wallet_transactions
 		WHERE ref_id = $1 AND reason = $2 AND kind = 'credit'`,
@@ -154,6 +219,30 @@ func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, orderID stri
 	}
 	*out = total
 	return nil
+}
+
+// LockIntentForRefund takes a row lock on the payment intent and re-reads it.
+//
+// This is the serialisation point for every refund. The refund arithmetic reads
+// the cumulative refunded total from the ledger, and that total is only correct
+// if no other transaction can insert a refund row between the read and the
+// write. `SELECT ... FOR UPDATE` on the intent row gives exactly that ordering,
+// provided the read happens AFTER the lock -- so the whole sequence
+// (lock, read total, validate, write) must be inside one transaction.
+//
+// The previous implementation read the total on the pool, outside the
+// transaction, and then relied on a guarded UPDATE to serialise. That guard
+// passes `partially_refunded` in its expected-state list, so a second
+// concurrent partial refund re-evaluates the WHERE clause against the new row
+// version, still matches, and proceeds. The row lock serialised the two refunds
+// and then let both through.
+func (r *PaymentRepository) LockIntentForRefund(ctx context.Context, q Querier, intentID string) (*domain.PaymentIntent, error) {
+	in, err := scanIntent(q.QueryRow(ctx,
+		`SELECT `+intentColumns+` FROM payment_intents WHERE id = $1 FOR UPDATE`, intentID))
+	if err != nil {
+		return nil, err
+	}
+	return in, nil
 }
 
 // HasEscrowRelease reports whether escrow was ever paid out for an order. A
@@ -263,13 +352,13 @@ func (r *PaymentRepository) WalletTx(ctx context.Context, userID, kind, reason s
 
 // WalletTxOn applies a ledger entry inside a caller-managed transaction so it
 // can be composed atomically with intent status changes and payouts.
-func (r *PaymentRepository) WalletTxOn(ctx context.Context, tx pgx.Tx, userID, kind, reason string, amount float64, refID string) error {
-	if _, err := tx.Exec(ctx, `
+func (r *PaymentRepository) WalletTxOn(ctx context.Context, q Querier, userID, kind, reason string, amount float64, refID string) error {
+	if _, err := q.Exec(ctx, `
 		INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
 	var balanceAfter float64
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		UPDATE wallets SET balance = balance + CASE WHEN $2::varchar = 'debit' THEN -$3 ELSE $3 END, updated_at = now()
 		WHERE user_id = $1 AND ($2::varchar <> 'debit' OR balance >= $3)
 		RETURNING balance`, userID, kind, amount).Scan(&balanceAfter)
@@ -279,7 +368,7 @@ func (r *PaymentRepository) WalletTxOn(ctx context.Context, tx pgx.Tx, userID, k
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
+	_, err = q.Exec(ctx, `
 		INSERT INTO wallet_transactions (wallet_id, kind, reason, amount, balance_after, ref_id)
 		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
 		userID, kind, reason, amount, balanceAfter, refID)
@@ -425,7 +514,7 @@ func (r *PaymentRepository) CompletePayout(ctx context.Context, payoutID, ref st
 }
 
 // FailPayout rejects a pending payout and refunds the amount to the seller's
-// wallet — atomically, so funds can never be stuck debited without a record.
+// wallet â€” atomically, so funds can never be stuck debited without a record.
 func (r *PaymentRepository) FailPayout(ctx context.Context, payoutID string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -504,18 +593,10 @@ func (r *PaymentRepository) ApplyFee(ctx context.Context, intentID string, fee, 
 }
 
 // ActiveFeeTx returns the active commission config inside a transaction.
-func (r *PaymentRepository) ActiveFeeTx(ctx context.Context, tx pgx.Tx) (*PlatformFee, error) {
+func (r *PaymentRepository) ActiveFeeTx(ctx context.Context, q Querier) (*PlatformFee, error) {
 	var f PlatformFee
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT id, pct, fixed, is_active, updated_at FROM platform_fees WHERE is_active ORDER BY updated_at DESC LIMIT 1`).
 		Scan(&f.ID, &f.Pct, &f.Fixed, &f.IsActive, &f.UpdatedAt)
 	return &f, err
-}
-
-// ApplyFeeTx records the fee split inside a caller-managed transaction.
-func (r *PaymentRepository) ApplyFeeTx(ctx context.Context, tx pgx.Tx, intentID string, fee, sellerAmount float64) error {
-	_, err := tx.Exec(ctx, `
-		UPDATE payment_intents SET fee_amount = $2, seller_amount = $3 WHERE id = $1`,
-		intentID, fee, sellerAmount)
-	return err
 }
