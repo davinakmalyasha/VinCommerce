@@ -35,6 +35,14 @@ type PaymentService struct {
 	sandboxAutoSend bool // dev-only: instantly mark payouts sent (simulated transfer)
 	payoutGuard     func(ctx context.Context, userID string) error
 	disputes        *repository.DisputeRepository
+	// ledger posts the double-entry journal alongside every wallet movement.
+	//
+	// Optional, and nil is tolerated, because a nil ledger must not stop a
+	// payment from working. But the tolerance is the reason every posting site
+	// logs loudly on skip: silently not accounting for a capture is the exact
+	// defect this ledger was built to end, and reintroducing it as a "safe"
+	// fallback would be worse than the original because it would look deliberate.
+	ledger *LedgerService
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -57,6 +65,16 @@ func (s *PaymentService) SetUsers(u *repository.UserRepository) { s.users = u }
 // inside its own transaction, so the claim and the wallet movements commit
 // or roll back together.
 func (s *PaymentService) SetDisputes(d *repository.DisputeRepository) { s.disputes = d }
+
+// SetLedger attaches the double-entry ledger so every money movement posts a
+// journal in the SAME transaction as the wallet writes it in.
+//
+// Same transaction, not adjacent to it, and that is the whole point: a journal
+// committed a moment after the wallet credit is a window in which a crash leaves
+// the two disagreeing, and nothing in the system would notice until the
+// reconciliation job ran days later. Inside the transaction, both land or
+// neither does.
+func (s *PaymentService) SetLedger(l *LedgerService) { s.ledger = l }
 
 // SetMailer enables transactional payment emails.
 func (s *PaymentService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
@@ -642,6 +660,37 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	if err := tx.SetPaymentStatus(ctx, intent.OrderID, domain.PaymentPaid); err != nil {
 		return err
 	}
+	// Capture journal, inside the capture transaction.
+	//
+	// CREDIT escrow_held, DEBIT a clearing account. Escrow is a LIABILITY -- money
+	// we are holding for a buyer and a seller -- so receiving money INCREASES it,
+	// on the credit side. Debiting it here would make escrow read as a negative
+	// liability from the very first payment, and the release journal (which
+	// correctly debits it) would then drive the balance further the wrong way.
+	// The direction is easy to get backwards, and it balances either way, so
+	// nothing complains; TestCaptureJournalBalancesAndEscrows asserts it.
+	//
+	// This step previously wrote nothing at all, which is why the books showed
+	// Rp2,000 for a Rp100,000 order: the inflow was never recorded anywhere, so
+	// there was nothing to balance the release against.
+	//
+	// COD is deliberately routed through cod_receivable instead of
+	// gateway_clearing: the cash is held by the courier, not by a payment
+	// gateway, and posting it to a gateway account would put the money in the
+	// wrong place for the several days it spends there.
+	//
+	// TestCODCaptureGoesToTheCourierNotTheGateway pins this, and a mutation that
+	// routes COD to gateway_clearing is caught by it.
+	s.postLedger(ctx, tx.PgTx(), JournalSpec{
+		IdempotencyKey: "capture:" + intent.ID,
+		TxType:         TxTypePayment,
+		RefType:        "payment_intent",
+		RefID:          intent.ID,
+		Note:           "payment captured; funds held in escrow",
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+			"order_id": intent.OrderID, "method": intent.Method,
+		}),
+	})
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -781,6 +830,21 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", fee, orderID); err != nil {
 		return err
 	}
+
+	// Release journal, inside the release transaction and AFTER the commission
+	// has been resolved -- it posts the numbers that were actually used, not the
+	// ones guessed before the snapshot fell back.
+	s.postLedger(ctx, q, JournalSpec{
+		IdempotencyKey: "release:" + intent.ID,
+		TxType:         TxTypeEscrowRelease,
+		RefType:        "order",
+		RefID:          orderID,
+		Note:           fmt.Sprintf("escrow released; platform commission Rp %.0f", fee),
+		Entries: withMeta(releaseEntries(order.SellerID, intent.Amount, sellerAmount, fee), map[string]any{
+			"order_id": orderID, "seller_id": order.SellerID,
+			"gross": intent.Amount, "fee": fee, "seller_net": sellerAmount,
+		}),
+	})
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -954,6 +1018,7 @@ func (s *PaymentService) refundInTx(
 			return err
 		}
 	}
+	s.postRefundJournal(ctx, q, order, locked, plan, refundToBuyer, reason)
 
 	payStatus := domain.PaymentRefunded
 	if plan.Partial {

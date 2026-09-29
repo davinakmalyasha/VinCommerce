@@ -309,6 +309,13 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	// A "split" dispute decision moves real money, so the payment service must
 	// be able to claim the dispute row inside its own transaction.
 	paymentSvc.SetDisputes(r.Disputes)
+	// The ledger, so capture, release and refund each post a double-entry journal
+	// in the SAME transaction as the wallet movement. Set last and commented
+	// loudly because it is the one omission that leaves money moving with nothing
+	// accounting for it -- and a nil ledger is tolerated at the call sites so that
+	// a missing wire degrades loudly (Error log + reconciliation drift) rather
+	// than failing every payment.
+	paymentSvc.SetLedger(ledgerSvc)
 	paymentSvc.SetMailer(d.Mailer, cfg.App.WebURL)
 	// Payout eligibility is a seller-side invariant (KYC approved, no negative
 	// balance), expressed as a function value rather than a dependency so the

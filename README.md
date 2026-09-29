@@ -211,9 +211,9 @@ they would cost you in a real deployment.
    refund already went through under another attempt and retrying double-refunds
    the buyer. `GatewayStatusProvider.RefundStatus` reads the provider's own view
    for reconciliation.
-   *Still open: the payment service does not yet call `Gateway.Refund` — the
-   money paths still credit a wallet directly, and the `refunds` table has no
-   writer.*
+   *Still open: the payment service does not yet call `Gateway.Refund` — refunds
+   still credit a wallet directly rather than moving money through the provider,
+   and the `refunds` table has no writer.*
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*
@@ -236,11 +236,21 @@ they would cost you in a real deployment.
    invariant, and settlement / payout-batch / refund tables. Every journal sums to
    zero, enforced by a **deferred constraint trigger at COMMIT** rather than by Go
    code, so it holds for the code path somebody writes next year as well as this
-   one. `account_balances` and `wallets` are retained as derived caches and a
-   reconciliation job asserts they agree with the entries — a cache nobody
+   one. `account_balances` and `wallets` are retained as derived caches and
+   `LedgerService.Reconcile` asserts they agree with the entries — a cache nobody
    checks against its source is not a cache, it is a second opinion.
-   *Still open: the gateway's own `Refund()` method and the capture/release/payout
-   call sites that post the journals above (items 1 and 10).*
+   The money paths post journals **inside their existing transactions**, so a
+   journal and the wallet movement it describes commit or roll back together:
+   capture credits `escrow_held` and debits a clearing account (COD goes to
+   `cod_receivable`, because the courier holds that cash, not a gateway); release
+   debits escrow for the **gross** and credits the seller's personal account and
+   `platform_commission`; a refund reverses whichever of those two shapes actually
+   applied. A post-release refund never touches escrow — that is how escrow
+   acquires a negative balance that reads as a receivable from nobody — and it
+   reverses the commission as well as the seller's leg, so a refunded sale earns
+   no commission.
+   *Still open: payouts do not post a journal yet, and the `refunds` table still
+   has no writer (items 1 and 10).*
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure
    functions in `internal/service/money.go` with property tests, rounds to whole

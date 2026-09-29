@@ -328,6 +328,62 @@ func TestGatewayFeeIsDeductedFromEscrowAndReconciledAtSettlement(t *testing.T) {
 // nothing to draw down and the ledger develops a negative escrow balance that
 // looks like a real receivable from nobody. An earlier version of this test did
 // exactly that and did not balance at all.
+// Capture as it is actually POSTED by the payment service, asserted here too.
+//
+// The direction is not a detail. Escrow is a liability, so money arriving
+// INCREASES it on the credit side. The journal balances either way, so an
+// assertion that only checks the sum will happily accept a capture that leaves
+// escrow negative from the first payment onward. It happened once while this
+// was being written, and only the direction assertion found it.
+func TestCaptureCreditsEscrowBecauseEscrowIsALiability(t *testing.T) {
+	capture := []LedgerEntry{
+		Credit(AccEscrowHeld, 100000),
+		Debit(AccGatewayClearing, 100000),
+	}
+	if err := validateBalanced(capture); err != nil {
+		t.Fatalf("capture does not balance: %v", err)
+	}
+	// Walk it and assert the escrow balance moves in the direction a liability
+	// moves: up, on a credit.
+	escrow := 0.0
+	for _, e := range capture {
+		if e.Account != AccEscrowHeld {
+			continue
+		}
+		if e.Side == LedgerSideCredit {
+			escrow += e.Amount
+		} else {
+			escrow -= e.Amount
+		}
+	}
+	if escrow != 100000 {
+		t.Errorf("after a capture escrow holds Rp%.0f, want Rp100000 owed", escrow)
+	}
+
+	// And the release must bring it back to zero, or escrow grows without bound
+	// and reads as money we are holding that we no longer have.
+	release := []LedgerEntry{
+		Debit(AccEscrowHeld, 100000),
+		Credit(AccSellerAvailable, 98000),
+		Credit(AccPlatformCommission, 2000),
+	}
+	escrow = 0
+	for _, e := range capture {
+		if e.Account == AccEscrowHeld {
+			escrow += e.Amount
+		}
+	}
+	for _, e := range release {
+		if e.Account != AccEscrowHeld {
+			continue
+		}
+		escrow -= e.Amount
+	}
+	if escrow != 0 {
+		t.Errorf("after a full lifecycle escrow holds Rp%.0f, want 0", escrow)
+	}
+}
+
 func TestFullRefundReversesEveryLegOfTheOriginalCharge(t *testing.T) {
 	order, commission := 100000.0, 2000.0
 	seller := order - commission

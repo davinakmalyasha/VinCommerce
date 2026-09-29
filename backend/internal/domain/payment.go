@@ -23,6 +23,27 @@ const (
 	TxReasonAdjustment    = "adjustment"
 )
 
+// Payment method names.
+//
+// Constants rather than literals because these are now compared for their
+// accounting meaning, not just stored. COD in particular routes the capture
+// journal to cod_receivable instead of gateway_clearing, on the grounds that the
+// cash is held by the courier and posting it to a payment gateway's account would
+// put the money in the wrong place for the several days it spends there. A
+// comparison written as `intent.Method == "cod"` is a comparison that will be
+// spelled three different ways across the codebase and mean two different things.
+const (
+	MethodCOD            = "cod"
+	MethodBankTransfer   = "bank_transfer"
+	MethodEWallet        = "e_wallet"
+	MethodQRIS           = "qris"
+	MethodVirtualAccount = "va"
+	MethodRetailOutlet   = "retail_outlet"
+	MethodCreditCard     = "credit_card"
+	MethodWalletBalance  = "wallet_balance"
+	MethodManualTransfer = "manual_transfer"
+)
+
 // PaymentIntent is the escrow record for an order.
 type PaymentIntent struct {
 	ID               string     `json:"id"`
