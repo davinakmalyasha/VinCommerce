@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/vincommerce/backend/internal/domain"
@@ -14,6 +15,30 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order) {
 		rows += fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%d</td><td style="text-align:right">%s</td><td style="text-align:right">%s</td></tr>`,
 			htmlEsc(it.ProductName), htmlEsc(it.VariantName), it.Quantity,
 			f2(it.UnitPrice), f2(it.Total))
+	}
+
+	// The insurance line, printed only when there is a charge worth showing.
+	//
+	// It was missing, and the printed lines therefore did not foot: subtotal minus
+	// discount plus shipping is LESS than the printed total whenever insurance was
+	// selected, because the fee is added to `quote.Total` and stored on
+	// `Order.InsuranceFee` but was never rendered. An invoice whose own lines do
+	// not sum to its own total is not a rounding artefact an Indonesian seller
+	// can expense; it is a document that fails an audit on sight.
+	//
+	// The README claimed this was fixed. The ARITHMETIC was -- the fee is
+	// correctly rounded and correctly added -- but the presentation was not, and
+	// the claim outlived the code.
+	//
+	// Gated on the ROUNDED amount, not the raw one: `f2` prints whole rupiah, so
+	// a stored 0.4 would render as a line reading "Rp 0". A zero line is worse
+	// than no line -- it looks like a charge and invites the reader to wonder what
+	// was waived.
+	insuranceRow := ""
+	if rounded := math.Round(o.InsuranceFee); rounded > 0 {
+		insuranceRow = fmt.Sprintf(
+			`  <tr><td colspan="3"></td><td style="text-align:right">Asuransi pengiriman</td><td style="text-align:right">Rp %s</td></tr>`+"\n",
+			f2(rounded))
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -30,7 +55,9 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order) {
 		o.PaymentStatus,
 		rows,
 		f2(o.Subtotal), f2(o.DiscountAmount),
-		htmlEsc(o.ShippingMethod), f2(o.ShippingFee), f2(o.TotalAmount),
+		htmlEsc(o.ShippingMethod), f2(o.ShippingFee),
+		insuranceRow,
+		f2(o.TotalAmount),
 		htmlEsc(o.ShippingMethod), htmlEsc(o.TrackingNumber), htmlEsc(o.Carrier),
 	)
 }
@@ -135,7 +162,7 @@ const invoiceHTML = `<!DOCTYPE html>
   <tr class="total-row"><td colspan="3"></td><td style="text-align:right">Subtotal</td><td style="text-align:right">Rp %s</td></tr>
   <tr><td colspan="3"></td><td style="text-align:right">Diskon</td><td style="text-align:right">− Rp %s</td></tr>
   <tr><td colspan="3"></td><td style="text-align:right">Ongkir (%s)</td><td style="text-align:right">Rp %s</td></tr>
-  <tr class="total-row"><td colspan="3"></td><td style="text-align:right">TOTAL</td><td style="text-align:right">Rp %s</td></tr>
+%s  <tr class="total-row"><td colspan="3"></td><td style="text-align:right">TOTAL</td><td style="text-align:right">Rp %s</td></tr>
 </table>
 
 <div class="meta">Kurir: %s · Nomor resi: %s (%s)</div>

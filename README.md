@@ -210,20 +210,31 @@ they would cost you in a real deployment.
    409 conflict is `manual`, not retryable, because a conflict usually means a
    refund already went through under another attempt and retrying double-refunds
    the buyer. `GatewayStatusProvider.RefundStatus` reads the provider's own view
-   for reconciliation.
-   *Still open: the payment service does not yet call `Gateway.Refund` — refunds
-   still credit a wallet directly rather than moving money through the provider,
-   and the `refunds` table has no writer.*
+   for reconciliation, and `ReconcileRefunds` polls it: a refund the provider
+   accepted stays `submitted` until somebody asks, and without the job it would
+   sit pending forever while the operator queue fills with refunds that may or may
+   not have paid out. The reserve/submit/settle split is deliberate — a gateway
+   call is network I/O and cannot live inside the transaction that books the
+   refund, so the `refunds` row is committed **before** the provider is touched
+   and a crash in that gap leaves a row reconciliation can resolve.
+   *Still open: the return-refund path still credits a wallet rather than calling
+   the gateway, because it runs inside a caller-owned transaction. Fixing it means
+   splitting the return approval and the refund into two steps, which changes the
+   admin flow and the return state machine.*
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*
-3. **No PPN / tax and no compliant invoice.** `handler/invoice.go` emits HTML
-   with no tax line, no seller NPWP/NIB and no invoice number sequence.
+3. **[partly closed] No PPN / tax and no compliant invoice.** `handler/invoice.go`
+   emits HTML with no tax line, no seller NPWP/NIB and no invoice number sequence.
    Indonesian sellers cannot expense a marketplace invoice without that. The
-   invoice arithmetic itself is now correct — it previously printed a total
-   higher than the sum of its own lines, because the insurance fee was written
-   to the order but selected by no read path, and the invoice did not print a
-   line for it.
+   invoice now **foots**: the shipping-insurance fee is added to the order total
+   and stored on `Order.InsuranceFee`, but no line was rendered for it, so
+   `subtotal − discount + shipping` came to less than the printed total — a
+   document that fails an audit on sight. The fee is now printed, and the rendered
+   lines are asserted to sum to the printed total
+   (`TestInvoiceLinesFootTheTotal`). The previous entry claimed this was fixed; the
+   arithmetic was, the presentation was not, and the claim outlived the code.
+   *Still open: PPN itself, seller NPWP/NIB, and an invoice number sequence.*
 4. **[closed] The ledger is not reconcilable to cash.** `wallets.held_balance`
    was never written, capture wrote no ledger rows, and gateway inflow / bank
    outflow were unrecorded — so `SUM(wallets.balance)` could not be tied back to
@@ -249,8 +260,8 @@ they would cost you in a real deployment.
    acquires a negative balance that reads as a receivable from nobody — and it
    reverses the commission as well as the seller's leg, so a refunded sale earns
    no commission.
-   *Still open: the `refunds` table still has no writer, and the refund paths
-   still credit a wallet rather than calling `Gateway.Refund` (item 1).*
+   *The `refunds` table now has a writer and every refund path is durable; the
+   remaining gap is the return path, which still credits a wallet (item 1).*
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure
    functions in `internal/service/money.go` with property tests, rounds to whole
