@@ -63,17 +63,31 @@ type Refund struct {
 // first, record after -- loses the record exactly when it matters most: a refund
 // the provider performed that this system never wrote down.
 //
-// gateway_ref is deliberately NOT written here. That column holds the provider's
-// id for THIS refund, which does not exist until the provider assigns one. The
-// charge being refunded lives on the payment intent, and reading it from there is
-// what keeps the two identifiers from being conflated.
+// gateway_ref is whatever the CALLER knows at the time, and that is not always
+// nothing. This used to bind a literal empty string, on the reasoning that the
+// provider's id for a refund "does not exist until the provider assigns one" --
+// which is true when WE initiate a refund, and false for a refund the provider has
+// already performed and told us about.
+//
+// The provider-notification path set GatewayRef from the notification's own refund
+// id and watched it vanish, because the INSERT ignored the field:
+//
+//	RecordProviderRefund  -> refunds row, gateway_ref NULL
+//	replayed webhook      -> lookup filters `AND gateway_ref IS NOT NULL`
+//	                      -> no row can ever match
+//
+// So the replay guard was inert for a second, independent reason even once it was
+// correctly scoped to a payment: the reference it matches on was never stored.
+// `refundKeyFor` returns "" for a row with no reference, and the composed key
+// never equals an incoming one. Honouring rf.GatewayRef costs the reserve path
+// nothing, because reserveRefund leaves it empty and NULLIF still writes NULL.
 func (r *PaymentRepository) CreateRefund(ctx context.Context, q Querier, rf *Refund) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO refunds (id, payment_intent_id, order_id, gateway, gateway_ref,
 		                     amount, reason, status, requested_by, requested_at)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NULLIF($7, ''), $8,
 		        NULLIF($9, '')::uuid, now())`,
-		rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, "",
+		rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,
 		rf.Amount, rf.Reason, rf.Status, rf.RequestedBy)
 	return err
 }

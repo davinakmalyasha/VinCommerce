@@ -242,6 +242,16 @@ func main() {
 				"\t\t\t\t\"for a refund across every order\")\n\t}",
 			new: "\t_ = intentID",
 		},
+		{
+			// The literal empty reference this commit removed. The replay lookup
+			// filters `gateway_ref IS NOT NULL` and rebuilds the idempotency key
+			// from the stored row, so a dropped reference means the guard can never
+			// match anything -- regardless of how correctly it is scoped.
+			label: "M19: a provider refund is recorded without its reference",
+			file:  repoFile,
+			old:   "\t\trf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,",
+			new:   "\t\trf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, \"\",",
+		},
 	}
 
 	caught, missed := 0, 0

@@ -259,9 +259,21 @@ they would cost you in a real deployment.
    lookup is now scoped to it, and a blank intent id is refused with
    `REFUND_LOOKUP_WITHOUT_INTENT` before it reaches Postgres. Mutation-verified as
    M17/M18.
-   The unit tests could not see it because the stub declared both string arguments
+   The    unit tests could not see it because the stub declared both string arguments
    unnamed and discarded them. The stub now records what it was asked, which is the
    only reason the defect is visible at all.
+   **[closed] …and the reference it matches on was never stored.** `CreateRefund`
+   bound a literal empty string to `refunds.gateway_ref`, ignoring the field on the
+   struct it was handed. The reasoning behind that literal was sound for a refund
+   *we* initiate — the provider has not assigned an id yet — and wrong for one the
+   provider has already performed and reported, which is exactly the notification
+   path. So every provider refund was recorded with `gateway_ref` NULL, while the
+   replay lookup filters `AND gateway_ref IS NOT NULL`: no row could ever match.
+   The guard was inert for two independent reasons at once, and fixing the scoping
+   alone would have left a guard that still never fires while every test stayed
+   green. The first test in `internal/repository` now drives `CreateRefund` and
+   asserts the bound reference. Mutation-verified as M19.
+
 
    **[closed] Every full refund failed, after the provider had paid.** The cap
    counts `submitted`, and the reserve step commits its row as `submitted` before
