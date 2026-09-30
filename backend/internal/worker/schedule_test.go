@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +155,82 @@ func TestEveryJobHasAKnownScheduleForm(t *testing.T) {
 			t.Errorf("%s: schedule %q should use an @every or @daily form", j.taskType, j.spec)
 		}
 	}
+}
+
+// Every task constant in this package must be both scheduled and handled.
+//
+// THE GENERAL FIX FOR A WHOLE CLASS OF BUG. The other tests here list the tasks
+// they expect BY HAND, which means a new `Task*` constant is not covered by any of
+// them: nothing cross-checks the constants against the schedule. So
+// `TaskReleasePayoutReservations` existed -- with a comment explaining the fraud
+// control it represented -- with no handler, no schedule entry, and no failing
+// test. The worker started, reported healthy, and never released a single seller
+// hold.
+//
+// Two things are wrong with a constant in that state and both are silent:
+//
+//   - no handler: asynq has nothing to dispatch to, so a task of that type would
+//     be rejected at enqueue and the schedule entry is decorative
+//   - no schedule entry: nothing ever enqueues it, so even a correct handler is
+//     unreachable
+//
+// So the expected list is derived from the source rather than written out, and
+// every constant must appear in both.
+func TestEveryTaskConstantIsScheduledAndHandled(t *testing.T) {
+	consts := taskConstantsFromSource(t)
+	if len(consts) == 0 {
+		t.Fatal("no task constants were found in worker.go; this test is not " +
+			"checking anything, which is the failure mode it exists to prevent")
+	}
+
+	scheduled := map[string]bool{}
+	for _, j := range jobSpecs(fullDeps()) {
+		scheduled[j.taskType] = true
+	}
+
+	src := workerSource(t)
+	for _, c := range taskConstantsFromSource(t) {
+		if !scheduled[c.value] {
+			t.Errorf("task %s (%q) is declared but never scheduled; nothing will "+
+				"ever enqueue it, so any handler for it is unreachable", c.name, c.value)
+		}
+		// The mux registers the CONSTANT, not its value, so this has to match on
+		// the name. Matching the value would find nothing at all and every task
+		// would "fail" -- which is a test that cannot distinguish a real gap.
+		if !strings.Contains(src, "mux.HandleFunc("+c.name+",") {
+			t.Errorf("task %s (%q) has no handler registered on the mux; asynq has "+
+				"nothing to dispatch to and a scheduled entry for it is decorative",
+				c.name, c.value)
+		}
+	}
+}
+
+// taskConstant is one `Task* = "..."` declaration.
+type taskConstant struct{ name, value string }
+
+// taskConstantsFromSource reads every `Task* = "..."` constant out of worker.go.
+//
+// Derived rather than declared so that adding a constant is enough to make this
+// test apply to it. A hand-written list is a list that has to be remembered, and
+// the whole defect is something nobody remembered.
+func taskConstantsFromSource(t *testing.T) []taskConstant {
+	t.Helper()
+	src := workerSource(t)
+	re := regexp.MustCompile(`(Task\w+)\s*=\s*"([^"]+)"`)
+	var out []taskConstant
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		out = append(out, taskConstant{name: m[1], value: m[2]})
+	}
+	return out
+}
+
+func workerSource(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatalf("read worker.go: %v", err)
+	}
+	return string(raw)
 }
 
 // cronPeriod parses the schedule forms this file uses.

@@ -409,10 +409,30 @@ they would cost you in a real deployment.
    repository methods that used to do this in their own transaction are **deleted**,
    not deprecated, because a repository cannot reach the ledger and a caller using
    them would move money with no accounting record and no way to add one.
-   *Still open: the schedule itself. `payout_batches` exists but nothing builds
-   one — the T+2/T+7 batch run, the reserve for COD and disputes, and the
-   automatic release of reservations once a lag passes with no open return or
-   dispute are not implemented.*
+   *Still open: the batch run itself, and the per-seller override. `payout_batches`
+   and `payout_batch_items` exist but nothing writes them, so there is no T+2/T+7
+   grouping of withdrawals and no remittance file. Seller holds ARE taken (a
+   withdrawal reserves its own amount) and ARE now released; the COD, return and
+   dispute holds that a hold is *for* are the next piece, as is letting a seller
+   choose a lag other than the platform default.*
+   **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
+   a string constant with a comment describing the fraud control it represented, no
+   handler on the mux and no entry in the schedule — so the worker started, reported
+   healthy, and never released a single hold. Nothing about that state is visible
+   from outside: a hold that is never released is a permanent deduction from a
+   seller's balance, and the seller experiences it as the platform keeping their
+   money. It now has a handler, an hourly entry on the `default` queue, and a log
+   line that says how many holds were released — including zero, because "released
+   0" and "this job does not exist" have identical seller-visible symptoms.
+   A hold is released only when four things are all true: past the lag, the order
+   **completed** (not delivered — the return window opens on delivery), no open
+   return and no open dispute. That is a conjunction over four tables and it lives
+   in the query, because deciding it in Go means deciding it on a stale read.
+   The general fix is a test that derives the expected task list from the `Task*`
+   constants in the source rather than from a hand-written list, and requires every
+   one of them to be both scheduled and handled. A hand-written list is a list
+   nobody remembers to update, and this defect is precisely something nobody did.
+   Removing the schedule entry now fails that test by name.
 10. **No COD reconciliation.** COD is implemented with no fee, no aging report
     and no remittance file — so uncollected cash is invisible.
 11. **Search relevance is English-stemmed** and recommendations are global

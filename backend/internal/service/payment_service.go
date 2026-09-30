@@ -51,6 +51,12 @@ type PaymentService struct {
 	// a replayed webhook is a no-op. See refundLookup -- the reason this is an
 	// interface is that the guard was otherwise untestable.
 	refunds refundLookup
+	// payoutLagDays is the platform default hold before a seller's money becomes
+	// withdrawable. Read by the reservation-release job, so a per-seller override
+	// configured here would be overridden by a hardcoded 7 in that query -- which
+	// is why the value is a field and not a constant, and why the job reads it
+	// rather than carrying its own.
+	payoutLagDays int
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -1513,6 +1519,71 @@ func (s *PaymentService) failPayout(ctx context.Context, payoutID string) error 
 }
 
 // Payouts lists the user's withdrawals.
+// DefaultPayoutLagDays is how long a seller's money is held before it can be
+// released, when nothing overrides it.
+//
+// Seven days, which is the Indonesian marketplace norm and roughly matches a
+// consumer return window plus the carrier's own delivery window. It is a DEFAULT
+// rather than a rule: a per-seller schedule overrides it, and this is only the
+// floor for a seller who has not chosen one.
+const DefaultPayoutLagDays = 7
+
+// PayoutLagBounds are the shortest and longest lag a seller may configure.
+//
+// A lag of zero would release money the moment an order is completed, which is
+// before any return could have been filed -- the hold would be decorative. A lag
+// beyond a quarter is not a payment term, it is a balance the seller cannot
+// withdraw, and the complaint it generates is indistinguishable from a platform
+// that has lost the money. Refusing the value at the edge is better than accepting
+// it and discovering it in an operator queue.
+const (
+	MinPayoutLagDays = 1
+	MaxPayoutLagDays = 90
+)
+
+// ReleaseExpiredReservations releases seller holds that are no longer needed.
+//
+// This backs `worker.TaskReleasePayoutReservations`, which was a string constant
+// with no handler and no schedule entry: the job had a name, a comment explaining
+// the fraud control it represented, and no way to ever run. A hold that is never
+// released is not a hold, it is a permanent deduction from a seller's balance --
+// and a seller whose balance never becomes withdrawable stops selling, or
+// complains, and both look like a payments bug.
+//
+// The release conditions themselves live in the query, because they are a
+// conjunction over four tables and expressing them in Go would mean reading them
+// into memory and deciding there, which is the shape that produces a hold released
+// on a stale read. See PaymentRepository.ReleaseExpiredReservations.
+//
+// Returns the number released, so the worker's log line says whether the job is
+// doing anything. A job that logs nothing is indistinguishable from a job that is
+// broken.
+func (s *PaymentService) ReleaseExpiredReservations(ctx context.Context, limit int) (int, error) {
+	return s.payments.ReleaseExpiredReservations(
+		ctx, s.payments.Pool(), s.PayoutLagDays(), limit)
+}
+
+// SetPayoutLag sets the platform-wide payout lag. A per-seller override, when one
+// exists, still wins; this is the default for everyone else.
+func (s *PaymentService) SetPayoutLag(days int) error {
+	if days < MinPayoutLagDays || days > MaxPayoutLagDays {
+		return domain.E(domain.KindInvalid, "PAYOUT_LAG_OUT_OF_RANGE",
+			fmt.Sprintf("a payout lag of %d days is outside the supported range of %d to %d",
+				days, MinPayoutLagDays, MaxPayoutLagDays))
+	}
+	s.payoutLagDays = days
+	return nil
+}
+
+// PayoutLagDays reports the platform default in force.
+func (s *PaymentService) PayoutLagDays() int {
+	if s.payoutLagDays <= 0 {
+		return DefaultPayoutLagDays
+	}
+	return s.payoutLagDays
+}
+
+// Payouts lists a seller's withdrawal history.
 func (s *PaymentService) Payouts(ctx context.Context, userID string) ([]*domain.Payout, error) {
 	return s.payments.Payouts(ctx, userID)
 }

@@ -1055,6 +1055,114 @@ func (r *PaymentRepository) ReleaseSellerReservation(ctx context.Context, q Quer
 	return err
 }
 
+// ReserveSellerPendingTx holds back a balance that is not yet releasable.
+//
+// The three non-payout kinds exist because the fraud they prevent is the same in
+// each case and the timing differs. A seller who has been paid for an order that
+// is still in transit, or that has an open return or dispute against it, can
+// withdraw that money and leave the platform holding the reversal:
+//
+//	COD order, Rp500,000, delivered tomorrow, return window still open
+//	seller withdraws Rp500,000 tonight
+//	return approved tomorrow -> the reversal debits a wallet that is now empty
+//
+// `WalletTxOn` enforces balance >= 0, so the reversal does not go negative -- it
+// simply fails, and the buyer's refund is stuck behind an INSUFFICIENT_BALANCE
+// with no retry path. The reservation is what makes the hold real rather than
+// advisory.
+//
+// kind is 'cod' for an order paid cash on delivery, 'return' for an open return
+// claim and 'dispute' for an open dispute. Each reserves against its own order.
+func (r *PaymentRepository) ReserveSellerPendingTx(
+	ctx context.Context, q Querier, sellerID, orderID, kind, note string, amount float64,
+) error {
+	switch kind {
+	case "cod", "return", "dispute":
+	default:
+		return domain.E(domain.KindInternal, "RESERVATION_KIND_INVALID",
+			"a seller hold must be one of cod, return or dispute; an unknown kind is a "+
+				"hold on money that the release job would never know how to evaluate")
+	}
+	if amount <= 0 {
+		return domain.E(domain.KindInvalid, "RESERVATION_AMOUNT_INVALID",
+			"a seller hold must reserve a positive amount")
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO seller_reservations (seller_id, order_id, amount, kind, note)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''))`,
+		sellerID, orderID, amount, kind, note)
+	return err
+}
+
+// ReleaseExpiredReservations releases the holds whose conditions are met, and
+// returns how many.
+//
+// RELEASABLE MEANS ALL OF:
+//   - not already released
+//   - past the lag, measured from when the hold was taken
+//   - the order is COMPLETED. Not shipped, not delivered: the return window
+//     opens on delivery, so releasing at delivery is releasing one day early.
+//   - no open return and no open dispute against that order
+//
+// A set of conditions, not a timestamp, because each one is a reason a reversal
+// could still arrive. A timer would release the money the moment the lag expired
+// and then discover the return, which is the failure this exists to prevent.
+//
+// `payout` reservations are deliberately NOT touched here: a withdrawal's hold
+// ends when the payout itself settles, which is a different event with a
+// different owner. Including them here would release a hold on money that is
+// still in the payout pipeline.
+//
+// The lag is a parameter rather than a constant because it is per-seller in the
+// schedule this feeds, and a hardcoded 7 here would silently override every
+// override configured anywhere else.
+func (r *PaymentRepository) ReleaseExpiredReservations(
+	ctx context.Context, q Querier, lagDays int, limit int,
+) (int, error) {
+	if lagDays < 0 {
+		return 0, domain.E(domain.KindInvalid, "RESERVATION_LAG_INVALID",
+			"a payout lag cannot be negative")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	// Two statements rather than one UPDATE ... FROM: the NOT EXISTS clauses need
+	// to be evaluated against the same snapshot, and a self-join on the table
+	// being updated makes the row-visibility rules genuinely hard to reason
+	// about. The CTE selects first, then updates exactly those ids.
+	tag, err := q.Exec(ctx, `
+		WITH releasable AS (
+		    SELECT sr.id
+		      FROM seller_reservations sr
+		      JOIN orders o ON o.id = sr.order_id
+		     WHERE sr.released_at IS NULL
+		       AND sr.kind IN ('cod', 'return', 'dispute')
+		       AND sr.created_at <= now() - make_interval(days => $1)
+		       AND o.status = 'completed'
+		       AND NOT EXISTS (
+		           SELECT 1 FROM return_requests r
+		            WHERE r.order_id = sr.order_id
+		              AND r.status IN ('requested', 'approved', 'returned')
+		       )
+		       AND NOT EXISTS (
+		           SELECT 1 FROM disputes d
+		            WHERE d.order_id = sr.order_id
+		              AND d.status IN ('open', 'under_review')
+		       )
+		     ORDER BY sr.created_at ASC
+		     LIMIT $2
+		)
+		UPDATE seller_reservations sr
+		   SET released_at = now()
+		  FROM releasable
+		 WHERE sr.id = releasable.id`,
+		lagDays, limit)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // FailPayout and CompletePayout were removed rather than left in place.
 //
 // They lived here and opened their own transaction, which is precisely why the

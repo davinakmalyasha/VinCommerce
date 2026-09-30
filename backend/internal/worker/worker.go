@@ -182,16 +182,27 @@ func jobSpecs(d Deps) []jobSpec {
 		// daily pass is the natural cadence: anything older than that is a
 		// finding rather than a delay.
 		{"@daily", TaskReconcileSettlements, "low", 25 * time.Hour},
+		// Seller holds. Hourly rather than daily because the release conditions
+		// include "past the lag by N days", and a daily pass means a seller waits
+		// up to a day longer than the schedule promises -- which is exactly the
+		// kind of drift that makes a stated payment term untrue. Hourly bounds the
+		// error to an hour.
+		//
+		// `default` rather than `low`: this releases money a seller is waiting for,
+		// so a backlog in `low` is a queue of sellers whose balance is not yet
+		// withdrawable.
+		{"@hourly", TaskReleasePayoutReservations, "default", 3 * time.Hour},
 	}
 
 	// A job whose service is absent is dropped rather than registered against a
 	// handler that would panic the first time it fired. Dropping it is also why
 	// the Warn above matters: the schedule is the only place this is visible.
 	enabled := map[string]bool{
-		TaskSessionPurge:         d.Sessions != nil,
-		TaskReconcileRefunds:     d.Payment != nil,
-		TaskReconcileLedger:      d.Ledger != nil,
-		TaskReconcileSettlements: d.Payment != nil,
+		TaskSessionPurge:              d.Sessions != nil,
+		TaskReconcileRefunds:          d.Payment != nil,
+		TaskReconcileLedger:           d.Ledger != nil,
+		TaskReconcileSettlements:      d.Payment != nil,
+		TaskReleasePayoutReservations: d.Payment != nil && d.Ledger != nil,
 	}
 	out := make([]jobSpec, 0, len(all))
 	for _, j := range all {
@@ -271,10 +282,16 @@ func New(d Deps) (*Server, error) {
 		mux.HandleFunc(TaskReconcileLedger, withTimeout(reconcileLedgerHandler(d.Ledger, logger)))
 		if d.Payment != nil {
 			mux.HandleFunc(TaskReconcileSettlements, withTimeout(reconcileSettlementsHandler(d.Payment, logger)))
+			mux.HandleFunc(TaskReleasePayoutReservations,
+				withTimeout(releasePayoutReservationsHandler(d.Payment, logger)))
 		}
 	} else {
 		logger.Warn("ledger not wired: the derived balance caches will never be " +
 			"checked against the journal, so drift would go unnoticed")
+	}
+	if d.Payment == nil {
+		logger.Warn("payment service not wired: seller holds will never be released, " +
+			"so money earned stays un-withdrawable")
 	}
 
 	// Recurring jobs get:
@@ -714,6 +731,38 @@ func reconcileSettlementsHandler(pay *service.PaymentService, logger *slog.Logge
 		for _, d := range report.DiscrepantSamples {
 			logger.Error("gateway movement disagrees with the journal", "detail", d)
 		}
+		return nil
+	}
+}
+
+// releasePayoutReservationsHandler runs the fraud control that
+// TaskReleasePayoutReservations was named for.
+//
+// The task existed as a constant with a comment describing exactly what it was
+// for, and no handler and no schedule entry. Nothing about that state is visible
+// from outside: the worker starts, reports healthy, and the holds it is supposed
+// to release are never released. A hold that is never released is a permanent
+// deduction from a seller's balance, and the seller experiences it as the
+// platform keeping their money.
+//
+// The log line is the point. "released 0" and "this job does not exist" produce
+// identical seller-visible symptoms, and only the first is a number someone can
+// watch for a change in.
+func releasePayoutReservationsHandler(pay *service.PaymentService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, _ *asynq.Task) error {
+		released, err := pay.ReleaseExpiredReservations(ctx, 0)
+		if err != nil {
+			return err
+		}
+		if released == 0 {
+			// Logged rather than silent: zero is the normal steady state, and a
+			// normal steady state that is indistinguishable from a broken job is
+			// not something an operator can diagnose at 3am.
+			logger.Info("no seller holds were due for release",
+				"lag_days", pay.PayoutLagDays())
+			return nil
+		}
+		logger.Info("released seller holds", "released", released, "lag_days", pay.PayoutLagDays())
 		return nil
 	}
 }
