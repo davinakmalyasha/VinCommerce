@@ -15,6 +15,28 @@
 // Each was found by a surviving mutation, not by reading the code. That is the
 // argument for running this rather than trusting the tests.
 //
+// One failure mode of this harness is worth naming, because it is the reason the
+// argument is necessary at all: a mutation that never runs anything still reports
+// success. `go test` on a bad package path prints
+//
+//	FAIL	./internal/service/ ./internal/repository [setup failed]
+//
+// which contains the string "FAIL" and nothing else -- no test, no assertion, no
+// `_test.go:` line. A harness that only looks for "FAIL" scores that as CAUGHT.
+// Three mutations were green for exactly that reason: `exec.Command` was handed
+// the two package paths as ONE argument, so the command never named a package
+// go could resolve, and M3/M4/M5 -- the cap's source table and the exact set of
+// states it counts, which is the most money-critical rule in the file -- had
+// never run a single test.
+//
+// Two rules follow, and both are enforced below rather than trusted:
+//
+//   - A caught mutation must NAME the test that caught it. An empty name means
+//     nothing ran, and it is reported as MISSED, because "caught" with no
+//     witness is indistinguishable from the failure above.
+//   - The package list is split into separate arguments, so the command is the
+//     one that was intended.
+//
 // Run from the backend directory:
 //
 //	go run ./cmd/mutation-check
@@ -173,7 +195,12 @@ func main() {
 		if m.file == repoFile {
 			pkg = serviceAndR
 		}
-		cmd := exec.Command("go", "test", pkg, "-count=1")
+		// Fields, not pkg: a single argument containing a space is one malformed
+		// package path, and `go test` answers that with "[setup failed]" -- a line
+		// containing "FAIL" and no test in it. See the file header.
+		args := append([]string{"test"}, strings.Fields(pkg)...)
+		args = append(args, "-count=1")
+		cmd := exec.Command("go", args...)
 		out, _ := cmd.CombinedOutput()
 		os.WriteFile(m.file, orig, 0o644)
 
@@ -185,22 +212,43 @@ func main() {
 		if strings.Contains(got, "cannot use") || strings.Contains(got, "undefined:") {
 			compileErr = true
 		}
+		// A setup failure is not a test result. `go test` emits "[setup failed]"
+		// when it cannot resolve a package, and that is the one outcome that
+		// proves nothing about the mutation.
+		setupErr := strings.Contains(got, "setup failed") ||
+			strings.Contains(got, "no required module provides") ||
+			strings.Contains(got, "cannot find package") ||
+			strings.Contains(got, "malformed import path")
 
-		if failed && !compileErr {
-			caught++
-			// Name the test that caught it.
-			name := ""
-			for _, line := range strings.Split(got, nl) {
-				if strings.Contains(line, "_test.go:") {
-					name = strings.TrimSpace(line)
-					break
-				}
+		// Name the test that caught it. Required, not decorative: a failure with
+		// no `_test.go:` line came from the toolchain, not from an assertion, and
+		// reporting it as caught is how three mutations sat green while testing
+		// nothing at all.
+		name := ""
+		for _, line := range strings.Split(got, nl) {
+			if strings.Contains(line, "_test.go:") {
+				name = strings.TrimSpace(line)
+				break
 			}
-			fmt.Printf("ok   %s\n       caught by %s\n", m.label, name)
-		} else if compileErr {
+		}
+
+		switch {
+		case setupErr:
+			missed++
+			fmt.Printf("FAIL %s\n       HARNESS ERROR -- go test could not resolve its "+
+				"packages, so no test ran\n", m.label)
+		case compileErr:
 			missed++
 			fmt.Printf("FAIL %s\n       the mutation did not compile, so no test ran\n", m.label)
-		} else {
+		case failed && name == "":
+			missed++
+			fmt.Printf("FAIL %s\n       FAILED WITHOUT A WITNESS -- the run reported a "+
+				"failure but no test named itself, so this is not evidence of coverage\n%s\n",
+				m.label, indent(got))
+		case failed:
+			caught++
+			fmt.Printf("ok   %s\n       caught by %s\n", m.label, name)
+		default:
 			missed++
 			fmt.Printf("FAIL %s\n       SURVIVED -- no test noticed\n", m.label)
 		}
@@ -210,4 +258,19 @@ func main() {
 	if missed > 0 {
 		os.Exit(1)
 	}
+}
+
+// indent re-indents captured output so a failure prints as a block under its
+// label rather than as a wall of unlabelled text.
+func indent(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		b.WriteString("         | ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
 }

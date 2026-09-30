@@ -232,8 +232,12 @@ they would cost you in a real deployment.
    summed `wallet_transactions` credits, but a gateway refund never credits the
    buyer's wallet — the money goes to their card — so the cap read zero after
    every gateway refund and the guard built to stop over-refunding measured
-   nothing on the path that actually refunds people. Both are fixed and both are
-   mutation-verified; see the commit history for the full accounting.
+   nothing on the path that actually refunds people. Both are fixed, and the
+   mutation suite now genuinely covers the cap's source table and its state set
+   (M3/M4/M5) — see the commit history for the full accounting. Those three
+   mutations had been reporting success without running a test, so the coverage
+   they claimed did not exist until the harness was fixed to reject a failure
+   that names no witness.
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*
