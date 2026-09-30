@@ -1055,6 +1055,209 @@ func (r *PaymentRepository) ReleaseSellerReservation(ctx context.Context, q Quer
 	return err
 }
 
+// Seller hold reason codes written to `wallet_transactions`.
+//
+// One per hold KIND, not one per outcome, for two reasons. A seller seeing
+// "seller_hold" on their statement cannot tell which of their orders is holding
+// their money, and they will ask. And `uq_wallet_tx_business_event` is UNIQUE on
+// (wallet_id, ref_id, kind, reason), so a shared reason would make a legitimate
+// second hold -- a return AND a dispute on the same order -- collide on an index
+// built to stop duplicate postings.
+const (
+	WalletReasonHoldCOD     = "hold_cod"
+	WalletReasonHoldReturn  = "hold_return"
+	WalletReasonHoldDispute = "hold_dispute"
+	WalletReasonHoldRelease = "hold_released"
+)
+
+// WalletHeldTxOn moves money between a wallet's spendable and held balances, and
+// records the movement.
+//
+// THIS IS THE ENFORCEMENT POINT. A hold recorded as a `seller_reservations` row
+// is a note: `RequestPayout` reads `wallets.balance` and nothing else, so the money
+// stayed spendable and the fraud control controlled nothing. Moving the value out
+// of `balance` into `held_balance` is what makes it real, and it is why there is no
+// `balance - held_balance` arithmetic in the payout path -- the transfer has
+// already done it.
+//
+// direction is "hold" to move money out of the spendable balance, or "release" to
+// move it back. Named rather than a bool, because a bool at this site is how the
+// wrong sign gets posted: a released hold debiting the spendable balance would
+// look like a withdrawal and no test would object.
+//
+// The CHECK on `wallets.held_balance >= 0` is the backstop: a release larger than
+// the hold fails here rather than making the balance negative.
+func (r *PaymentRepository) WalletHeldTxOn(
+	ctx context.Context, q Querier, userID, direction, reason string, amount float64,
+) error {
+	if _, err := q.Exec(ctx, `
+		INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return err
+	}
+
+	// Signed delta on the spendable balance, signed delta on the held one. A hold
+	// debits the first and credits the second; a release does the reverse. The
+	// held leg is written in the same statement so the two can never disagree.
+	var balanceAfter, heldAfter float64
+	err := q.QueryRow(ctx, `
+		UPDATE wallets
+		   SET balance      = balance      + CASE WHEN $2::varchar = 'hold' THEN -$3 ELSE $3 END,
+		       held_balance = held_balance + CASE WHEN $2::varchar = 'hold' THEN  $3 ELSE -$3 END,
+		       updated_at = now()
+		 WHERE user_id = $1
+		   AND (CASE WHEN $2::varchar = 'hold'
+		             THEN balance >= $3
+		             ELSE held_balance >= $3 END)
+		RETURNING balance, held_balance`, userID, direction, amount).Scan(&balanceAfter, &heldAfter)
+	if errors.Is(err, pgx.ErrNoRows) {
+		switch direction {
+		case "hold":
+			// The seller does not have the money to hold. That is not an internal
+			// error: it means the escrow release that funds this hold has not
+			// happened, which is a real and expected state for a COD order whose
+			// cash is still with the courier.
+			return domain.E(domain.KindConflict, "INSUFFICIENT_BALANCE",
+				"there is not enough unwithdrawn balance to hold against this order")
+		default:
+			return domain.E(domain.KindInternal, "HELD_BALANCE_UNDERFLOW",
+				"releasing a hold would take the held balance below zero, so the "+
+					"reservation and the wallet disagree about how much is held")
+		}
+	}
+	if err != nil {
+		return err
+	}
+
+	// The wallet row records the movement from the SPENDABLE balance's point of
+	// view, so a hold is a debit and a release a credit, whatever happened to
+	// held_balance. balance_after is the spendable figure, which is the one a
+	// seller reads on their statement.
+	//
+	// ref_id is left NULL deliberately. A hold is not a reference to an existing
+	// row the way a refund references an order -- the reservation carries that --
+	// and `uq_wallet_tx_business_event` is PARTIAL on `ref_id IS NOT NULL`, so a
+	// NULL keeps this insert out of that index's way. Populating it with the order
+	// id would make the index fire on a second hold of the same kind for the same
+	// order and surface as a raw 23505.
+	kind := "debit"
+	if direction != "hold" {
+		kind = "credit"
+	}
+	_, err = q.Exec(ctx, `
+		INSERT INTO wallet_transactions (wallet_id, kind, reason, amount, balance_after, ref_id)
+		VALUES ($1, $2, $3, $4, $5, NULL)`,
+		userID, kind, reason, amount, balanceAfter)
+	return err
+}
+
+// SellerReservation is a hold on a seller's money.
+//
+// Distinct from the row itself because the RELEASE needs the seller, the order and
+// the amount: releasing a hold is not just stamping `released_at`, it moves the
+// money back out of `held_balance` and posts the mirror journal, and all three
+// need the same fields.
+type SellerReservation struct {
+	ID       string
+	SellerID string
+	OrderID  string
+	Amount   float64
+	Kind     string
+	Note     string
+}
+
+// ReleasableReservations lists the holds whose conditions are met.
+//
+// RELEASABLE MEANS ALL OF:
+//   - not already released
+//   - past the lag, measured from when the hold was taken
+//   - the order is COMPLETED. Not shipped, not delivered: the return window
+//     opens on delivery, so releasing at delivery is releasing one day early.
+//   - no open return and no open dispute against that order
+//
+// A set of conditions, not a timestamp, because each one is a reason a reversal
+// could still arrive. A timer would release the money the moment the lag expired
+// and then discover the return, which is the failure this exists to prevent.
+//
+// `payout` reservations are deliberately NOT included: a withdrawal's hold ends
+// when the payout itself settles, which is a different event with a different
+// owner, and releasing it here would free money that is still in the payout
+// pipeline.
+//
+// The lag is a parameter rather than a constant because it is per-seller in the
+// schedule this feeds, and a hardcoded 7 here would silently override every
+// override configured anywhere else.
+//
+// This SELECTs rather than UPDATEs, because the release is three writes and only
+// the service can assemble them -- the repository cannot post a journal. The claim
+// that makes the read-then-write safe is MarkReservationReleasedTx, which is
+// guarded on `released_at IS NULL` and runs in the same transaction as the money
+// move.
+func (r *PaymentRepository) ReleasableReservations(
+	ctx context.Context, q Querier, lagDays, limit int,
+) ([]*SellerReservation, error) {
+	if lagDays < 0 {
+		return nil, domain.E(domain.KindInvalid, "RESERVATION_LAG_INVALID",
+			"a payout lag cannot be negative")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := q.Query(ctx, `
+		SELECT sr.id::text, sr.seller_id::text, sr.order_id::text,
+		       sr.amount::float8, sr.kind, COALESCE(sr.note, '')
+		  FROM seller_reservations sr
+		  JOIN orders o ON o.id = sr.order_id
+		 WHERE sr.released_at IS NULL
+		   AND sr.kind IN ('cod', 'return', 'dispute')
+		   AND sr.created_at <= now() - make_interval(days => $1)
+		   AND o.status = 'completed'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM return_requests r
+		        WHERE r.order_id = sr.order_id
+		          AND r.status IN ('requested', 'approved', 'returned')
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1 FROM disputes d
+		        WHERE d.order_id = sr.order_id
+		          AND d.status IN ('open', 'under_review')
+		   )
+		 ORDER BY sr.created_at ASC
+		 LIMIT $2`, lagDays, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*SellerReservation{}
+	for rows.Next() {
+		res := &SellerReservation{}
+		if err := rows.Scan(&res.ID, &res.SellerID, &res.OrderID,
+			&res.Amount, &res.Kind, &res.Note); err != nil {
+			return nil, err
+		}
+		out = append(out, res)
+	}
+	return out, rows.Err()
+}
+
+// MarkReservationReleasedTx claims a hold for release. Returns false when it was
+// already released, which is how a second job run loses the race.
+//
+// `WHERE released_at IS NULL` is the whole claim, and it must be evaluated BEFORE
+// the money moves. Two concurrent runs both read the same candidate; the first
+// claims it, the second's UPDATE matches nothing, and the second must not then move
+// the money. Same transaction as the journal and the wallet write, so a claim that
+// cannot be completed leaves the hold held rather than half-released.
+func (r *PaymentRepository) MarkReservationReleasedTx(ctx context.Context, q Querier, id string) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE seller_reservations SET released_at = now()
+		  WHERE id = $1::uuid AND released_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ReserveSellerPendingTx holds back a balance that is not yet releasable.
 //
 // The three non-payout kinds exist because the fraud they prevent is the same in
@@ -1087,80 +1290,36 @@ func (r *PaymentRepository) ReserveSellerPendingTx(
 		return domain.E(domain.KindInvalid, "RESERVATION_AMOUNT_INVALID",
 			"a seller hold must reserve a positive amount")
 	}
-	_, err := q.Exec(ctx, `
+	// ON CONFLICT on the partial index from 00047, not a bare 23505.
+	//
+	// One live hold per order per kind, enforced by the database rather than by a
+	// SELECT-then-INSERT here, because two concurrent claims on the same order both
+	// read "none exists" and both insert. The index catches the loser.
+	//
+	// `RETURNING id` is how the outcome is known EXACTLY: a row means this call
+	// inserted it, no row means the conflict fired. The alternative -- re-reading
+	// the table afterwards -- is a heuristic that cannot tell a conflict from an
+	// insert, and the version of this that used a one-second timestamp window was
+	// exactly that.
+	var id string
+	err := q.QueryRow(ctx, `
 		INSERT INTO seller_reservations (seller_id, order_id, amount, kind, note)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''))`,
-		sellerID, orderID, amount, kind, note)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''))
+		ON CONFLICT (order_id, kind) WHERE order_id IS NOT NULL AND released_at IS NULL
+		DO NOTHING
+		RETURNING id`,
+		sellerID, orderID, amount, kind, note).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A hold of this kind is already live against this order, so the money is
+		// already protected. NAMED, because the caller must be able to treat this
+		// as success: a raw 23505 would fail a second return claim for a hold it
+		// already has.
+		return domain.E(domain.KindConflict, "SELLER_HOLD_EXISTS",
+			"a hold of this kind is already live against this order, so the money is "+
+				"already protected; taking a second one would hold it twice and leave "+
+				"the seller short when the first is released")
+	}
 	return err
-}
-
-// ReleaseExpiredReservations releases the holds whose conditions are met, and
-// returns how many.
-//
-// RELEASABLE MEANS ALL OF:
-//   - not already released
-//   - past the lag, measured from when the hold was taken
-//   - the order is COMPLETED. Not shipped, not delivered: the return window
-//     opens on delivery, so releasing at delivery is releasing one day early.
-//   - no open return and no open dispute against that order
-//
-// A set of conditions, not a timestamp, because each one is a reason a reversal
-// could still arrive. A timer would release the money the moment the lag expired
-// and then discover the return, which is the failure this exists to prevent.
-//
-// `payout` reservations are deliberately NOT touched here: a withdrawal's hold
-// ends when the payout itself settles, which is a different event with a
-// different owner. Including them here would release a hold on money that is
-// still in the payout pipeline.
-//
-// The lag is a parameter rather than a constant because it is per-seller in the
-// schedule this feeds, and a hardcoded 7 here would silently override every
-// override configured anywhere else.
-func (r *PaymentRepository) ReleaseExpiredReservations(
-	ctx context.Context, q Querier, lagDays int, limit int,
-) (int, error) {
-	if lagDays < 0 {
-		return 0, domain.E(domain.KindInvalid, "RESERVATION_LAG_INVALID",
-			"a payout lag cannot be negative")
-	}
-	if limit <= 0 {
-		limit = 500
-	}
-	// Two statements rather than one UPDATE ... FROM: the NOT EXISTS clauses need
-	// to be evaluated against the same snapshot, and a self-join on the table
-	// being updated makes the row-visibility rules genuinely hard to reason
-	// about. The CTE selects first, then updates exactly those ids.
-	tag, err := q.Exec(ctx, `
-		WITH releasable AS (
-		    SELECT sr.id
-		      FROM seller_reservations sr
-		      JOIN orders o ON o.id = sr.order_id
-		     WHERE sr.released_at IS NULL
-		       AND sr.kind IN ('cod', 'return', 'dispute')
-		       AND sr.created_at <= now() - make_interval(days => $1)
-		       AND o.status = 'completed'
-		       AND NOT EXISTS (
-		           SELECT 1 FROM return_requests r
-		            WHERE r.order_id = sr.order_id
-		              AND r.status IN ('requested', 'approved', 'returned')
-		       )
-		       AND NOT EXISTS (
-		           SELECT 1 FROM disputes d
-		            WHERE d.order_id = sr.order_id
-		              AND d.status IN ('open', 'under_review')
-		       )
-		     ORDER BY sr.created_at ASC
-		     LIMIT $2
-		)
-		UPDATE seller_reservations sr
-		   SET released_at = now()
-		  FROM releasable
-		 WHERE sr.id = releasable.id`,
-		lagDays, limit)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
 }
 
 // FailPayout and CompletePayout were removed rather than left in place.

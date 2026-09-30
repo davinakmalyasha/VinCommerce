@@ -33,26 +33,92 @@ import (
 // These drive the real function and assert on the arguments it binds, which is the
 // only place the loss was observable.
 
-// recordingQuerier captures the statement and arguments a repository method runs,
-// and answers every QueryRow with `row`.
+// recordingQuerier captures every statement a repository method runs, and answers
+// each QueryRow from a queue.
 type recordingQuerier struct {
-	sql  string
-	args []any
-	row  pgx.Row
+	sql   string
+	args  []any
+	row   pgx.Row
+	stmts []string
 }
 
 func (q *recordingQuerier) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	q.sql, q.args = sql, args
+	q.stmts = append(q.stmts, sql)
 	return pgconn.CommandTag{}, nil
 }
 
 func (q *recordingQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
-	return nil, errors.New("Query is not used by CreateRefund")
+	return nil, errors.New("Query is not used by these tests")
 }
 
 func (q *recordingQuerier) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	q.sql, q.args = sql, args
+	q.stmts = append(q.stmts, sql)
 	return q.row
+}
+
+// twoColumnRow answers `(balance, held_balance) RETURNING ...`, which is what the
+// hold's wallet UPDATE returns.
+type twoColumnRow struct{}
+
+func (twoColumnRow) Scan(dest ...any) error {
+	if len(dest) != 2 {
+		return errors.New("expected two destinations")
+	}
+	p0, ok0 := dest[0].(*float64)
+	p1, ok1 := dest[1].(*float64)
+	if !ok0 || !ok1 {
+		return errors.New("expected *float64 destinations")
+	}
+	*p0, *p1 = 70000, 30000
+	return nil
+}
+
+// idRow answers `RETURNING id`.
+type idRow struct{}
+
+func (idRow) Scan(dest ...any) error {
+	if len(dest) != 1 {
+		return errors.New("expected one destination")
+	}
+	p, ok := dest[0].(*string)
+	if !ok {
+		return errors.New("expected a *string destination")
+	}
+	*p = "00000000-0000-0000-0000-0000000000ff"
+	return nil
+}
+
+// readMigrationDir returns every migration's text, for tests that assert on the
+// schema rather than on a single file.
+func readMigrationDir(t *testing.T) ([]struct {
+	name string
+	text string
+}, error) {
+	dir := filepath.Join("..", "db", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []struct {
+		name string
+		text string
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		raw, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			return nil, rerr
+		}
+		out = append(out, struct {
+			name string
+			text string
+		}{e.Name(), string(raw)})
+	}
+	return out, nil
 }
 
 // rowsQueueQuerier answers successive QueryRow calls, which is what the claim's
@@ -60,9 +126,6 @@ func (q *recordingQuerier) QueryRow(_ context.Context, sql string, args ...any) 
 type rowsQueueQuerier struct {
 	recordingQuerier
 	queued []pgx.Row
-	// stmts keeps every statement, because the claim issues two and the one under
-	// test is the FIRST. `recordingQuerier.sql` holds only the last.
-	stmts []string
 }
 
 func (q *rowsQueueQuerier) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {

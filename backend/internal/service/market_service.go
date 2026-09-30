@@ -435,10 +435,19 @@ func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subje
 	// leaves the resolution unable to pay the buyer.
 	//
 	// The whole order is held because a dispute is about the order, not one item.
+	//
+	// The dispute's id is minted HERE, before the hold, because it is the hold's
+	// idempotency key: minted afterwards the hold would have nothing stable to key
+	// on and a retry would post a second journal for a hold the retry was only
+	// retrying.
+	d := &domain.Dispute{
+		ID: uuid.NewString(), ReturnID: &returnID, OrderID: orderID,
+		UserID: userID, SellerID: sellerID, Subject: subject, Description: description, Status: "open",
+	}
 	if s.payments != nil {
 		order, oerr := s.payments.IntentByOrder(ctx, orderID)
 		if oerr == nil {
-			if err := s.payments.HoldSellerFunds(ctx, sellerID, orderID,
+			if err := s.payments.HoldSellerFunds(ctx, sellerID, orderID, d.ID,
 				HoldDispute, "dispute opened", order.Amount); err != nil {
 				return nil, err
 			}
@@ -447,10 +456,6 @@ func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subje
 		// paid outside the system, and a buyer disputing one is still owed a
 		// hearing. There is simply no captured money to hold. The dispute itself
 		// records the exposure and an operator settles it by bank transfer.
-	}
-	d := &domain.Dispute{
-		ID: uuid.NewString(), ReturnID: &returnID, OrderID: orderID,
-		UserID: userID, SellerID: sellerID, Subject: subject, Description: description, Status: "open",
 	}
 	if err := s.disputes.Create(ctx, d); err != nil {
 		return nil, err

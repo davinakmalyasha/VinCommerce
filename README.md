@@ -392,6 +392,26 @@ they would cost you in a real deployment.
    produce and asserts each fits the width the schema *ends up* with after all 46
    migrations, read from the files rather than hardcoded — so re-narrowing fails a
    test that names the code, verified by reverting the widening.
+   **[closed] …and a seller hold moved no money at all.** `HoldSellerFunds` wrote a
+   `seller_reservations` row and stopped. `RequestPayout` debits `wallets.balance`
+   and reads nothing else, so the "fraud control" left the money fully withdrawable
+   while looking like it had held it — and `postLedger` logs a failed journal and
+   returns nothing, so it could not even complain. `wallets.held_balance` had no
+   writer anywhere in Go, `AccSellerHeld` was never posted to, and
+   `reconcileWallets` was comparing those two against each other at zero and
+   reporting clean. Three of the design's four moving parts were never built.
+   A hold is now one transaction of four writes — ensure both personal accounts,
+   journal `debit seller_available / credit seller_held`, move
+   `balance -= amount, held_balance += amount`, insert the reservation — and the
+   release is the exact mirror. Because the hold *transfers* the value,
+   `RequestPayout` needs no new predicate: the existing `balance >= amount` check
+   becomes correct the moment holds are real, which is why there is no
+   `balance - held_balance` arithmetic anywhere. The journal posts **strictly** on
+   this path, unlike `postLedger`, because it is one event rather than a movement
+   that has already committed. Migration 00047 makes one live hold per order per
+   kind a database guarantee, so two concurrent claims cannot hold the money twice.
+   Verified by mutating the hold to stop debiting the spendable balance, and the
+   release to move money in the hold direction; both fail by name.
 
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure

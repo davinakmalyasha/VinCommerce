@@ -74,6 +74,29 @@ func (s *PaymentService) postLedger(ctx context.Context, q repository.Querier, s
 	}
 }
 
+// postLedgerStrict is postLedger for a path that cannot continue without a journal.
+//
+// `postLedger` logs and returns, which is right for a movement that has already
+// committed: telling the caller "this failed" would invite a retry of a money
+// movement that already happened. But it is exactly wrong when the journal, the
+// wallet row and the reservation are ONE event -- then a swallowed error leaves
+// the balance moved with no accounting entry and no way to notice, which is the
+// defect 0cb43d1 was.
+//
+// So: two functions, and the choice is made by whether the posting is part of the
+// same transaction as the thing it describes.
+func (s *PaymentService) postLedgerStrict(ctx context.Context, q repository.Querier, spec JournalSpec) error {
+	if s.ledger == nil {
+		return domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so this money movement cannot be accounted for; "+
+				"refusing rather than moving money with no journal")
+	}
+	if _, err := s.ledger.Post(ctx, q, spec); err != nil {
+		return err
+	}
+	return nil
+}
+
 // withMeta attaches metadata to every entry in a journal.
 //
 // Applied to the whole journal rather than per-entry because every line of a

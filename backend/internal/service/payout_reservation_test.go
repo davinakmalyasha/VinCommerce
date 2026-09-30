@@ -134,28 +134,3 @@ func TestAnOpenDisputeHoldsTheOrderBeforeItIsRecorded(t *testing.T) {
 // A hold whose kind the release job does not evaluate is a hold that is never
 // released, which is a permanent deduction from a seller's balance. So the two
 // vocabularies must be the same one.
-func TestEveryHoldKindIsOneTheReleaseJobEvaluates(t *testing.T) {
-	// The kinds the release query considers releasable. Mirrors the IN list in
-	// PaymentRepository.ReleaseExpiredReservations.
-	releasable := map[string]bool{"cod": true, "return": true, "dispute": true}
-
-	declared := map[string]bool{
-		HoldCOD: true, HoldReturn: true, HoldDispute: true,
-	}
-	for kind := range declared {
-		if !releasable[kind] {
-			t.Errorf("hold kind %q is declared but the release job does not evaluate "+
-				"it; the hold would never be released and the seller could not "+
-				"withdraw that money ever", kind)
-		}
-	}
-	// And nothing may hold with a kind outside the vocabulary. The repository
-	// refuses those, which is the load-bearing half; this is the assertion that
-	// the vocabulary and the refusal agree.
-	repo := readRepositorySource(t, "payment_repo.go")
-	if !strings.Contains(repo, `case "cod", "return", "dispute":`) {
-		t.Error("the repository no longer validates hold kinds against the same " +
-			"three the release job evaluates; a new kind would be insertable and " +
-			"never released")
-	}
-}

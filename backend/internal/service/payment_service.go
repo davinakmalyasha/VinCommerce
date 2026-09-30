@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1545,22 +1547,100 @@ const (
 //
 // This backs `worker.TaskReleasePayoutReservations`, which was a string constant
 // with no handler and no schedule entry: the job had a name, a comment explaining
-// the fraud control it represented, and no way to ever run. A hold that is never
-// released is not a hold, it is a permanent deduction from a seller's balance --
-// and a seller whose balance never becomes withdrawable stops selling, or
-// complains, and both look like a payments bug.
+// the fraud control it represented, and no way to ever run.
 //
-// The release conditions themselves live in the query, because they are a
-// conjunction over four tables and expressing them in Go would mean reading them
-// into memory and deciding there, which is the shape that produces a hold released
-// on a stale read. See PaymentRepository.ReleaseExpiredReservations.
+// A release is the EXACT MIRROR of a hold -- journal, wallet, reservation -- and
+// the mirror matters more here than anywhere else in the payout path. The first
+// version of this stamped `released_at` and nothing else, which would have marked
+// money as withdrawable while it was still in `held_balance` and the seller's
+// `wallets.balance` had never been credited back. The hold would have become
+// permanent in the one direction that matters.
+//
+// Each release is its own transaction, claiming the hold first. Claiming before
+// moving the money is what makes a concurrent second run safe: its UPDATE matches
+// nothing, it moves no money, and the hold is released exactly once.
 //
 // Returns the number released, so the worker's log line says whether the job is
 // doing anything. A job that logs nothing is indistinguishable from a job that is
 // broken.
 func (s *PaymentService) ReleaseExpiredReservations(ctx context.Context, limit int) (int, error) {
-	return s.payments.ReleaseExpiredReservations(
-		ctx, s.payments.Pool(), s.PayoutLagDays(), limit)
+	if s.ledger == nil {
+		return 0, domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so a hold could be released with no mirror "+
+				"journal; refusing rather than making money spendable that the books "+
+				"still say is held")
+	}
+
+	candidates, err := s.payments.ReleasableReservations(ctx, s.payments.Pool(), s.PayoutLagDays(), limit)
+	if err != nil {
+		return 0, err
+	}
+
+	released := 0
+	for _, res := range candidates {
+		if err := s.releaseOneReservation(ctx, res); err != nil {
+			// One hold failing must not stop the rest: a permanently-held balance for
+			// a seller whose row has a data problem is worse than a delayed release
+			// for someone else. Logged loudly, and counted as not released.
+			slog.Error("could not release a seller hold; it stays held",
+				"reservation_id", res.ID, "seller_id", res.SellerID,
+				"order_id", res.OrderID, "hold_kind", res.Kind,
+				"amount", res.Amount, "error", err.Error())
+			continue
+		}
+		released++
+	}
+	return released, nil
+}
+
+// releaseOneReservation releases a single hold: claim, journal, move money, commit.
+func (s *PaymentService) releaseOneReservation(ctx context.Context, res *repository.SellerReservation) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	// Claim FIRST. If another run already released this, the UPDATE matches nothing
+	// and no money moves -- which is the only thing standing between a retried job
+	// and crediting the seller twice.
+	claimed, err := s.payments.MarkReservationReleasedTx(ctx, q, res.ID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+
+	if err := s.ledger.EnsurePersonalAccount(ctx, q, res.SellerID); err != nil {
+		return err
+	}
+	if err := s.ledger.EnsureHeldAccount(ctx, q, res.SellerID); err != nil {
+		return err
+	}
+
+	if err := s.postLedgerStrict(ctx, q, JournalSpec{
+		IdempotencyKey: "seller_hold_release:" + res.ID,
+		TxType:         TxTypeSellerHold,
+		RefType:        "order",
+		RefID:          res.OrderID,
+		Note:           "seller hold released: " + res.Kind,
+		Entries: withMeta(sellerHoldReleaseEntries(res.SellerID, res.Amount),
+			holdMeta(res.SellerID, res.OrderID, res.Kind, res.Amount)),
+	}); err != nil {
+		return err
+	}
+
+	// The wallet leg. HELD_BALANCE_UNDERFLOW here would mean the reservation and the
+	// wallet disagree about how much is held, and it is deliberately fatal: a
+	// release that cannot complete must leave the hold held, not free the
+	// reservation and strand the balance.
+	if err := s.payments.WalletHeldTxOn(ctx, q, res.SellerID, "release",
+		repository.WalletReasonHoldRelease, res.Amount); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // SetPayoutLag sets the platform-wide payout lag. A per-seller override, when one
@@ -1601,7 +1681,28 @@ const (
 // nothing to take. `WalletTxOn` enforces balance >= 0, so the reversal does not go
 // negative -- it fails, and the buyer's refund is stranded behind
 // INSUFFICIENT_BALANCE with no path forward. The hold is what makes the balance
-// honest.
+// honest, and "honest" is literal: the money leaves `wallets.balance`.
+//
+// ONE TRANSACTION, FOUR WRITES.
+//
+//	ensure the two personal ledger accounts exist
+//	journal   debit seller_available, credit seller_held
+//	wallets   balance -= amount, held_balance += amount
+//	insert    the seller_reservations row
+//
+// If any of them fails, all four roll back. Splitting them is precisely how the two
+// preceding commits got into trouble: the release job ran against holds nothing
+// took, and then holds were taken that nothing consulted. Both halves existed and
+// neither was connected to the balance.
+//
+// The journal is posted STRICTLY here, unlike `postLedger`. This is one event
+// rather than a movement that has already committed, so a swallowed error would
+// leave the balance moved with no accounting entry and nothing to notice it.
+//
+// `eventID` is the natural key of whatever the hold is FOR -- a return claim id, a
+// dispute id, a payment intent id. It makes the journal idempotent across a retry,
+// and it is why a hold can be taken again after a release without the second being
+// swallowed as a duplicate of the first.
 //
 // CALL IT BEFORE THE EVENT IT PROTECTS AGAINST, not after.
 //
@@ -1613,20 +1714,101 @@ const (
 // with no open return or dispute, which is exactly the condition that will be true
 // if the return never happened. The other direction has no automatic repair.
 //
-// This runs in its own transaction, which is a real limitation and is why the
-// ordering above matters: the hold and the return are not yet one atomic event.
-// Composing them needs a tx-taking CreateReturn, which is a larger change than the
-// problem currently warrants -- and the fail-safe ordering means the window is
-// survivable.
+// A live hold for this order and kind is NOT an error: the money is already
+// protected, and refusing would reject a second claim for a hold it already has.
+// The repository returns SELLER_HOLD_EXISTS for exactly that case and it is treated
+// here as success.
 func (s *PaymentService) HoldSellerFunds(
-	ctx context.Context, sellerID, orderID, kind, note string, amount float64,
+	ctx context.Context, sellerID, orderID, eventID, kind, note string, amount float64,
 ) error {
 	if s.payments == nil {
 		return domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
 			"the payment service is not wired, so a seller hold cannot be taken; "+
 				"the balance is not protected against a return or dispute")
 	}
-	return s.payments.ReserveSellerPendingTx(ctx, s.payments.Pool(), sellerID, orderID, kind, note, amount)
+	if s.ledger == nil {
+		return domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
+			"the ledger is not wired, so a seller hold would move money with no "+
+				"accounting entry; refusing rather than creating an untracked balance")
+	}
+	reason, err := walletReasonForHold(kind)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	if err := s.ledger.EnsurePersonalAccount(ctx, q, sellerID); err != nil {
+		return err
+	}
+	if err := s.ledger.EnsureHeldAccount(ctx, q, sellerID); err != nil {
+		return err
+	}
+
+	if err := s.postLedgerStrict(ctx, q, JournalSpec{
+		IdempotencyKey: "seller_hold:" + eventID + ":" + kind,
+		TxType:         TxTypeSellerHold,
+		RefType:        "order",
+		RefID:          orderID,
+		Note:           note,
+		Entries: withMeta(sellerHoldEntries(sellerID, amount),
+			holdMeta(sellerID, orderID, kind, amount)),
+	}); err != nil {
+		return err
+	}
+
+	if err := s.payments.WalletHeldTxOn(ctx, q, sellerID, "hold", reason, amount); err != nil {
+		return err
+	}
+
+	if err := s.payments.ReserveSellerPendingTx(ctx, q, sellerID, orderID, kind, note, amount); err != nil {
+		// A live hold for this order and kind already exists, so the money is
+		// already protected -- which is what the caller asked for. Returning an
+		// error here would reject a return claim for a hold it already has.
+		if domain.Is(err, domain.KindConflict, "SELLER_HOLD_EXISTS") {
+			return nil
+		}
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// holdMeta labels the journal lines, so a trial balance grouped by tx_type can say
+// what a hold was for without a second query.
+func holdMeta(sellerID, orderID, kind string, amount float64) map[string]any {
+	return map[string]any{
+		"seller_id": sellerID, "order_id": orderID,
+		"hold_kind": kind, "amount": amount,
+	}
+}
+
+// walletReasonForHold maps a hold kind to the reason written to
+// `wallet_transactions`, where the seller will read it.
+//
+// A lookup that FAILS LOUD on an unknown kind rather than falling back. The
+// reason is also a key in `uq_wallet_tx_business_event`, so a shared fallback
+// would collapse a return hold and a dispute hold on one order onto one index key
+// and surface as a raw 23505 in the middle of a return claim -- a database error
+// where a caller mistake belongs.
+func walletReasonForHold(kind string) (string, error) {
+	switch kind {
+	case HoldCOD:
+		return repository.WalletReasonHoldCOD, nil
+	case HoldReturn:
+		return repository.WalletReasonHoldReturn, nil
+	case HoldDispute:
+		return repository.WalletReasonHoldDispute, nil
+	default:
+		return "", domain.E(domain.KindInternal, "RESERVATION_KIND_INVALID",
+			"a seller hold must be one of cod, return or dispute; "+strconv.Quote(kind)+
+				" is not one, and an unmapped hold would be recorded under a reason "+
+				"that collides with every other hold on the same order")
+	}
 }
 
 // Payouts lists a seller's withdrawal history.

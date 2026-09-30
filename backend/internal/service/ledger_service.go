@@ -96,6 +96,12 @@ const (
 	TxTypeAdjustment    = "adjustment"
 	TxTypeSettlement    = "settlement"
 	TxTypeReversal      = "reversal"
+	// TxTypeSellerHold is money moved out of a seller's spendable balance and into
+	// their held balance. A separate type rather than `adjustment` so a trial
+	// balance can answer "how much of a seller's earnings is currently not
+	// withdrawable" without a second query, and so a hold is visible as its own
+	// kind of event rather than looking like an unexplained adjustment.
+	TxTypeSellerHold = "seller_hold"
 )
 
 // LedgerEntry is a journal line. It is an ALIAS of domain.LedgerEntry, not a
@@ -291,6 +297,16 @@ func (s *LedgerService) EscrowOutstanding(ctx context.Context, q repository.Quer
 // money?" -- behind a database side effect.
 func (s *LedgerService) EnsurePersonalAccount(ctx context.Context, q repository.Querier, userID string) error {
 	return s.ledger.EnsurePersonalAccount(ctx, q, userID)
+}
+
+// EnsureHeldAccount makes sure a user's HELD ledger account exists.
+//
+// Separate from EnsurePersonalAccount rather than a flag, because the two
+// accounts answer different questions and a `held bool` invites the caller to pass
+// the wrong one: every posting that touches a seller's withdrawable balance needs
+// the available account to exist, and a hold needs both.
+func (s *LedgerService) EnsureHeldAccount(ctx context.Context, q repository.Querier, userID string) error {
+	return s.ledger.EnsureHeldAccount(ctx, q, userID)
 }
 
 // TrialBalance returns every account balance, sorted by code.
