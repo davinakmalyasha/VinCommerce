@@ -98,37 +98,22 @@ func classifyUnidentifiableProviderRefund(ev providerRefundEvent) refundDecision
 	return classifyProviderRefund(ev, false)
 }
 
-// refundStateCountsTowardCap reports whether a refund in this state represents
-// money that has left, or is committed to leaving.
+// refundStateCountsTowardCap was here, and was dead code.
 //
-// THE BUG THIS FIXES. The cumulative cap used to read
-// `wallet_transactions WHERE kind = 'credit'`. A refund through the GATEWAY never
-// credits the buyer's wallet -- the money goes back to their card -- so after two
-// Rp30,000 gateway refunds the cap believed nothing had been refunded at all, and
-// happily authorised a third. The guard built specifically to stop
-// over-refunding a buyer measured nothing on the path that actually refunds them.
+// Nothing in production called it. The rule it encoded -- which refund states
+// count toward the cumulative cap -- lives as literals inside
+// `PaymentRepository.SumRefundedByOrder`, because that is the query that enforces
+// it. So the file carried two definitions of one money rule, and a comment above
+// the query asserted they could not drift because they were "read from the same Go
+// constants". They were not read from anything shared; the query is literals.
 //
-// States, and the reasoning:
+// The rule now lives in `domain.RefundStatesCountingTowardCap`, where the service
+// and the repository can both reach it, and a test asserts the query's literals
+// against it. Deleting the mirror rather than keeping it "for documentation" is
+// the point: a second copy of a cap rule is not documentation, it is a future
+// disagreement with extra steps.
 //
-//	pending    NOT counted. Written before the provider is called; if the submit
-//	           fails nothing moved, and counting it would refuse a legitimate
-//	           retry.
-//	submitted  counted. The provider accepted it and will pay. Not counting it
-//	           would let a second refund be authorised while the first is in
-//	           flight, which is precisely the double-refund the cap exists for.
-//	succeeded  counted. The money is gone.
-//	failed     NOT counted. The provider rejected it; no money moved.
-//	manual     counted. We OWE the buyer this money and a human has to send it.
-//	           Not counting it would let the platform promise the same rupiah to
-//	           two buyers, and it would do so while showing a clean cap.
-func refundStateCountsTowardCap(status string) bool {
-	switch status {
-	case RefundStateSubmitted, RefundStateSucceeded, RefundStateManual:
-		return true
-	default:
-		return false
-	}
-}
+// See capDecision and decideRefundCap for the arithmetic this feeds.
 
 // capDecision is the outcome of checking a requested refund against what has
 // already been refunded.

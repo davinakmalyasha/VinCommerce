@@ -58,6 +58,73 @@ const (
 	RefundManual = "manual"
 )
 
+// RefundStates and the states that count toward a refund cap.
+//
+// The cumulative cap reads a literal list inside
+// `PaymentRepository.SumRefundedByOrder`, and it used to be mirrored by a Go
+// function in the service layer that NOTHING CALLED. Two definitions of the same
+// rule, one of them dead, and a comment above the query claiming they "are read
+// from the same Go constants the service writes, so the query and the writer
+// cannot disagree". They could and did: the query is literals.
+//
+// The rule now lives here, where both packages can reach it, and the service-side
+// mirror is gone. The query keeps its literals -- deriving an IN list at runtime
+// would make the statement un-inspectable and the money-critical SQL less
+// reviewable -- so `TestTheCapCountsExactlyTheStatesDomainSays` asserts the
+// literals against this slice. Adding a state here therefore fails a test that
+// names the query, rather than silently producing a cap that reads the wrong
+// column of the refunds table.
+//
+// The rule, and why each state is in or out:
+//
+//	pending    NOT counted. Written before the provider is called; if the submit
+//	           fails nothing moved, and counting it would refuse a legitimate
+//	           retry.
+//	submitted  counted. The provider accepted it and will pay. Not counting it
+//	           would let a second refund be authorised while the first is in
+//	           flight, which is precisely the double-refund the cap exists for.
+//	succeeded  counted. The money is gone.
+//	failed     NOT counted. The provider rejected it; no money moved.
+//	manual     counted. We OWE the buyer this money and a human must send it.
+//	           Not counting it would let the platform promise the same rupiah
+//	           to two buyers, and it would do so while showing a clean cap.
+var (
+	// RefundStates is every legal refund state, in the order the CHECK constraint
+	// lists them.
+	RefundStates = []string{
+		RefundPending, RefundSubmitted, RefundSucceeded, RefundFailed, RefundManual,
+	}
+
+	// RefundStatesCountingTowardCap is the subset that represents money that has
+	// left, or is committed to leaving.
+	RefundStatesCountingTowardCap = []string{
+		RefundSubmitted, RefundSucceeded, RefundManual,
+	}
+
+	// RefundStatesNotCountingTowardCap is the complement, stated rather than
+	// derived. Every legal state must appear in one slice or the other, and a test
+	// says so -- a state in neither is one whose treatment was never decided, and
+	// it would be decided by whichever branch the query happened to take.
+	RefundStatesNotCountingTowardCap = []string{
+		RefundPending, RefundFailed,
+	}
+)
+
+// RefundStateCountsTowardCap reports whether a refund in this state represents
+// money that has left, or is committed to leaving.
+//
+// Lives in domain rather than in the service because the rule is not the service's
+// alone: the query that enforces it is in the repository, and a definition only the
+// service can see is a definition the repository cannot be checked against.
+func RefundStateCountsTowardCap(status string) bool {
+	for _, s := range RefundStatesCountingTowardCap {
+		if s == status {
+			return true
+		}
+	}
+	return false
+}
+
 // NeedsOperator reports whether this refund is waiting on a person rather than on
 // a process.
 //

@@ -282,6 +282,19 @@ they would cost you in a real deployment.
    lookup, so there is exactly one implementation and whatever the tests exercise is
    what ships; a missing lookup now refuses with `REFUND_LOOKUP_UNWIRED` instead of
    falling back. Mutation-verified as M20.
+   **[closed] The cap's state rule existed twice, and one copy was dead.**
+   `refundStateCountsTowardCap` in the service layer encoded which refund states
+   count toward the cumulative cap — and nothing in production called it. The rule
+   actually enforced is a literal list inside `SumRefundedByOrder`, under a comment
+   claiming the states "are read from the same Go constants the service writes, so
+   the query and the writer cannot disagree". They were not read from anything
+   shared. Worse, mutation **M9** attacked the dead copy and was reported as
+   coverage of the cap: a mutation attesting to something it never touched. The
+   rule now lives in `domain.RefundStatesCountingTowardCap`, where both packages
+   can reach it, the service mirror is deleted, and a test compares the query's
+   literals against the domain rule — so adding a state fails a test that names the
+   query instead of silently producing a cap that reads the wrong rows. M9 now
+   mutates the query.
 
 
    **[closed] Every full refund failed, after the provider had paid.** The cap

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/payments"
 	"github.com/vincommerce/backend/internal/repository"
 )
@@ -848,7 +849,65 @@ func TestTheCumulativeCapReadsTheRefundsTable(t *testing.T) {
 	}
 }
 
-// Which states count toward the cap, and why.
+// The cap's state list is a literal inside the query, and the rule that decides
+// which states belong in it lives in `domain`. This asserts the two agree.
+//
+// The service used to carry its own copy of that rule as a Go function that
+// NOTHING CALLED, while the query used literals, under a comment claiming they
+// were "read from the same Go constants" and so could not disagree. They were two
+// independent definitions, and a mutation against the dead copy was reported as
+// coverage of the cap. So the drift is now tested directly: add a state to
+// `domain.RefundStatesCountingTowardCap` and this fails, naming the query.
+func TestTheCapCountsExactlyTheStatesDomainSays(t *testing.T) {
+	body := readRepositorySource(t, "payment_repo.go")
+	start := strings.Index(body, "func (r *PaymentRepository) SumRefundedByOrder(")
+	if start < 0 {
+		t.Fatal("SumRefundedByOrder not found")
+	}
+	rest := body[start:]
+	end := strings.Index(rest, "\nfunc ")
+	if end < 0 {
+		end = len(rest)
+	}
+	fn := rest[:end]
+
+	// Only the status predicate, not the whole function: the exclusion clause
+	// mentions no states, and matching the entire body would let a stray status
+	// string in a comment count as agreement.
+	clause := fn
+	if i := strings.Index(fn, "status IN ("); i >= 0 {
+		clause = fn[i:]
+		if j := strings.Index(clause, ")"); j >= 0 {
+			clause = clause[:j]
+		}
+	} else {
+		t.Fatalf("SumRefundedByOrder no longer filters on refund status:\n%s\n"+
+			"without a state filter the cap sums EVERY row, including `failed` and "+
+			"`pending`, and refuses buyers refunds they are owed", fn)
+	}
+
+	for _, want := range domain.RefundStatesCountingTowardCap {
+		if !strings.Contains(clause, "'"+want+"'") {
+			t.Errorf("the cap does not count %q, but domain says it represents money "+
+				"that has left or is committed to leaving; either the query or "+
+				"domain.RefundStatesCountingTowardCap is now wrong", want)
+		}
+	}
+	for _, unwanted := range domain.RefundStates {
+		if domain.RefundStateCountsTowardCap(unwanted) {
+			continue
+		}
+		if strings.Contains(clause, "'"+unwanted+"'") {
+			t.Errorf("the cap counts %q, but domain says it does not represent committed "+
+				"money; either the query or domain.RefundStatesCountingTowardCap is now "+
+				"wrong", unwanted)
+		}
+	}
+}
+
+// Which states count toward the cap, and why. The rule itself is in domain,
+// because the query that enforces it is in the repository and a definition only
+// the service can see is one the repository cannot be checked against.
 func TestRefundStatesThatCountTowardTheCap(t *testing.T) {
 	counts := map[string]bool{
 		RefundStatePending:   false, // pre-submit; if the call fails nothing moved
@@ -858,17 +917,45 @@ func TestRefundStatesThatCountTowardTheCap(t *testing.T) {
 		RefundStateManual:    true,  // we owe the buyer; a human must send it
 	}
 	for status, want := range counts {
-		if got := refundStateCountsTowardCap(status); got != want {
-			t.Errorf("refundStateCountsTowardCap(%q) = %v, want %v", status, got, want)
+		if got := domain.RefundStateCountsTowardCap(status); got != want {
+			t.Errorf("domain.RefundStateCountsTowardCap(%q) = %v, want %v", status, got, want)
 		}
 	}
 	// An unrecognised state must NOT count. Defaulting to "counts" means a typo or
 	// a new state silently consumes the cap, and the platform refuses buyers a
 	// refund they are owed.
-	if refundStateCountsTowardCap("typo") {
+	if domain.RefundStateCountsTowardCap("typo") {
 		t.Error("an unrecognised refund state counts toward the cap; a typo would " +
 			"consume the cap and refuse a buyer a refund they are owed")
 	}
+}
+
+// Every legal state must be classified one way or the other. A state that is
+// neither counted nor explicitly excluded is a state whose treatment was never
+// decided, and it will be decided by whichever branch the query happens to take.
+func TestEveryRefundStateIsClassifiedByTheCap(t *testing.T) {
+	for _, status := range domain.RefundStates {
+		if !domain.RefundStateCountsTowardCap(status) &&
+			!contains(domain.RefundStatesNotCountingTowardCap, status) {
+			t.Errorf("refund state %q is neither counted toward the cap nor listed as "+
+				"excluded; add it to one of the two slices in domain so its treatment "+
+				"is a decision rather than an accident", status)
+		}
+	}
+	for _, status := range domain.RefundStatesNotCountingTowardCap {
+		if domain.RefundStateCountsTowardCap(status) {
+			t.Errorf("refund state %q is in both slices", status)
+		}
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // The cap must refuse a refund that exceeds what remains.

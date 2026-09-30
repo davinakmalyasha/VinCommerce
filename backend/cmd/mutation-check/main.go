@@ -141,10 +141,19 @@ func main() {
 			new:   "	if false {",
 		},
 		{
+			// An unknown refund state counts toward the cap.
+			//
+			// This used to mutate `refund_cap.go`'s `refundStateCountsTowardCap` --
+			// a function NOTHING CALLED, because the rule lives as literals in the
+			// query. It was caught by its own test and reported as coverage of the
+			// cap, which is how a mutation ends up attesting to something it never
+			// touched. It now mutates the query itself, and the test that catches it
+			// compares those literals against domain.RefundStatesCountingTowardCap.
 			label: "M9: an unknown refund state counts toward the cap",
-			file:  capFile,
-			old:   "	case RefundStateSubmitted, RefundStateSucceeded, RefundStateManual:\n\t\treturn true\n\tdefault:\n\t\treturn false",
-			new:   "	case RefundStateSubmitted, RefundStateSucceeded, RefundStateManual:\n\t\treturn true\n\tdefault:\n\t\treturn true",
+			file:  repoFile,
+			old: "\t\t   AND status IN ('submitted', 'succeeded', 'manual')\n" +
+				"\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
+			new: "\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
 		},
 		{
 			label: "M10: the provider key drops the gateway, so gateways collide",
