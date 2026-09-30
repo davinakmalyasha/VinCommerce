@@ -219,8 +219,9 @@ func TestAReplayedNotificationReturnsTheOriginalAndChangesNothing(t *testing.T) 
 	// quietly succeeding. A replay must return before it gets there.
 	svc := &PaymentService{refunds: lookup}
 
+	const intentID = "intent-1"
 	ev := providerRefundEvent{OrderID: "o1", Amount: 30000, Gateway: "midtrans", Reference: "rf-77"}
-	got, err := svc.replayIsRecognised(t.Context(), ev)
+	got, err := svc.replayIsRecognised(t.Context(), intentID, ev)
 
 	if err != nil {
 		t.Fatalf("a replay returned an error; the provider would retry forever: %v", err)
@@ -234,6 +235,23 @@ func TestAReplayedNotificationReturnsTheOriginalAndChangesNothing(t *testing.T) 
 	}
 	if lookup.calls != 1 {
 		t.Errorf("the lookup was consulted %d times, want exactly 1", lookup.calls)
+	}
+
+	// WHAT IT WAS ASKED. The lookup filters `WHERE payment_intent_id = $1`, and
+	// that column is `UUID NOT NULL`, so an empty id is not a payment with no
+	// refunds -- it is an invalid uuid, and the query ERRORS. The guard then aborts
+	// every provider refund notification, and Midtrans retries for 24 hours.
+	//
+	// Asserting only that the lookup was called once is what let this ship: the
+	// stub used to discard both string arguments, so a literal "" was invisible
+	// here and in every other test in this file.
+	if lookup.lastIntentID != intentID {
+		t.Errorf("the lookup was asked about intent %q, want %q; an unscoped lookup "+
+			"cannot match a refund and the guard is inert", lookup.lastIntentID, intentID)
+	}
+	if lookup.lastKey != providerRefundKey(ev) {
+		t.Errorf("the lookup was asked about key %q, want %q",
+			lookup.lastKey, providerRefundKey(ev))
 	}
 	// And the DECISION, so a future refactor that keeps the guard but stops
 	// routing replays through it is still caught.
@@ -260,17 +278,28 @@ func TestAnEmptyProviderKeySkipsTheLookup(t *testing.T) {
 	}
 }
 
-// stubRefundLookup returns a fixed recorded refund, and counts calls.
+// stubRefundLookup returns a fixed recorded refund, counts calls, and RECORDS the
+// arguments it was handed.
+//
+// The recording is not incidental. This stub used to declare both string
+// parameters unnamed and ignore them, which is why a caller passing an empty
+// intent id -- a literal "" against a `UUID NOT NULL` column, so the query errored
+// on every provider refund notification -- passed every test in this file. A stub
+// that cannot see its inputs cannot fail on them.
 type stubRefundLookup struct {
 	found *repository.Refund
 	calls int
 	err   error
+
+	// lastIntentID and lastKey are what the caller actually asked about.
+	lastIntentID, lastKey string
 }
 
 func (s *stubRefundLookup) RefundByProviderKey(
-	context.Context, string, string,
+	_ context.Context, intentID, key string,
 ) (*repository.Refund, error) {
 	s.calls++
+	s.lastIntentID, s.lastKey = intentID, key
 	return s.found, s.err
 }
 

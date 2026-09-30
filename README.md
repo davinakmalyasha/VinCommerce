@@ -249,6 +249,20 @@ they would cost you in a real deployment.
    mutations had been reporting success without running a test, so the coverage
    they claimed did not exist until the harness was fixed to reject a failure
    that names no witness.
+   **[closed] The replay guard was asked the wrong question.** The webhook path
+   looks up an already-recorded refund by the provider's own refund reference, and
+   it did so with a literal empty payment-intent id against a `UUID NOT NULL`
+   column. That is not "a payment with no refunds" — it is an invalid uuid, so the
+   query *errored* rather than matching nothing. Every provider refund notification
+   failed before recording anything, and Midtrans retried for 24 hours against an
+   error that named nothing about the wiring. The intent is already loaded, so the
+   lookup is now scoped to it, and a blank intent id is refused with
+   `REFUND_LOOKUP_WITHOUT_INTENT` before it reaches Postgres. Mutation-verified as
+   M17/M18.
+   The unit tests could not see it because the stub declared both string arguments
+   unnamed and discarded them. The stub now records what it was asked, which is the
+   only reason the defect is visible at all.
+
    **[closed] Every full refund failed, after the provider had paid.** The cap
    counts `submitted`, and the reserve step commits its row as `submitted` before
    the gateway is called. So when settlement re-derived the cap, the row being

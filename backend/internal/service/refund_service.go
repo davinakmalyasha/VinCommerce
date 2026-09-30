@@ -83,6 +83,15 @@ func (l paymentRefundLookup) RefundByProviderKey(
 // replayIsRecognised resolves a notification's idempotency key, consults the
 // lookup, and reports the refund we already recorded for it.
 //
+// `intentID` is an ARGUMENT rather than something this function re-derives,
+// because deriving it here is what broke the guard: it used to pass a literal ""
+// and the lookup filters `WHERE payment_intent_id = $1`. `payment_intent_id` is
+// `UUID NOT NULL`, so an empty string is not "a payment with no refunds" -- it is
+// an invalid uuid, and the query failed rather than matching. Every provider
+// refund notification errored out before recording anything, and Midtrans retried
+// for 24 hours. The caller already has the intent in hand, so it passes the id it
+// actually read.
+//
 // Extracted as a named seam because this is the guard standing between a provider's
 // retry loop and paying a buyer twice, and it was the one piece of the fix that
 // mutation testing could not reach: the handoff between the lookup and the
@@ -92,10 +101,10 @@ func (l paymentRefundLookup) RefundByProviderKey(
 // path useful -- the caller can return it to the provider, which stops the retry
 // instead of provoking another notification.
 func (s *PaymentService) replayIsRecognised(
-	ctx context.Context, ev providerRefundEvent,
+	ctx context.Context, intentID string, ev providerRefundEvent,
 ) (*repository.Refund, error) {
 	key := providerRefundKey(ev)
-	already, err := s.refundRecordedForProviderKey(ctx, "", key)
+	already, err := s.refundRecordedForProviderKey(ctx, intentID, key)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +151,10 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 	// The replay guard, via the same seam a test drives. A provider retries for up
 	// to 24 hours, so a duplicate notification is the most common event in the
 	// system; without this it is also the most expensive.
-	replayed, err := s.replayIsRecognised(ctx, ev)
+	//
+	// `intent.ID`, not a literal: the guard is scoped to this payment, and a
+	// lookup that cannot be scoped cannot answer the question.
+	replayed, err := s.replayIsRecognised(ctx, intent.ID, ev)
 	if err != nil {
 		return nil, err
 	}
@@ -215,15 +227,33 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 // refundRecordedForProviderKey finds a refund we already recorded for a provider
 // notification.
 //
-// The key is stored in the refund's `reason` field's sibling -- specifically it
-// is matched on the provider's own refund reference, which is what the provider
+// The key is the provider's own refund reference, which is what the provider
 // guarantees unique. Matching on the amount would collapse two genuine partial
 // refunds of the same size into one, silently losing one.
+//
+// `intentID` scopes the search, and it is validated rather than assumed. An empty
+// one is not a payment with no refunds; `payment_intent_id` is `UUID NOT NULL`, so
+// the lookup's `WHERE payment_intent_id = $1` receives an invalid uuid and the
+// query ERRORS. An error here aborts the whole refund, so the guard is loud rather
+// than permissive: a caller that cannot say which payment it is asking about has
+// no business asking. This function previously passed a literal "" and every
+// provider refund notification failed that way.
+//
+// An empty KEY is different, and is a no-op rather than an error: there is no
+// provider reference to match on, the notification is unidentifiable, and
+// `classifyProviderRefund` escalates it to a human. Nothing to look up is the
+// correct answer there, not a wiring fault.
 func (s *PaymentService) refundRecordedForProviderKey(
 	ctx context.Context, intentID, key string,
 ) (*repository.Refund, error) {
 	if key == "" {
 		return nil, nil
+	}
+	if strings.TrimSpace(intentID) == "" {
+		return nil, domain.E(domain.KindInternal, "REFUND_LOOKUP_WITHOUT_INTENT",
+			"a provider refund replay lookup was made without a payment intent id, "+
+				"so it cannot be scoped to a payment; refusing rather than searching "+
+				"for a refund across every order")
 	}
 	lookup := s.refunds
 	if lookup == nil {

@@ -214,6 +214,34 @@ func main() {
 				"\t\t[]string{domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded},\n" +
 				"\t\tplan.NextStatus); err != nil {\n\t\treturn err\n\t}\n\t_ = refund",
 		},
+		{
+			// The literal empty intent id this commit removed. `payment_intent_id`
+			// is `UUID NOT NULL`, so the lookup's WHERE clause receives an invalid
+			// uuid and the query errors -- aborting every provider refund
+			// notification and drawing a 24-hour retry loop from Midtrans.
+			//
+			// This is the mutation M7 could never have been. M7 replaced the
+			// classifier handoff, which a stub answers correctly whatever the
+			// lookup was asked. This one changes the question, and the stub used to
+			// discard the answer.
+			label: "M17: the replay lookup is not scoped to a payment intent",
+			file:  svcRefund,
+			old:   "\talready, err := s.refundRecordedForProviderKey(ctx, intentID, key)",
+			new:   "\talready, err := s.refundRecordedForProviderKey(ctx, \"\", key)",
+		},
+		{
+			// The guard that would have caught M17, removed. Without it, a caller
+			// with no intent id reaches Postgres and gets a uuid cast error whose
+			// message names nothing about the wiring.
+			label: "M18: a blank intent id is allowed through to the query",
+			file:  svcRefund,
+			old: "\tif strings.TrimSpace(intentID) == \"\" {\n" +
+				"\t\treturn nil, domain.E(domain.KindInternal, \"REFUND_LOOKUP_WITHOUT_INTENT\",\n" +
+				"\t\t\t\"a provider refund replay lookup was made without a payment intent id, \"+\n" +
+				"\t\t\t\t\"so it cannot be scoped to a payment; refusing rather than searching \"+\n" +
+				"\t\t\t\t\"for a refund across every order\")\n\t}",
+			new: "\t_ = intentID",
+		},
 	}
 
 	caught, missed := 0, 0

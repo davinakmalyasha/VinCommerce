@@ -309,6 +309,68 @@ func functionSource(t *testing.T, file, fn string) string {
 	return rest[:end]
 }
 
+// An unscoped replay lookup must be refused before it reaches the database.
+//
+// `refunds.payment_intent_id` is `UUID NOT NULL`, so the lookup's
+// `WHERE payment_intent_id = $1` given an empty string is `invalid input syntax for
+// type uuid` -- a query ERROR, not an empty result. The caller aborts the whole
+// refund, so every provider refund notification fails and is retried. Failing here
+// with a named error says which wiring is wrong; failing in Postgres says only
+// that something is.
+func TestAReplayLookupWithoutAnIntentIsRefusedRatherThanQueried(t *testing.T) {
+	lookup := &stubRefundLookup{found: &repository.Refund{ID: "should-not-match"}}
+	svc := &PaymentService{refunds: lookup}
+	ev := providerRefundEvent{OrderID: "o1", Amount: 30000, Gateway: "midtrans", Reference: "rf-77"}
+
+	_, err := svc.refundRecordedForProviderKey(t.Context(), "  ", providerRefundKey(ev))
+	if err == nil {
+		t.Fatal("a replay lookup with a blank intent id was allowed to run; against " +
+			"a UUID column that is a query error, and every provider refund " +
+			"notification would fail")
+	}
+	if !strings.Contains(err.Error(), "REFUND_LOOKUP_WITHOUT_INTENT") {
+		t.Errorf("error = %v, want REFUND_LOOKUP_WITHOUT_INTENT naming the missing scope", err)
+	}
+	if lookup.calls != 0 {
+		t.Errorf("the database was consulted %d times despite the missing scope", lookup.calls)
+	}
+}
+
+// An empty KEY is a different thing and stays a no-op: there is no provider
+// reference, the notification is unidentifiable, and it is escalated to a human
+// rather than deduplicated. Refusing it here would break the escalation path, so
+// the two cases must not be collapsed.
+func TestAnUnidentifiableNotificationStillSkipsTheLookup(t *testing.T) {
+	lookup := &stubRefundLookup{found: &repository.Refund{ID: "should-not-match"}}
+	svc := &PaymentService{refunds: lookup}
+
+	got, err := svc.refundRecordedForProviderKey(t.Context(), "intent-1", "")
+	if err != nil {
+		t.Fatalf("an empty key was refused: %v", err)
+	}
+	if got != nil {
+		t.Error("an empty key matched a refund; there is nothing to match on")
+	}
+	if lookup.calls != 0 {
+		t.Errorf("an empty key hit the database %d times", lookup.calls)
+	}
+}
+
+// The guard is only as good as the id its caller supplies, and
+// `RecordProviderRefund` cannot be entered without a live database -- it reads the
+// intent by order first. Pinned at the source for that reason, and because this is
+// the seam that failed: the function knew the intent id and passed a literal "".
+func TestTheNotificationPathScopesItsReplayLookupToThePaymentIntent(t *testing.T) {
+	body := functionSource(t, "refund_service.go", "RecordProviderRefund")
+
+	if !strings.Contains(body, "s.replayIsRecognised(ctx, intent.ID, ev)") {
+		t.Errorf("RecordProviderRefund does not scope the replay lookup to the intent:\n%s\n"+
+			"it has the intent in hand and must pass its id; an unscoped lookup is "+
+			"either a uuid error on every notification or a search that matches "+
+			"nothing, and both look like a working guard in a test with a stub", body)
+	}
+}
+
 // Why exclude by ID rather than by state: an in-flight refund is money the
 // provider accepted and will pay, and it must still count against a DIFFERENT
 // refund. Dropping `submitted` from the cap instead would stop the self-count and
