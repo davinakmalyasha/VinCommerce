@@ -53,8 +53,29 @@ const (
 // a LIKE on the account code without a join.
 const personalAccountPrefix = AccSellerAvailable + ":"
 
+// heldAccountPrefix is the same idea for money a seller has earned and may not yet
+// spend: `seller_held:<user uuid>`.
+//
+// A SECOND namespace, not a flag on the first, because the two are different
+// claims on the same money. `seller_available` is money the platform owes a seller
+// and the seller may withdraw; `seller_held` is money the platform still might
+// have to reverse, so it may not. Collapsing them into one account with a state
+// column would make "what can this seller withdraw" a question about a row rather
+// than a balance, and the balance is what the application reads.
+//
+// It also matches the reconciliation, which compares `wallets.held_balance`
+// against the balance of `seller_held:<user id>` (LedgerRepository.reconcileWallets).
+// That comparison has been reporting "clean" since it was written, because both
+// sides were always zero and nothing ever posted here.
+const heldAccountPrefix = AccSellerHeld + ":"
+
 // PersonalAccount is the ledger account code for a user's spendable balance.
 func PersonalAccount(userID string) string { return personalAccountPrefix + userID }
+
+// SellerHeldAccount is the ledger account code for a user's HELD balance: money
+// earned and not yet withdrawable because a return, dispute or uncollected COD
+// order could still reverse it.
+func SellerHeldAccount(userID string) string { return heldAccountPrefix + userID }
 
 // Ledger entry sides. Re-exported from domain rather than redeclared, so the
 // service and the schema cannot disagree about the spelling and a typo cannot

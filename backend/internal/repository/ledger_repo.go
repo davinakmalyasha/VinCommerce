@@ -33,6 +33,21 @@ func NewLedgerRepository(pool *db.Pool) *LedgerRepository {
 // two are asserted against each other by a repository test.
 const personalAccountPrefix = "seller_available:"
 
+// heldAccountPrefix mirrors the service-layer constant for the held namespace.
+// Same reason it is duplicated: the repository cannot import the service layer,
+// and `reconcileWallets` below composes the code itself, so a drift between the
+// two would make the reconciliation compare a seller against an account nobody
+// posts to -- and report clean, because both sides would be zero.
+const heldAccountPrefix = "seller_held:"
+
+// Account purposes. The `purpose` column distinguishes the two claims on a
+// seller's money, and it is what lets one user have both accounts: 00046 replaced
+// `UNIQUE (user_id)` with `UNIQUE (user_id, purpose)`.
+const (
+	purposeAvailable = "available"
+	purposeHeld      = "held"
+)
+
 // nullTime maps "" to a real SQL NULL so a single prepared statement can cover
 // both "caller supplied a value" and "caller did not". The alternative is
 // building the query text per call, which is how the effective_at splice
@@ -160,22 +175,47 @@ func (r *LedgerRepository) journalByID(ctx context.Context, q Querier, id string
 	return &j, nil
 }
 
-// EnsurePersonalAccount creates a user's ledger account if it does not exist.
+// EnsurePersonalAccount creates a user's spendable ledger account if it does not
+// exist.
 //
 // The account code is derived from the user id rather than stored, so there is
 // no mapping to get out of sync. `class` is liability and `normal_side` is credit
 // because a seller's available balance is money the platform owes them.
+//
+// `purpose` is what lets the same user also have a HELD account: 00046 relaxed
+// `UNIQUE (user_id)` to `UNIQUE (user_id, purpose)` precisely because one user now
+// has two personal accounts.
 func (r *LedgerRepository) EnsurePersonalAccount(ctx context.Context, q Querier, userID string) error {
-	code := personalAccountPrefix + userID
-	_, err := q.Exec(ctx, `
-		INSERT INTO ledger_accounts (code, name, class, normal_side, is_system, currency, user_id)
-		VALUES ($1, $2, 'liability', 'credit', false, 'IDR', $3::uuid)
+	return r.ensureUserAccount(ctx, q, personalAccountPrefix, purposeAvailable,
+		"Seller available balance ", userID)
+}
+
+// EnsureHeldAccount creates a user's HELD ledger account if it does not exist.
+//
+// Money earned and not yet withdrawable. Without this row a hold cannot be
+// posted, and without a hold the money a return could reverse stays spendable --
+// which is why this is called from the hold path and not left to a backfill.
+//
+// Also a liability on a credit normal side, for the same reason as the available
+// account: the platform owes a held balance to the seller, it is simply not
+// payable yet.
+func (r *LedgerRepository) EnsureHeldAccount(ctx context.Context, q Querier, userID string) error {
+	return r.ensureUserAccount(ctx, q, heldAccountPrefix, purposeHeld,
+		"Seller held balance ", userID)
+}
+
+func (r *LedgerRepository) ensureUserAccount(
+	ctx context.Context, q Querier, prefix, purpose, namePrefix, userID string,
+) error {
+	code := prefix + userID
+	if _, err := q.Exec(ctx, `
+		INSERT INTO ledger_accounts (code, name, class, normal_side, is_system, currency, user_id, purpose)
+		VALUES ($1, $2, 'liability', 'credit', false, 'IDR', $3::uuid, $4)
 		ON CONFLICT (code) DO NOTHING`,
-		code, "Seller available balance "+userID, userID)
-	if err != nil {
+		code, namePrefix+userID, userID, purpose); err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `
+	_, err := q.Exec(ctx, `
 		INSERT INTO account_balances (account_code, currency, balance)
 		VALUES ($1, 'IDR', 0)
 		ON CONFLICT (account_code, currency) DO NOTHING`, code)

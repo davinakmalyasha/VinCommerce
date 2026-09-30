@@ -137,8 +137,42 @@ func refundEntries(sellerID string, amount, refundSeller, refundFee float64, was
 	return append(entries, Credit(AccGatewayClearing, amount))
 }
 
-// payoutRequestedEntries builds the journal for a withdrawal request.
+// sellerHoldEntries moves money OUT of a seller's spendable balance and into their
+// held balance.
 //
+// This is the posting that makes a hold actually hold. A hold recorded as a
+// `seller_reservations` row is a NOTE; the money stays withdrawable because
+// `RequestPayout` reads `wallets.balance` and nothing else. Transferring the value
+// between the two accounts is what removes it from the balance the payout path
+// checks -- which is why there is no "available = balance - held" arithmetic
+// anywhere: the transfer already did it.
+//
+// Two entries, and the reason it can be two is that the account is a LIABILITY on
+// both sides. A liability increases on credit, so taking a hold is a debit of what
+// the seller can spend and a credit of what they cannot; the release is the exact
+// mirror. An asset/liability pair would have needed the signs worked out, and a
+// sign error here would post cleanly and mean the opposite of the truth.
+func sellerHoldEntries(sellerID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(PersonalAccount(sellerID), amount),
+		Credit(SellerHeldAccount(sellerID), amount),
+	}
+}
+
+// sellerHoldReleaseEntries is the EXACT mirror of sellerHoldEntries.
+//
+// A reversal expressed as a reversal rather than as an independent second posting,
+// so the two journals read as the same event in opposite directions and a reader
+// can check them against each other. `Post` is idempotent on its key, so a
+// repeated release returns the original rather than moving the money twice.
+func sellerHoldReleaseEntries(sellerID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(SellerHeldAccount(sellerID), amount),
+		Credit(PersonalAccount(sellerID), amount),
+	}
+}
+
+// payoutRequestedEntries builds the journal for a withdrawal request.
 // Debit the seller's personal account, credit seller_pending. NOT bank_clearing:
 // the money has left what the seller can spend, but no transfer has been
 // attempted, so booking it as cash already in our bank would report a payment

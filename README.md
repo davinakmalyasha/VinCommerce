@@ -368,8 +368,31 @@ they would cost you in a real deployment.
    acquires a negative balance that reads as a receivable from nobody — and it
    reverses the commission as well as the seller's leg, so a refunded sale earns
    no commission.
-   *The `refunds` table now has a writer and every refund path is durable; the
-   remaining gap is the return path, which still credits a wallet (item 1).*
+      *The `refunds` table now has a writer and every refund path is durable; the
+      remaining gap is the return path, which still credits a wallet (item 1).*
+   **[closed] …and it could not post a single line that touches a seller.** Two
+   defects, both latent, both hidden by the fact that no database has ever run
+   these migrations. First, `ledger_accounts.code`, `ledger_entries.account_code`
+   and `account_balances.account_code` are `VARCHAR(48)`, while a personal account
+   code is `"seller_available:" + uuid` = **53 characters** — so every posting that
+   debits or credits a personal account failed on width. Second,
+   `EnsurePersonalAccount` had **zero callers**, so the row it would have created
+   did not exist and the foreign key on `ledger_entries.account_code` rejected the
+   insert instead. And `postLedger` logs a failed journal and returns nothing, so in
+   both cases the wallet movement committed with no journal behind it: escrow release
+   credited the seller, the commission was booked, and the ledger recorded neither.
+   The deferred zero-sum trigger was never reached, so it never complained. The
+   consequence is that the ledger was not double-entry for any personal-account
+   posting, and `reconcileWallets` was comparing `wallets.balance` against an
+   account that could never exist — reporting clean because both sides were zero.
+   Fixed by migration 00046: widen to `VARCHAR(64)`, and add a `purpose` column so
+   one user can hold both a `seller_available:` and a `seller_held:` account (the
+   old `UNIQUE (user_id) WHERE NOT is_system` permitted exactly one).
+   `ledger_account_codes_test.go` now composes every account code the service can
+   produce and asserts each fits the width the schema *ends up* with after all 46
+   migrations, read from the files rather than hardcoded — so re-narrowing fails a
+   test that names the code, verified by reverting the widening.
+
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure
    functions in `internal/service/money.go` with property tests, rounds to whole
