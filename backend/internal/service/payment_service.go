@@ -47,6 +47,10 @@ type PaymentService struct {
 	// direct repository call so the DECISION of which transition to make is
 	// testable without a database; see refundStatusWriter.
 	statuses refundStatusWriter
+	// refunds looks up a refund already recorded for a provider notification, so
+	// a replayed webhook is a no-op. See refundLookup -- the reason this is an
+	// interface is that the guard was otherwise untestable.
+	refunds refundLookup
 }
 
 // NewPaymentService wires the payment engine over one or more gateways.
@@ -383,7 +387,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 		}
 		return s.onPaid(ctx, intent)
 	case payments.EventRefunded:
-		return s.onRefunded(ctx, intent, intent.Amount)
+		return s.onRefunded(ctx, intent, intent.Amount, ev)
 	case payments.EventPartiallyRefunded:
 		// A partial refund carries the REFUNDED amount, not the charge total.
 		// Routing it through onRefunded credited the whole order to the buyer:
@@ -399,7 +403,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 			return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
 				fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
 		}
-		return s.onRefunded(ctx, intent, amount)
+		return s.onRefunded(ctx, intent, amount, ev)
 	case payments.EventFailed:
 		// Never downgrade financial state: once money has been captured (or
 		// moved on) a late cancel/deny/expire notification must not mark the
@@ -1096,14 +1100,34 @@ func (s *PaymentService) emailOrder(ctx context.Context, o *domain.Order, templa
 // amount is the REFUNDED amount, which equals intent.Amount for a full refund
 // and is smaller for a partial one. Passing the total unconditionally is what
 // turned a Rp 10 partial refund into a Rp 100.000 credit.
-func (s *PaymentService) onRefunded(ctx context.Context, intent *domain.PaymentIntent, amount float64) error {
-	// Already terminal: a replayed refund notification is a no-op, not an
-	// error. Returning an error here makes the gateway retry forever.
+// onRefunded records a refund the PROVIDER has already performed.
+//
+// It calls RecordProviderRefund and NOT RefundOrder. Those look interchangeable
+// and are not:
+//
+//	provider refunds Rp30,000, notifies us
+//	RefundOrder -> ExecuteRefund -> gw.Refund(Rp30,000)   <- a SECOND refund
+//
+// Midtrans caps cumulative refunds at the charge, so a second full refund is
+// rejected and merely noisy. A partial one is not: 30,000 + 30,000 is still under
+// a Rp100,000 charge, so the provider accepts it and the buyer has been paid
+// Rp60,000. That bug was introduced when the gateway-refund path was unified, and
+// this function is where it lived.
+//
+// The terminal-status guard below is a SECOND line of defence, not the primary
+// one. It only catches replays of a notification about an order we already fully
+// refunded; it cannot catch a replayed PARTIAL refund, which is the case that
+// actually double-paid. That protection is the idempotency key inside
+// RecordProviderRefund.
+func (s *PaymentService) onRefunded(
+	ctx context.Context, intent *domain.PaymentIntent, amount float64, ev *payments.GatewayEvent,
+) error {
+	// Already terminal: a replayed refund notification is a no-op, not an error.
+	// Returning an error here makes the gateway retry forever.
 	//
 	// partially_refunded is deliberately NOT in this list: a second partial
 	// refund is legitimate and must be applied. Idempotency comes from the
-	// cumulative-total check in RefundOrder plus the guarded intent UPDATE, not
-	// from refusing the call.
+	// provider's own refund reference, not from refusing the call.
 	if intent.Status == domain.IntentRefunded || intent.Status == domain.IntentDisputedSplit {
 		return nil
 	}
@@ -1115,8 +1139,26 @@ func (s *PaymentService) onRefunded(ctx context.Context, intent *domain.PaymentI
 		return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
 			fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
 	}
-	refundToBuyer := true
-	return s.RefundOrder(ctx, intent.OrderID, "gateway refund", refundToBuyer, amount)
+
+	// The provider's own refund id, taken from the notification, is what makes
+	// this idempotent. Threaded through as an argument rather than stashed on the
+	// service: two webhooks arriving concurrently would race on service state and
+	// the loser would dedupe against the wrong refund's key.
+	reference := ""
+	if ev != nil {
+		if ref, ok := ev.Raw["refund_id"].(string); ok {
+			reference = ref
+		}
+	}
+
+	_, err := s.RecordProviderRefund(ctx, providerRefundEvent{
+		OrderID:   intent.OrderID,
+		Amount:    amount,
+		Gateway:   intent.Gateway,
+		Reference: reference,
+		Reason:    "gateway refund",
+	})
+	return err
 }
 
 // IntentByOrder exposes the escrow record for an order. Used by the order

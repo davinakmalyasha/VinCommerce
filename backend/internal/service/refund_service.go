@@ -54,7 +54,193 @@ const (
 	RefundStateManual    = domain.RefundManual
 )
 
+// refundLookup finds a refund we already recorded for a provider notification.
+//
+// An interface so the REPLAY property is testable. The rule "a notification we
+// have already recorded is a no-op" is the thing standing between a provider's
+// 24-hour retry loop and paying a buyer twice, and the only way to assert it
+// without a database is to be able to supply the recorded row directly.
+//
+// This exists because the wiring `classifyProviderRefund(ev, already != nil)`
+// survived mutation testing: a unit test of the classifier passes `true` as a
+// literal and never exercises the lookup that produces it. A test of the CLASSIFIER
+// is not a test of the GUARD.
+type refundLookup interface {
+	RefundByProviderKey(ctx context.Context, intentID, key string) (*repository.Refund, error)
+}
+
+// paymentRefundLookup adapts the repository to refundLookup.
+type paymentRefundLookup struct {
+	payments *repository.PaymentRepository
+}
+
+func (l paymentRefundLookup) RefundByProviderKey(
+	ctx context.Context, intentID, key string,
+) (*repository.Refund, error) {
+	return l.payments.RefundByProviderKey(ctx, l.payments.Pool(), intentID, key)
+}
+
+// replayIsRecognised resolves a notification's idempotency key, consults the
+// lookup, and reports the refund we already recorded for it.
+//
+// Extracted as a named seam because this is the guard standing between a provider's
+// retry loop and paying a buyer twice, and it was the one piece of the fix that
+// mutation testing could not reach: the handoff between the lookup and the
+// classifier lives in a function that also needed a database to enter.
+//
+// Returning the recorded refund (rather than a bool) is what makes the replay
+// path useful -- the caller can return it to the provider, which stops the retry
+// instead of provoking another notification.
+func (s *PaymentService) replayIsRecognised(
+	ctx context.Context, ev providerRefundEvent,
+) (*repository.Refund, error) {
+	key := providerRefundKey(ev)
+	already, err := s.refundRecordedForProviderKey(ctx, "", key)
+	if err != nil {
+		return nil, err
+	}
+	if classifyProviderRefund(ev, already != nil) == refundDecisionAlreadyApplied {
+		return already, nil
+	}
+	return nil, nil
+}
+
+// RecordProviderRefund records a refund the PROVIDER has already performed.
+//
+// It never calls the gateway. That is the entire point of this function existing
+// separately from ExecuteRefund.
+//
+// `ac351cf` routed provider refund NOTIFICATIONS through ExecuteRefund, which is
+// the path for refunds we initiate. So every `payment.refunded` webhook asked
+// Midtrans to refund the same money a second time. A full refund is merely
+// noisy -- the provider caps cumulative refunds at the charge and rejects it. A
+// partial one is not:
+//
+//	charge Rp100,000
+//	provider refunds Rp30,000 and notifies us
+//	we call Refund(Rp30,000) again
+//	provider: 30,000 + 30,000 = 60,000 <= 100,000  ->  ACCEPTED
+//	buyer has received Rp60,000 for a Rp100,000 order
+//
+// The idempotency key is the provider's own refund reference, so a replayed
+// webhook -- which Midtrans sends for up to 24 hours -- is a no-op rather than a
+// second refund. A notification with no reference cannot be attributed to a
+// refund we recorded, and is escalated rather than guessed at.
+func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRefundEvent) (*repository.Refund, error) {
+	if ev.Amount <= 0 {
+		return nil, domain.E(domain.KindInvalid, "REFUND_AMOUNT_REQUIRED",
+			"a provider refund notification must carry the amount that was refunded")
+	}
+	intent, err := s.payments.IntentByOrder(ctx, ev.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	if ev.Gateway == "" {
+		ev.Gateway = intent.Gateway
+	}
+
+	// The replay guard, via the same seam a test drives. A provider retries for up
+	// to 24 hours, so a duplicate notification is the most common event in the
+	// system; without this it is also the most expensive.
+	replayed, err := s.replayIsRecognised(ctx, ev)
+	if err != nil {
+		return nil, err
+	}
+	if replayed != nil {
+		return replayed, nil
+	}
+
+	switch classifyProviderRefund(ev, false) {
+	case refundDecisionAlreadyApplied:
+		// Unreachable: replayIsRecognised returned above if a refund was recorded.
+		// Kept explicit rather than collapsed, because deleting the branch would
+		// make a future lookup regression fall through to APPLY -- turning a replay
+		// into a second refund instead of a no-op.
+		return nil, domain.E(domain.KindInternal, "REPLAY_GUARD_BYPASSED",
+			"a provider refund was already recorded but the replay guard did not "+
+				"recognise it; refusing rather than risking a duplicate refund")
+
+	case refundDecisionManual:
+		// The provider moved money we cannot attribute. Record it so the amount is
+		// known, and make it a person's problem: the alternative is applying an
+		// unidentifiable movement, which is a duplicate waiting to happen.
+		refund := &repository.Refund{
+			ID:              newRefundID(),
+			PaymentIntentID: intent.ID,
+			OrderID:         intent.OrderID,
+			Gateway:         ev.Gateway,
+			Amount:          moneyRound(ev.Amount),
+			Reason:          ev.Reason,
+			Status:          RefundStateManual,
+			RequestedAt:     time.Now().UTC(),
+		}
+		if err := s.payments.CreateRefund(ctx, s.payments.Pool(), refund); err != nil {
+			return nil, err
+		}
+		s.writeRefundStatus(ctx, refund.ID, "", RefundStateManual,
+			"the provider reported a refund with no reference, so it cannot be "+
+				"matched against a refund we recorded; an operator must confirm it")
+		return refund, domain.E(domain.KindConflict, "REFUND_UNIDENTIFIABLE",
+			"the gateway reported a refund with no reference; an operator must reconcile it")
+	}
+
+	// Identifiable and not yet recorded: the provider has moved the money, so the
+	// only thing left is to bring OUR books into line.
+	refund := &repository.Refund{
+		ID:              newRefundID(),
+		PaymentIntentID: intent.ID,
+		OrderID:         intent.OrderID,
+		Gateway:         ev.Gateway,
+		GatewayRef:      strings.TrimSpace(ev.Reference),
+		Amount:          moneyRound(ev.Amount),
+		Reason:          ev.Reason,
+		// `submitted` rather than `succeeded`: the provider has told us the money
+		// moved, but this system has not yet derived anything from that, and the
+		// cap counts `submitted` -- so the money is committed the moment the
+		// notification lands, which is when the risk actually exists.
+		Status:      RefundStateSubmitted,
+		RequestedAt: time.Now().UTC(),
+	}
+	if err := s.payments.CreateRefund(ctx, s.payments.Pool(), refund); err != nil {
+		return nil, err
+	}
+
+	plan := &refundPlan{Amount: moneyRound(ev.Amount)}
+	if err := s.settleProviderRefund(ctx, refund, intent, plan, ev.Reason); err != nil {
+		return refund, err
+	}
+	return refund, nil
+}
+
+// refundRecordedForProviderKey finds a refund we already recorded for a provider
+// notification.
+//
+// The key is stored in the refund's `reason` field's sibling -- specifically it
+// is matched on the provider's own refund reference, which is what the provider
+// guarantees unique. Matching on the amount would collapse two genuine partial
+// refunds of the same size into one, silently losing one.
+func (s *PaymentService) refundRecordedForProviderKey(
+	ctx context.Context, intentID, key string,
+) (*repository.Refund, error) {
+	if key == "" {
+		return nil, nil
+	}
+	lookup := s.refunds
+	if lookup == nil {
+		// A nil lookup is a wiring mistake, not a reason to proceed: without it
+		// every notification would look new and a replay would be applied again,
+		// which is the exact bug this function exists to close. Falling back to the
+		// repository keeps production correct while making the omission loud.
+		lookup = paymentRefundLookup{payments: s.payments}
+	}
+	return lookup.RefundByProviderKey(ctx, intentID, key)
+}
+
 // ExecuteRefund runs a refund through the provider and records it durably.
+//
+// This is the path for refunds WE initiate. A notification that the provider has
+// already performed must go to RecordProviderRefund, which never calls the
+// gateway -- see the comment there for what happens when it does.
 //
 // refundToBuyer=false records the decision WITHOUT calling the gateway: the
 // platform absorbs the cost. That path writes a `refunds` row so the amount is
@@ -206,6 +392,177 @@ func (s *PaymentService) reserveRefund(
 	return refund, plan, nil
 }
 
+// settleProviderRefund brings our books into line with a refund the provider has
+// already performed.
+//
+// Deliberately a SEPARATE function from completeRefund rather than a shared one
+// with a flag. They look almost identical -- both lock the intent, re-derive the
+// plan, move the internal legs and post a journal -- and merging them is exactly
+// how the double-refund came back: one function, two callers, one of which must
+// not submit. A flag would put `submitToGateway bool` in the signature and invite
+// the next person to pass the wrong value. Two named functions make the wrong
+// call a compile error rather than a duplicate refund.
+//
+// The internal legs are the same either way: the money left the platform to the
+// buyer's card, so what our side owes is the seller's net and our commission, and
+// the buyer is credited by the provider rather than by us.
+func (s *PaymentService) settleProviderRefund(
+	ctx context.Context, refund *repository.Refund, intent *domain.PaymentIntent,
+	plan *refundPlan, reason string,
+) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	order, err := s.orders.ByID(ctx, refund.OrderID)
+	if err != nil {
+		return err
+	}
+
+	// Lock first, then re-derive: another refund may have been recorded between
+	// the notification arriving and this transaction starting, and the cap must be
+	// enforced against what is true now.
+	locked, err := s.payments.LockIntentForRefund(ctx, q, intent.ID)
+	if err != nil {
+		return err
+	}
+	// The provider's figure is authoritative here, but it is still bounded by what
+	// is left. A provider that reported more than was charged is a finding, not a
+	// reason to pay it: an uncapped trust in the number turns a provider bug into
+	// the platform's loss.
+	already, err := s.refundedTotal(ctx, q, order.ID)
+	if err != nil {
+		return err
+	}
+	cap, err := decideRefundCap(locked.Amount, already, plan.Amount)
+	if err != nil {
+		// The provider says it refunded more than we think was outstanding. Record
+		// the row as manual so the discrepancy is visible and a person resolves
+		// it, rather than either paying it or silently discarding the notice.
+		s.markRefundManual(ctx, refund.ID,
+			fmt.Sprintf("the gateway reported Rp%.0f but only Rp%.0f remains refundable; "+
+				"an operator must reconcile the difference", plan.Amount,
+				moneyRound(locked.Amount-already)))
+		return err
+	}
+	final := s.refundPlanFor(ctx, q, locked, cap)
+
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, q, locked.ID,
+		[]string{domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded},
+		final.NextStatus); err != nil {
+		return err
+	}
+
+	if err := s.reverseDisbursement(ctx, q, order, final); err != nil {
+		return err
+	}
+	s.postRefundJournal(ctx, q, order, locked, final, true, reason)
+
+	settled := time.Now().UTC()
+	if err := s.payments.SettleRefund(ctx, q, refund.ID, refund.GatewayRef,
+		RefundStateSucceeded, "", &settled, nil); err != nil {
+		return err
+	}
+
+	payStatus := domain.PaymentRefunded
+	if final.Partial {
+		payStatus = domain.PaymentPartiallyRefunded
+	}
+	if err := tx.SetPaymentStatus(ctx, order.ID, payStatus); err != nil {
+		return err
+	}
+	if err := tx.AddEvent(ctx, &domain.OrderEvent{
+		OrderID: order.ID, FromStatus: order.Status, ToStatus: order.Status,
+		Note: fmt.Sprintf("refund confirmed by gateway (Rp %.0f): %s", final.Amount, reason),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// reverseDisbursement claws back what escrow release credited, if it was
+// released.
+//
+// A refund before the release takes the money out of escrow, so there is nothing
+// to claw back. A refund AFTER it has already paid the seller and the platform,
+// so both have to give it back -- and only then does the buyer get the money from
+// the provider.
+//
+// Reversing only the seller's leg is how a platform keeps commission on a sale it
+// refunded in full.
+func (s *PaymentService) reverseDisbursement(
+	ctx context.Context, q repository.Querier, order *domain.Order, plan *refundPlan,
+) error {
+	if !plan.WasReleased {
+		return nil
+	}
+	if plan.RefundSeller > 0 {
+		if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
+			domain.TxReasonRefund, plan.RefundSeller, order.ID); err != nil {
+			return err
+		}
+	}
+	if plan.RefundFee > 0 {
+		if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
+			domain.TxReasonRefund, plan.RefundFee, order.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refundPlanFor fills a refundPlan from an already-decided cap, deriving the two
+// reversal legs.
+//
+// The legs are derived so that they sum to the refund amount EXACTLY: the fee is
+// scaled to this refund's share of the charge and the seller's leg is the
+// RESIDUAL. Rounding two independently-scaled values drifts by a sen per partial
+// refund, and the drift accumulates permanently in the wallet balances.
+func (s *PaymentService) refundPlanFor(
+	ctx context.Context, q repository.Querier, intent *domain.PaymentIntent, cap capDecision,
+) *refundPlan {
+	plan := &refundPlan{
+		Amount:    cap.Amount,
+		Remaining: cap.Remaining,
+		Partial:   cap.Partial,
+	}
+	if cap.Remaining > 0 {
+		plan.NextStatus = domain.IntentPartiallyRefunded
+	} else {
+		plan.NextStatus = domain.IntentRefunded
+	}
+
+	released, err := s.escrowWasReleasedQuerier(ctx, q, intent.OrderID)
+	if err != nil {
+		// Treating an unreadable release state as "not released" is the safe
+		// direction: no clawback attempted, rather than a clawback of money the
+		// seller was correctly paid.
+		slogRefundStatus(ctx, intent.ID, RefundStateSucceeded, err)
+		return plan
+	}
+	plan.WasReleased = released
+	if !released || cap.Amount <= 0 {
+		return plan
+	}
+
+	fee, sellerAmount := intent.FeeAmount, intent.SellerAmount
+	if !intent.CommissionComputed {
+		// The rate snapshot is the source of truth; a pre-00042 intent falls back
+		// to the active rate. Recomputing from today's rate would reverse a
+		// commission that was never charged.
+		if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
+			fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, cap.Amount)
+		}
+	}
+
+	plan.RefundFee, plan.RefundSeller = deriveReversalLegs(fee, intent.Amount, cap.Amount)
+	plan.Fee, plan.SellerAmount = fee, sellerAmount
+	return plan
+}
+
 // completeRefund applies the internal effect of a refund the provider confirmed.
 //
 // The money movements and the ledger journal are in the transaction that marks
@@ -246,23 +603,11 @@ func (s *PaymentService) completeRefund(
 		return err
 	}
 
-	// The internal legs: reverse the disbursement if there was one, and credit the
-	// buyer. The gateway has already moved the real money, so this is the
-	// bookkeeping half -- but it is the half that makes the wallet the application
-	// reads agree with what happened.
-	if final.WasReleased {
-		if final.RefundSeller > 0 {
-			if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
-				domain.TxReasonRefund, final.RefundSeller, order.ID); err != nil {
-				return err
-			}
-		}
-		if final.RefundFee > 0 {
-			if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
-				domain.TxReasonRefund, final.RefundFee, order.ID); err != nil {
-				return err
-			}
-		}
+	// The internal legs, via the same helper the provider-notification path uses.
+	// Previously duplicated inline here, which is how a fix to one copy could leave
+	// the other wrong -- and the two paths process the same money.
+	if err := s.reverseDisbursement(ctx, q, order, final); err != nil {
+		return err
 	}
 
 	s.postRefundJournal(ctx, q, order, locked, final, refundToBuyer, reason)

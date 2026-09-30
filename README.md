@@ -221,6 +221,19 @@ they would cost you in a real deployment.
    the gateway, because it runs inside a caller-owned transaction. Fixing it means
    splitting the return approval and the refund into two steps, which changes the
    admin flow and the return state machine.*
+   **[closed] The double-refund this work introduced.** Unifying the refund paths
+   had routed the gateway's *refund notification* through the path for refunds we
+   *initiate*, so every `payment.refunded` webhook asked Midtrans to refund the
+   same money again. A full refund is merely noisy — Midtrans caps cumulative
+   refunds at the charge and rejects it. A partial one is not: charge Rp100,000,
+   provider refunds Rp30,000 and notifies us, we request Rp30,000 again,
+   30,000 + 30,000 is still under the charge, so it is **accepted** and the buyer
+   has been paid Rp60,000. A second, compounding defect: the cumulative cap
+   summed `wallet_transactions` credits, but a gateway refund never credits the
+   buyer's wallet — the money goes to their card — so the cap read zero after
+   every gateway refund and the guard built to stop over-refunding measured
+   nothing on the path that actually refunds people. Both are fixed and both are
+   mutation-verified; see the commit history for the full accounting.
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*

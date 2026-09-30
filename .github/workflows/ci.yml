@@ -112,6 +112,22 @@ jobs:
       - name: Unit tests
         run: go test ./internal/... -count=1 -race
 
+      - name: Prove the refund guards actually detect regressions
+        # The refund cap and the provider-notification path carry a double-refund
+        # guard that is easy to write and easy to break. This reintroduces each
+        # defect it removes and asserts a test catches every one.
+        #
+        # Three of these defects survived their first version of the tests, and
+        # each was found by a surviving mutation rather than by reading the code:
+        # a gateway call spelled `g.Refund` instead of `gw.Refund`, an
+        # if-initializer the call-graph parser skipped, and a classifier tested
+        # with a literal instead of through the lookup that feeds it. That is the
+        # argument for running this rather than trusting the suite.
+        #
+        # Modifies working-tree files on purpose, so it runs after every
+        # test-and-verify step and before the build.
+        run: go run ./cmd/mutation-check
+
       - name: Dependency vulnerabilities
         # govulncheck reports only vulnerabilities on code paths that are
         # actually reachable from the built binary, which is the difference

@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -415,6 +417,20 @@ func (r *PaymentRepository) SetIntentStatusGuarded(ctx context.Context, intentID
 	return setIntentStatusGuardedOn(r.pool, ctx, intentID, expected, to)
 }
 
+// refundKeyFor is the canonical idempotency key for a refund recorded from a
+// provider notification.
+//
+// In the repository rather than the service because the lookup and the writer
+// must agree on it EXACTLY. Two functions that compose the same string in two
+// packages will drift, and the drift is invisible: a lookup that stops matching
+// turns every replayed webhook into a second refund.
+func refundKeyFor(r *Refund) string {
+	if r == nil || strings.TrimSpace(r.GatewayRef) == "" {
+		return ""
+	}
+	return fmt.Sprintf("provider:%s:%s:%.0f", r.Gateway, r.GatewayRef, r.Amount)
+}
+
 // SetIntentStatusGuardedTx is SetIntentStatusGuarded inside a transaction.
 //
 // It takes a Querier rather than a pgx.Tx so a service can pass whichever handle
@@ -441,18 +457,110 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Quer
 // pool here reads on a DIFFERENT connection, outside the transaction and before
 // the lock is held, which is how two partial refunds could each be individually
 // valid and together exceed the charge.
+// SumRefundedByOrder is the CUMULATIVE amount already refunded for an order, and
+// it is the input to the cap that stops a buyer being refunded twice.
+//
+// It reads the `refunds` TABLE, and it used to read `wallet_transactions`:
+//
+//	SELECT SUM(amount) FROM wallet_transactions
+//	 WHERE ref_id = $1 AND reason = 'refund' AND kind = 'credit'
+//
+// That is wrong now, and was catastrophically so. A refund through the GATEWAY
+// never credits the buyer's wallet -- the money goes back to their card -- so this
+// query returned zero after every gateway refund. The cap built specifically to
+// stop over-refunding a buyer was measuring nothing on the path that actually
+// refunds them, and a third partial refund was cheerfully authorised after two
+// had already been paid.
+//
+// `refunds` is the authoritative record of what was refunded, for every path.
+//
+// Which STATES count is the whole subtlety, and it is not "everything":
+//
+//	pending    no -- written before the provider is called; if the submit fails,
+//	             nothing moved, and counting it would refuse a legitimate retry
+//	submitted  yes -- the provider accepted it and will pay
+//	succeeded  yes -- the money is gone
+//	failed     no  -- the provider rejected it
+//	manual     yes -- we OWE the buyer this and a human must send it; not
+//	             counting it would let the platform promise the same rupiah twice
+//
+// The states are read from the same Go constants the service writes, so the query
+// and the writer cannot disagree about which states exist.
 func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, q Querier, orderID string, out *float64) error {
 	var total float64
 	err := q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount), 0)::float8
-		FROM wallet_transactions
-		WHERE ref_id = $1 AND reason = $2 AND kind = 'credit'`,
-		orderID, domain.TxReasonRefund).Scan(&total)
+		  FROM refunds
+		 WHERE order_id = $1
+		   AND status IN ('submitted', 'succeeded', 'manual')`, orderID).Scan(&total)
 	if err != nil {
 		return err
 	}
 	*out = total
 	return nil
+}
+
+// RefundByProviderKey finds a refund already recorded for a provider
+// notification, by the provider's own refund reference.
+//
+// This is what makes a REPLAYED webhook a no-op. Providers retry: Midtrans does
+// so for up to 24 hours, so a duplicate notification is the single most common
+// event in the system and the one most likely to be handled wrong.
+//
+// Matching on the amount would be wrong in the other direction -- two genuine
+// partial refunds of the same size would collapse into one and the buyer would
+// silently lose the second. The provider's refund id is the only identifier it
+// guarantees unique.
+//
+// `refunds` has no unique index on it, which is itself worth knowing: the
+// guarantee here is the WHERE clause matching the fewest possible rows, and
+// `refund_state_counts_toward_cap` in the service decides what happens to a
+// match. A future migration should add
+//
+//	CREATE UNIQUE INDEX ... ON refunds (gateway, gateway_ref)
+//	  WHERE gateway_ref IS NOT NULL
+//
+// and then this can become an INSERT ... ON CONFLICT. Until then the
+// application-level check is the only guard, and it is guarded by the cap.
+func (r *PaymentRepository) RefundByProviderKey(
+	ctx context.Context, q Querier, intentID, key string,
+) (*Refund, error) {
+	if key == "" {
+		return nil, nil
+	}
+	// The key embeds the gateway, the provider's refund reference and the amount.
+	// Reconstructing it from the row rather than comparing the composed string
+	// means the stored row is the source of truth, not the format of a function
+	// that may change.
+	var found *Refund
+	rows, err := q.Query(ctx, refundSelect+`
+		 WHERE payment_intent_id = $1
+		   AND gateway_ref IS NOT NULL
+		   AND status IN ('pending', 'submitted', 'succeeded', 'manual')
+		 ORDER BY created_at DESC`, intentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		rf, err := scanRefund(rows)
+		if err != nil {
+			return nil, err
+		}
+		if refundKeyFor(rf) == key {
+			if found == nil {
+				found = rf
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if found == nil {
+		return nil, nil
+	}
+	return found, nil
 }
 
 // LockIntentForRefund takes a row lock on the payment intent and re-reads it.
