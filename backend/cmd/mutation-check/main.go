@@ -58,8 +58,13 @@ type mutation struct {
 }
 
 const (
-	svcFile     = "internal/service/payment_service.go"
-	svcRefund   = "internal/service/refund_service.go"
+	svcFile   = "internal/service/payment_service.go"
+	svcRefund = "internal/service/refund_service.go"
+	// svcPostFile holds the journal-posting helpers. Mutated separately because the
+	// distinction between the swallowing `postLedger` and the strict
+	// `postLedgerStrict` IS the guard, and a mutation that swaps a call site cannot
+	// express it without failing to compile.
+	svcPostFile = "internal/service/ledger_postings.go"
 	repoFile    = "internal/repository/payment_repo.go"
 	capFile     = "internal/service/refund_cap.go"
 	servicePkg  = "./internal/service/"
@@ -317,6 +322,40 @@ func main() {
 			file:  svcRefund,
 			old:   "\tif !wasClaimed {",
 			new:   "\tif wasClaimed {",
+		},
+		{
+			// The hold's whole purpose. `WalletHeldTxOn` exists to move value out of
+			// the balance a withdrawal reads, and this is the sign that does it.
+			// Without the debit the hold writes a row, the release job updates the
+			// row, and the seller's money stays withdrawable throughout -- the fraud
+			// control that controls nothing.
+			label: "M24: a hold no longer debits the spendable balance",
+			file:  repoFile,
+			old:   "\t\t   SET balance      = balance      + CASE WHEN $2::varchar = 'hold' THEN -$3 ELSE $3 END,",
+			new:   "\t\t   SET balance      = balance      + CASE WHEN $2::varchar = 'release' THEN -$3 ELSE $3 END,",
+		},
+		{
+			// The release must mirror the hold. Moving money in the hold direction
+			// debits the spendable balance again, which is a second withdrawal wearing
+			// the name of an unblock.
+			label: "M25: a release moves money in the hold direction",
+			file:  svcFile,
+			old: "\tif err := s.payments.WalletHeldTxOn(ctx, q, res.SellerID, \"release\",\n" +
+				"\t\trepository.WalletReasonHoldRelease, res.Amount); err != nil {",
+			new: "\tif err := s.payments.WalletHeldTxOn(ctx, q, res.SellerID, \"hold\",\n" +
+				"\t\trepository.WalletReasonHoldRelease, res.Amount); err != nil {",
+		},
+		{
+			// A failed journal must stop the money moving. `postLedger` logs and
+			// returns, which is right for a movement that already committed and wrong
+			// for one that has not -- which is every write in the hold. Mutated on
+			// postLedgerStrict's own return rather than at the call site, because
+			// swapping the call for the swallowing one does not compile: the `err`
+			// binding disappears and the following `err != nil` has nothing to test.
+			label: "M27: a failed journal no longer stops the money moving",
+			file:  svcPostFile,
+			old:   "\tif _, err := s.ledger.Post(ctx, q, spec); err != nil {\n\t\treturn err\n\t}\n\treturn nil",
+			new:   "\tif _, err := s.ledger.Post(ctx, q, spec); err != nil {\n\t\tslog.Error(\"ledger posting failed\", \"error\", err.Error())\n\t}\n\treturn nil",
 		},
 	}
 

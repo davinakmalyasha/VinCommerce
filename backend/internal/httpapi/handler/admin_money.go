@@ -118,6 +118,33 @@ func (h *AdminOps) TrialBalance(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HeldBalances handles GET /admin/ledger/held.
+//
+// A hold is money a SELLER has earned and may not yet spend; escrow is money held
+// for ORDERS. They move independently, so an operator watching only
+// `escrow_outstanding` sees a number that does not change when a return hold is
+// taken -- which is what a hold looks like when it is working.
+//
+// `?live=false` includes released holds, for the same question escrow cannot
+// answer either: what did we hold last month, and did it come back?
+func (h *AdminOps) HeldBalances(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePayment(w, r) {
+		return
+	}
+	liveOnly := r.URL.Query().Get("live") != "false"
+	total, rows, err := h.pay.HeldOutstanding(r.Context(), liveOnly,
+		intQuery(r.URL.Query().Get("limit"), 200))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"held_outstanding": total,
+		"live_only":        liveOnly,
+		"holds":            rows,
+	})
+}
+
 // LedgerReconciliation handles GET /admin/ledger/reconciliation.
 //
 // The same report the daily job runs, on demand. The job's finding otherwise

@@ -412,6 +412,24 @@ they would cost you in a real deployment.
    kind a database guarantee, so two concurrent claims cannot hold the money twice.
    Verified by mutating the hold to stop debiting the spendable balance, and the
    release to move money in the hold direction; both fail by name.
+   **[new] Held money is reported, because a hold nobody can see is enforced and
+   invisible at the same time.** `GET /admin/ledger/held` returns the total and the
+   rows behind it. Escrow is money held for *orders*; a hold is money a *seller* has
+   earned and may not yet spend, so the two move independently and an operator
+   watching only `escrow_outstanding` sees a number that does not move when a
+   return hold is taken. `?live=false` includes released holds. The total excludes
+   them — a released hold is money the seller already has, and counting it would
+   overstate the platform's restriction on itself.
+   Mutations added for the hold path: **M24** (hold stops debiting the spendable
+   balance), **M25** (release moves in the hold direction), **M26** (release moves
+   without claiming first), **M27** (a failed journal stops stopping the money).
+   M27 is the interesting one: it SURVIVED at first, because the test asserted
+   `postLedgerStrict` was *called* and the mutation left the name in place while
+   turning the body back into the swallowing version. It is now caught by driving
+   the propagation directly — an unbalanced journal, which `Post` rejects before it
+   touches the repository, so no database is needed. Suite is 26 mutations, 26
+   caught, 0 missed, 0 skipped.
+
 
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.
    [closed for the checkout engine] All checkout arithmetic now lives in pure

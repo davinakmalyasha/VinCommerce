@@ -33,6 +33,10 @@ func TestAdminMoneyRoutesAreRegistered(t *testing.T) {
 			"an operator asking how much we hold and for whom needs an answer"},
 		{`r.Get("/ledger/reconciliation", adminOps.LedgerReconciliation)`,
 			"the daily job's finding exists only as a log line otherwise"},
+		{`r.Get("/ledger/held", adminOps.HeldBalances)`,
+			"a hold is money a SELLER has earned and may not spend, which is a " +
+				"different number from escrow and does not move when one is taken; " +
+				"without this a hold is enforced and invisible at the same time"},
 	} {
 		if !strings.Contains(body, want.route) {
 			t.Errorf("router.go does not register %s: %s", want.route, want.why)

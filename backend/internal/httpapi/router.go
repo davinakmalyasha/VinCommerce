@@ -385,6 +385,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/refunds/summary", adminOps.RefundSummary)
 			r.Get("/ledger/trial-balance", adminOps.TrialBalance)
 			r.Get("/ledger/reconciliation", adminOps.LedgerReconciliation)
+			r.Get("/ledger/held", adminOps.HeldBalances)
 			r.Get("/analytics", analyticsH.Platform)
 			r.Get("/pending-counts", analyticsH.PendingCounts)
 			r.Get("/analytics/export.csv", analyticsH.PlatformCSV)

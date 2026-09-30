@@ -1811,6 +1811,26 @@ func walletReasonForHold(kind string) (string, error) {
 	}
 }
 
+// HeldOutstanding is how much of its sellers' money the platform is currently
+// holding back, and which sellers.
+//
+// The companion to EscrowOutstanding, and it answers a question escrow cannot:
+// escrow is money for ORDERS, a hold is money a SELLER has earned and may not yet
+// spend. They move independently, and an operator watching only escrow sees a
+// number that does not change when a return hold is taken -- which is what a hold
+// looks like when it is working.
+//
+// The rows are returned alongside the total on purpose. A total tells an operator
+// something is held; the rows tell them whose money and why, which is the part
+// that can be acted on. A total alone is a number to worry about.
+func (s *PaymentService) HeldOutstanding(ctx context.Context, liveOnly bool, limit int) (float64, []*repository.SellerHoldRow, error) {
+	if s.payments == nil {
+		return 0, nil, domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
+			"the payment service is not wired, so held balances cannot be reported")
+	}
+	return s.payments.SellerHeldTotal(ctx, s.payments.Pool(), liveOnly, limit)
+}
+
 // Payouts lists a seller's withdrawal history.
 func (s *PaymentService) Payouts(ctx context.Context, userID string) ([]*domain.Payout, error) {
 	return s.payments.Payouts(ctx, userID)

@@ -177,3 +177,56 @@ func TestEveryHoldKindIsOneTheReleaseJobEvaluates(t *testing.T) {
 			"another kind would sit unreleased forever")
 	}
 }
+
+// A failed posting must PROPAGATE on the strict path, not merely be called.
+//
+// The four-write test above asserts `postLedgerStrict` is called; that is not the
+// same thing, and a mutation that turned the strict function back into the
+// swallowing one survived it -- because the NAME was still there. So this drives
+// the propagation directly.
+//
+// `Post` validates the entries before it touches the repository, so an unbalanced
+// journal fails with no database and no fake: the error comes from the same
+// validation a real bad journal would hit, and postLedgerStrict must hand it back.
+func TestAFailedJournalStopsTheMoneyMoving(t *testing.T) {
+	svc := &PaymentService{ledger: NewLedgerService(nil, nil)}
+
+	// One entry: debits do not equal credits, so Post rejects it.
+	unbalanced := JournalSpec{
+		IdempotencyKey: "test:unbalanced",
+		TxType:         TxTypeSellerHold,
+		Entries:        []LedgerEntry{Debit(PersonalAccount(testUserID), 50000)},
+	}
+
+	err := svc.postLedgerStrict(t.Context(), nil, unbalanced)
+	if err == nil {
+		t.Fatal("postLedgerStrict returned no error for a journal that does not " +
+			"balance; the caller would move the money with nothing recording it, which " +
+			"is exactly what the strict variant exists to prevent")
+	}
+}
+
+// And the swallowing variant must still swallow, or the distinction is decoration.
+//
+// `postLedger` is correct for a movement that has already committed: returning the
+// error would tell the caller it failed and invite a retry of money that already
+// moved. That reasoning only holds there, so the two behaviours have to be
+// genuinely different -- and if someone ever unified them, one of the two paths
+// silently starts doing the other's job.
+func TestTheSwallowingPostStillSwallowsAndTheStrictOneDoesNot(t *testing.T) {
+	svc := &PaymentService{ledger: NewLedgerService(nil, nil)}
+	spec := JournalSpec{
+		IdempotencyKey: "test:unbalanced",
+		TxType:         TxTypeSellerHold,
+		Entries:        []LedgerEntry{Debit(PersonalAccount(testUserID), 50000)},
+	}
+
+	// A nil logger-free service with no ledger: the swallow path logs and returns.
+	bare := &PaymentService{}
+	bare.postLedger(t.Context(), nil, spec) // must not panic
+
+	if err := svc.postLedgerStrict(t.Context(), nil, spec); err == nil {
+		t.Error("the strict path swallowed a posting failure; the two helpers are " +
+			"then the same function and the strict one is a name with no behaviour")
+	}
+}

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -185,5 +186,56 @@ func TestOneLiveHoldPerOrderPerKindIsADatabaseGuarantee(t *testing.T) {
 		t.Errorf("the insert does not RETURN its id:\n%s\n"+
 			"without it the caller cannot tell an insert from a conflict, and the "+
 			"first version guessed with a one-second timestamp window", q.sql)
+	}
+}
+
+// A hold that nobody can see is enforced and invisible at the same time. Escrow is
+// money held for ORDERS; a hold is money a SELLER has earned and may not yet spend.
+// They move independently, so an operator watching only `escrow_outstanding` sees
+// a number that does not change when a return hold is taken -- which is what a hold
+// looks like when it is working.
+func TestHeldBalancesAreReportedSeparatelyFromEscrow(t *testing.T) {
+	src, err := os.ReadFile("payment_repo.go")
+	if err != nil {
+		t.Fatalf("read payment_repo.go: %v", err)
+	}
+	body := string(src)
+
+	i := strings.Index(body, "func (r *PaymentRepository) SellerHeldTotal(")
+	if i < 0 {
+		t.Fatal("no held-balance report")
+	}
+	fn := body[i:]
+	if end := strings.Index(fn, "\nfunc "); end > 0 {
+		fn = fn[:end]
+	}
+
+	// It must read the reservations, not a ledger aggregate: whose money and why is
+	// the part an operator can act on.
+	if !strings.Contains(fn, "FROM seller_reservations") {
+		t.Errorf("the held report does not read the reservations:\n%s\n"+
+			"an operator needs whose money and why, and a single aggregate number "+
+			"cannot say that", fn)
+	}
+	// Released holds must be EXCLUDED from the total. Counting them would report
+	// the platform as restricting money the seller already has back.
+	if !strings.Contains(fn, "if h.ReleasedAt == nil {") {
+		t.Errorf("the total does not exclude released holds:\n%s\n"+
+			"a released hold is money the seller HAS, so counting it overstates the "+
+			"platform's restriction on itself", fn)
+	}
+	if !strings.Contains(fn, "released_at IS NULL") {
+		t.Errorf("the live view does not filter on released_at IS NULL:\n%s", fn)
+	}
+	// The released view must still be reachable -- history nobody can read is not
+	// an audit trail.
+	if !strings.Contains(fn, "$1::boolean = false OR") {
+		t.Errorf("the released view is not reachable:\n%s", fn)
+	}
+	// Whole rupiah, like every other money total in the system.
+	if !strings.Contains(fn, "return moneyRound(total)") {
+		t.Errorf("the held total is not rounded to whole rupiah:\n%s\n"+
+			"summing float64 across many holds otherwise ends in a sen the platform "+
+			"does not have", fn)
 	}
 }

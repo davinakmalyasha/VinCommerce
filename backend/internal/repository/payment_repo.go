@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -1238,6 +1239,77 @@ func (r *PaymentRepository) ReleasableReservations(
 		out = append(out, res)
 	}
 	return out, rows.Err()
+}
+
+// SellerHeldTotal is how much money every seller currently cannot withdraw, and
+// who is holding it.
+//
+// A hold that nobody can see is the same class of silent control as one that
+// cannot be enforced. An operator watching only `escrow_outstanding` sees a number
+// that does not move when a return hold is taken, and a seller asking "why is my
+// balance short" has no answer the platform can produce. So this is both a total
+// and the rows behind it, in one query: the total is the headline, the rows are
+// what an operator actually acts on.
+//
+// `live` is true by default, because a released hold is history and listing it
+// next to a live one invites an operator to investigate money that is already
+// back. The released view exists for the same reason `settled_at` does on a
+// refund: an audit trail nobody can read is not an audit trail.
+func (r *PaymentRepository) SellerHeldTotal(
+	ctx context.Context, q Querier, liveOnly bool, limit int,
+) (float64, []*SellerHoldRow, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := q.Query(ctx, `
+		SELECT sr.seller_id::text,
+		       COALESCE(sr.order_id::text, ''),
+		       sr.kind,
+		       COALESCE(sr.note, ''),
+		       sr.amount::float8,
+		       sr.created_at,
+		       sr.released_at
+		  FROM seller_reservations sr
+		 WHERE ($1::boolean = false OR sr.released_at IS NULL)
+		 ORDER BY sr.released_at NULLS FIRST, sr.created_at DESC
+		 LIMIT $2`, liveOnly, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	total := 0.0
+	out := []*SellerHoldRow{}
+	for rows.Next() {
+		var h SellerHoldRow
+		if err := rows.Scan(&h.SellerID, &h.OrderID, &h.Kind, &h.Note,
+			&h.Amount, &h.CreatedAt, &h.ReleasedAt); err != nil {
+			return 0, nil, err
+		}
+		// A released hold is money the seller HAS, so counting it into "held"
+		// would overstate the platform's restriction on itself.
+		if h.ReleasedAt == nil {
+			total += h.Amount
+		}
+		out = append(out, &h)
+	}
+	return moneyRound(total), out, rows.Err()
+}
+
+// moneyRound keeps the total on whole rupiah, matching every other money value in
+// the system. Summing float64 and then rounding once is what keeps a total of many
+// held amounts from ending in a sen the platform does not have.
+func moneyRound(v float64) float64 { return math.Round(v) }
+
+// SellerHoldRow is one hold, as an operator reads it.
+type SellerHoldRow struct {
+	SellerID   string     `json:"seller_id"`
+	OrderID    string     `json:"order_id,omitempty"`
+	Kind       string     `json:"hold_kind"`
+	Note       string     `json:"note,omitempty"`
+	Amount     float64    `json:"amount"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ReleasedAt *time.Time `json:"released_at,omitempty"`
 }
 
 // MarkReservationReleasedTx claims a hold for release. Returns false when it was
