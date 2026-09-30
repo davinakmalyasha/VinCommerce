@@ -58,8 +58,9 @@ type mutation struct {
 }
 
 const (
-	svcFile   = "internal/service/payment_service.go"
-	svcRefund = "internal/service/refund_service.go"
+	svcFile    = "internal/service/payment_service.go"
+	svcRefund  = "internal/service/refund_service.go"
+	sellerFile = "internal/service/seller_service.go"
 	// svcPostFile holds the journal-posting helpers. Mutated separately because the
 	// distinction between the swallowing `postLedger` and the strict
 	// `postLedgerStrict` IS the guard, and a mutation that swaps a call site cannot
@@ -411,6 +412,34 @@ func main() {
 			file:  svcPostFile,
 			old:   "\tif err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {\n\t\treturn err\n\t}",
 			new:   "\tif err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {\n\t\tslog.Error(\"ensure failed\", \"error\", err.Error())\n\t}",
+		},
+		{
+			// A single scalar applied the platform default to every seller, which is
+			// what made an override impossible. Reverting to it is not a subtle bug:
+			// every seller's configured lag is silently ignored.
+			label: "M32: one lag scalar is applied to every seller",
+			file:  repoFile,
+			old:   "\t\t   AND sr.created_at <= now() - make_interval(\n\t\t           days => COALESCE(st.payout_lag_days, $1))",
+			new:   "\t\t   AND sr.created_at <= now() - make_interval(days => $1)",
+		},
+		{
+			// An INNER JOIN excludes every seller with no store row, which fails
+			// SAFE but SILENTLY: no hold is ever released, the queue just grows, and
+			// nothing reports it. `LEFT JOIN` is what makes the fallback reachable.
+			label: "M33: a seller with no store row can never be released",
+			file:  repoFile,
+			old:   "\t\t  LEFT JOIN stores st ON st.owner_id = sr.seller_id",
+			new:   "\t\t  JOIN stores st ON st.owner_id = sr.seller_id",
+		},
+		{
+			// The store is resolved before the write because the route carries a
+			// store id and the column is keyed on owner_id. Without the resolution
+			// the UPDATE matches zero rows and reports success -- an operator believes
+			// they set a payout term that was never stored.
+			label: "M34: the payout lag is written without resolving the store",
+			file:  sellerFile,
+			old:   "\treturn s.stores.SetPayoutLagDays(ctx, store.OwnerID, days)",
+			new:   "\t_ = store\n\treturn s.stores.SetPayoutLagDays(ctx, storeID, days)",
 		},
 	}
 

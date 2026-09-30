@@ -595,6 +595,30 @@ func (h *Admin) DecideStore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"decided": true})
 }
 
+// SetStorePayoutLag handles PUT /admin/stores/{id}/payout-lag.
+//
+// `lag_days` is a POINTER in the request so that `null` and a missing field mean
+// the same thing: clear the override. A plain int cannot express that -- its zero
+// value is indistinguishable from "the operator sent 0", and 0 is not a lag, so
+// sending it would silently do the wrong thing instead of being rejected.
+//
+// Admin-only, and inside the admin group, because a payout term is a risk
+// parameter rather than a commercial setting -- see SellerService.AdminSetPayoutLag.
+func (h *Admin) SetStorePayoutLag(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LagDays *int `json:"lag_days"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.AdminSetPayoutLag(r.Context(), chi.URLParam(r, "id"), req.LagDays); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
 // KYCPending handles GET /admin/kyc — KYC submissions awaiting review.
 func (h *Admin) KYCPending(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.AdminPendingKYC(r.Context())

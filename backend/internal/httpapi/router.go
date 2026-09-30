@@ -374,6 +374,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/kyc", admin.KYCPending)
 			r.Post("/stores/{id}/decide", admin.DecideStore)
 			r.Post("/stores/{id}/kyc/decide", admin.DecideKYC)
+			// A seller's payout lag. Admin-only and PUT, not POST: it is a setting on
+			// an existing store rather than an action, and `null` clears it back to
+			// the platform default.
+			r.Put("/stores/{id}/payout-lag", admin.SetStorePayoutLag)
 			r.Post("/returns/{id}/refund", admin.RefundReturn)
 			// The money surfaces. `manual` refunds are a person moving money by
 			// hand, and a person cannot act on a state they cannot list.

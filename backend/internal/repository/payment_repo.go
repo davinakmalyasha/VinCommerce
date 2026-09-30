@@ -1170,7 +1170,7 @@ type SellerReservation struct {
 //
 // RELEASABLE MEANS ALL OF:
 //   - not already released
-//   - past the lag, measured from when the hold was taken
+//   - past THAT SELLER'S lag, measured from when the hold was taken
 //   - the order is COMPLETED. Not shipped, not delivered: the return window
 //     opens on delivery, so releasing at delivery is releasing one day early.
 //   - no open return and no open dispute against that order
@@ -1184,19 +1184,27 @@ type SellerReservation struct {
 // owner, and releasing it here would free money that is still in the payout
 // pipeline.
 //
-// The lag is a parameter rather than a constant because it is per-seller in the
-// schedule this feeds, and a hardcoded 7 here would silently override every
-// override configured anywhere else.
+// THE LAG IS PER SELLER, and `platformLagDays` is only the fallback.
 //
-// This SELECTs rather than UPDATEs, because the release is three writes and only
-// the service can assemble them -- the repository cannot post a journal. The claim
-// that makes the read-then-write safe is MarkReservationReleasedTx, which is
-// guarded on `released_at IS NULL` and runs in the same transaction as the money
-// move.
+//	AND sr.created_at <= now() - make_interval(
+//	        days => COALESCE(st.payout_lag_days, $1))
+//
+// This used to bind a single scalar, which meant an operator's `PAYOUT_LAG_DAYS`
+// applied to everyone and a per-seller override was impossible without rewriting
+// this query. The JOIN is on `stores.owner_id`, not on a seller id column on the
+// reservation, because `seller_reservations.seller_id` references `users(id)` and
+// a store is keyed on its owner -- joining the other way would silently match zero
+// rows for any seller without a store, which would release nothing rather than
+// something wrong, and so would go unnoticed.
+//
+// The SELECTs rather than UPDATEs, because the release is three writes and only the
+// service can assemble them -- the repository cannot post a journal. The claim that
+// makes the read-then-write safe is MarkReservationReleasedTx, which is guarded on
+// `released_at IS NULL` and runs in the same transaction as the money move.
 func (r *PaymentRepository) ReleasableReservations(
-	ctx context.Context, q Querier, lagDays, limit int,
+	ctx context.Context, q Querier, platformLagDays, limit int,
 ) ([]*SellerReservation, error) {
-	if lagDays < 0 {
+	if platformLagDays < 0 {
 		return nil, domain.E(domain.KindInvalid, "RESERVATION_LAG_INVALID",
 			"a payout lag cannot be negative")
 	}
@@ -1208,9 +1216,11 @@ func (r *PaymentRepository) ReleasableReservations(
 		       sr.amount::float8, sr.kind, COALESCE(sr.note, '')
 		  FROM seller_reservations sr
 		  JOIN orders o ON o.id = sr.order_id
+		  LEFT JOIN stores st ON st.owner_id = sr.seller_id
 		 WHERE sr.released_at IS NULL
 		   AND sr.kind IN ('cod', 'return', 'dispute')
-		   AND sr.created_at <= now() - make_interval(days => $1)
+		   AND sr.created_at <= now() - make_interval(
+		           days => COALESCE(st.payout_lag_days, $1))
 		   AND o.status = 'completed'
 		   AND NOT EXISTS (
 		       SELECT 1 FROM return_requests r
@@ -1223,7 +1233,7 @@ func (r *PaymentRepository) ReleasableReservations(
 		          AND d.status IN ('open', 'under_review')
 		   )
 		 ORDER BY sr.created_at ASC
-		 LIMIT $2`, lagDays, limit)
+		 LIMIT $2`, platformLagDays, limit)
 	if err != nil {
 		return nil, err
 	}

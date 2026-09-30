@@ -497,6 +497,26 @@ they would cost you in a real deployment.
    capture transaction, under the same `capture:<intent id>` idempotency key as the
    gateway path. Mutation-verified as M28 (the whole block removed, which is what
    makes it compile — `if false` leaves the `err` binding dangling).
+   **[partly closed] Per-seller payout lag.** The platform default (`PAYOUT_LAG_DAYS`)
+   applies to every seller; a marketplace needs both ends, so migration 00048 adds
+   `stores.payout_lag_days INT NULL`, where **NULL means "use the platform default"** —
+   not merely for consistency with `free_shipping_threshold`, but because a column
+   default would make "seven" permanent and silently skip every seller when the
+   default changes. `ReleasableReservations` binds `COALESCE(st.payout_lag_days, $1)`
+   over a **LEFT** join on `stores.owner_id`: an inner join would exclude every seller
+   with no store row, which fails *safe* but *silently* — nothing is ever released
+   and the hold queue just grows. Mutable by **admin only**, deliberately: a seller
+   choosing their own payout term is a conflict of interest, since a one-day lag makes
+   their money withdrawable while a return is open. That is the whole difference
+   between this and `SetFreeShippingThreshold`, which is seller self-service — a
+   shipping threshold is a commercial choice, a payout term is a risk parameter the
+   platform owns. `PUT /admin/stores/{id}/payout-lag`, the first admin surface in the
+   codebase that writes a `stores` setting at all. The bounds are duplicated across
+   the service constants, the migration's CHECK and `config.Validate` (none can import
+   each other), and a test compares them. Mutation-verified as M32/M33/M34 — and M34
+   survived first because the test checked *ordering* while the mutation only changed
+   the *argument*, which is the sharpest reminder yet that "is it in the right order"
+   and "is it the right value" are different questions.
    **[closed] A COD seller could withdraw money a refused delivery would reverse.**
    `ReleaseEscrow` is the moment COD money first becomes withdrawable, so it is the
    only place a COD hold can bite — and nothing took one. The obvious spot,

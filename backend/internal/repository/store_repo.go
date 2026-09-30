@@ -40,6 +40,48 @@ func (r *StoreRepository) SetFreeShippingThreshold(ctx context.Context, ownerID 
 	return err
 }
 
+// PayoutLagDays returns this seller's payout lag override, or nil when they have
+// chosen none.
+//
+// nil MEANS "use the platform default", and the distinction from "chose seven" is
+// deliberate: a default on the column would make "seven" permanent and a future
+// change to `PAYOUT_LAG_DAYS` would silently skip every seller. NULL means the
+// seller never chose.
+//
+// Not on `domain.Store`, for the same reason `free_shipping_threshold` is not: it
+// is read once per release run for one seller, not as part of a store listing, and
+// putting it on the struct would add a column to all seven store queries. The
+// convention this file already uses for a nullable numeric is a `*T` scanned
+// directly, which preserves SQL NULL all the way to the caller.
+func (r *StoreRepository) PayoutLagDays(ctx context.Context, ownerID string) (*int, error) {
+	var days *int
+	err := r.pool.QueryRow(ctx,
+		`SELECT payout_lag_days FROM stores WHERE owner_id = $1`, ownerID).Scan(&days)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.E(domain.KindNotFound, "NO_STORE", "seller has no store")
+	}
+	return days, err
+}
+
+// SetPayoutLagDays sets or clears this seller's payout lag override.
+//
+// Unlike `SetFreeShippingThreshold` this does NOT check RowsAffected and does NOT
+// translate a miss into ErrNotFound. A free-shipping threshold is set by the seller
+// about their own store, so a miss is worth reporting; a payout lag is set by an
+// operator against a store id, and the service resolves the store first -- so a miss
+// here means the store was deleted between the two calls, which the caller has
+// already been told about.
+//
+// `NULLIF($2, 0)` for the same reason as the threshold: 0 is not a lag (see the
+// migration's CHECK), so passing it clears the override rather than storing a value
+// the release query would treat as "release immediately".
+func (r *StoreRepository) SetPayoutLagDays(ctx context.Context, ownerID string, days *int) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE stores SET payout_lag_days = NULLIF($2, 0), updated_at = now() WHERE owner_id = $1`,
+		ownerID, days)
+	return err
+}
+
 // CategoryBySlug resolves a category id from its slug (bulk import helper)
 func (r *StoreRepository) CategoryBySlug(ctx context.Context, slug string) (*domain.Category, error) {
 	var c domain.Category

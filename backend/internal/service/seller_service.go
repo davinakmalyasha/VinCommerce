@@ -1079,7 +1079,40 @@ func (s *SellerService) AdminReturns(ctx context.Context, status string) ([]*dom
 	return s.stores.ReturnsByStatus(ctx, status)
 }
 
-// AdminDecideStore approves/suspends/rejects a store (admin).
+// AdminSetPayoutLag sets or clears a seller's payout lag override. nil clears it,
+// returning the seller to the platform default.
+//
+// ADMIN-ONLY, and deliberately so. A seller choosing their own payout term is a
+// conflict of interest: a lag of one day makes their money withdrawable while a
+// return is still open, which is the exact exposure the hold exists to prevent. The
+// difference between this and `SetFreeShippingThreshold` -- which is seller
+// self-service -- is not an inconsistency, it is the whole reason the two settings
+// differ. A shipping threshold is a commercial choice the seller controls; a payout
+// term is a risk parameter the platform owns.
+//
+// The store is resolved from its id first, because the route is
+// `/admin/stores/{id}/payout-lag` while the column is keyed on `owner_id`. Doing it
+// here rather than in the handler is the same choice `AdminDecideStore` makes: the
+// handler should not need to know the two ids are different columns.
+func (s *SellerService) AdminSetPayoutLag(ctx context.Context, storeID string, days *int) error {
+	store, err := s.stores.ByID(ctx, storeID)
+	if err != nil {
+		return err
+	}
+	// Range-checked here even though the column has the same CHECK. A constraint
+	// violation surfaces as a raw 23514 naming a column, where a named domain error
+	// says what was wrong -- and the bound is duplicated across three places (these
+	// constants, the migration, and config.Validate), so a test asserts they agree
+	// rather than trusting them to.
+	if days != nil && (*days < MinPayoutLagDays || *days > MaxPayoutLagDays) {
+		return domain.E(domain.KindInvalid, "PAYOUT_LAG_OUT_OF_RANGE",
+			fmt.Sprintf("a payout lag of %d days is outside the supported range of %d to %d",
+				*days, MinPayoutLagDays, MaxPayoutLagDays))
+	}
+	return s.stores.SetPayoutLagDays(ctx, store.OwnerID, days)
+}
+
+// AdminDecideStore approves, suspends or rejects a store.
 func (s *SellerService) AdminDecideStore(ctx context.Context, storeID, decision string) error {
 	label := ""
 	deactivate := false
