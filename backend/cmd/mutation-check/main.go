@@ -357,6 +357,31 @@ func main() {
 			old:   "\tif _, err := s.ledger.Post(ctx, q, spec); err != nil {\n\t\treturn err\n\t}\n\treturn nil",
 			new:   "\tif _, err := s.ledger.Post(ctx, q, spec); err != nil {\n\t\tslog.Error(\"ledger posting failed\", \"error\", err.Error())\n\t}\n\treturn nil",
 		},
+		{
+			// COD capture posts no journal at all. The buyer paid cash to a
+			// courier, escrow_held was never debited, and cod_receivable sat at zero
+			// forever -- so the books showed Rp0 of captured COD against Rp100,000 of
+			// goods delivered. The helper that routes COD correctly was never called
+			// with a COD method, which is why the test that pinned the helper passed
+			// while the path stayed broken.
+			//
+			// The whole block is removed rather than disabled: wrapping it in `if
+			// false` leaves the `err` binding dangling and does not compile, and a
+			// mutation that does not compile tests nothing.
+			label: "M28: COD capture collects the cash without booking it",
+			file:  svcFile,
+			old: "\tif err := s.postLedgerStrict(ctx, tx.Querier(), JournalSpec{\n" +
+				"\t\tIdempotencyKey: \"capture:\" + intent.ID,\n" +
+				"\t\tTxType:         TxTypePayment,\n" +
+				"\t\tRefType:        \"payment_intent\",\n" +
+				"\t\tRefID:          intent.ID,\n" +
+				"\t\tNote:           \"COD collected on delivery; funds held in escrow\",\n" +
+				"\t\tEntries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{\n" +
+				"\t\t\t\"order_id\": intent.OrderID, \"method\": intent.Method,\n" +
+				"\t\t}),\n" +
+				"\t}); err != nil {\n\t\treturn err\n\t}\n",
+			new: "",
+		},
 	}
 
 	caught, missed := 0, 0

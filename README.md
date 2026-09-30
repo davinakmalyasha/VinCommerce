@@ -429,6 +429,24 @@ they would cost you in a real deployment.
    the propagation directly — an unbalanced journal, which `Post` rejects before it
    touches the repository, so no database is needed. Suite is 26 mutations, 26
    caught, 0 missed, 0 skipped.
+   **[closed] COD cash was never booked.** `onPaid` posts a capture journal;
+   `captureIntentOnly` did not — and `onPaid` is reachable only from
+   `HandleWebhook`, so only gateway payments were ever recorded. COD capture happens
+   through a different door, at delivery. So a COD order's buyer paid cash to a
+   courier, `escrow_held` was never debited, and `cod_receivable` — seeded in 00043
+   precisely because that cash is the courier's and not a gateway's — sat at zero
+   forever. The books showed Rp0 of captured COD against Rp100,000 of goods
+   delivered, and the reconciliation had nothing to disagree with because the journal
+   was never written.
+   `TestCODCaptureGoesToTheCourierNotTheGateway` existed, passed, and its comment
+   said it pinned this. It pinned the *helper*: `captureEntries` did route COD
+   correctly, and nothing ever called it with a COD method. A test of the classifier,
+   not of the wiring — the fifth instance of that pattern in this workstream, and the
+   reason the fix asserts the call. The journal is now posted strictly, inside the
+   capture transaction, under the same `capture:<intent id>` idempotency key as the
+   gateway path. Mutation-verified as M28 (the whole block removed, which is what
+   makes it compile — `if false` leaves the `err` binding dangling).
+
 
 
 5. **Money is `float64` in Go** against a `NUMERIC(14,2)` schema.

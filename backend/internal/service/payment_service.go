@@ -330,6 +330,31 @@ func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 // captureIntentOnly flips an initiated intent to captured and marks the order
 // payment_status=paid, leaving the order status untouched (used by COD where
 // delivery has already happened).
+//
+// POSTS THE CAPTURE JOURNAL, which it did not.
+//
+// `onPaid` posts one and this did not, and `onPaid` is only reachable from
+// `HandleWebhook` -- i.e. only for gateway payments. COD capture happens HERE, at
+// delivery, through a different door. So no COD order was ever booked: the buyer
+// paid cash to a courier, `escrow_held` was never debited, and `cod_receivable`
+// -- the account seeded in 00043 precisely because that cash is the courier's and
+// not a gateway's -- sat at zero forever.
+//
+// The consequence is not a misclassified account, it is money from nowhere: the
+// books showed Rp0 of captured COD against Rp100,000 of goods delivered, and the
+// reconciliation had nothing to disagree with because the journal was never
+// written. `cod_receivable` being dead was the symptom.
+//
+// The entries are the same `captureEntries` the gateway path uses, which is the
+// point: the whole reason that helper branches on the method is that COD cash
+// belongs to the courier for several days. `TestCODCaptureGoesToTheCourierNotTheGateway`
+// pinned the HELPER and therefore passed while the COD path never called it -- a
+// test of the classifier, not of the wiring. That is the fifth instance of this
+// pattern in this workstream.
+//
+// Posted STRICTLY, like every other write in this transaction: this is one event,
+// and `postLedger` swallowing the failure is part of why the omission went
+// unnoticed.
 func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.PaymentIntent) error {
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
@@ -345,6 +370,18 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 		return err
 	}
 	if err := tx.SetPaymentStatus(ctx, intent.OrderID, domain.PaymentPaid); err != nil {
+		return err
+	}
+	if err := s.postLedgerStrict(ctx, tx.Querier(), JournalSpec{
+		IdempotencyKey: "capture:" + intent.ID,
+		TxType:         TxTypePayment,
+		RefType:        "payment_intent",
+		RefID:          intent.ID,
+		Note:           "COD collected on delivery; funds held in escrow",
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+			"order_id": intent.OrderID, "method": intent.Method,
+		}),
+	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
