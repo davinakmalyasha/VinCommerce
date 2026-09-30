@@ -430,6 +430,24 @@ func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subje
 	if buyerID != userID {
 		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "return does not belong to user")
 	}
+	// HOLD FIRST, THEN RECORD THE DISPUTE -- see PaymentService.HoldSellerFunds.
+	// A dispute reverses money, and a seller who can withdraw it in the meantime
+	// leaves the resolution unable to pay the buyer.
+	//
+	// The whole order is held because a dispute is about the order, not one item.
+	if s.payments != nil {
+		order, oerr := s.payments.IntentByOrder(ctx, orderID)
+		if oerr == nil {
+			if err := s.payments.HoldSellerFunds(ctx, sellerID, orderID,
+				HoldDispute, "dispute opened", order.Amount); err != nil {
+				return nil, err
+			}
+		}
+		// A missing intent is not a reason to refuse the dispute: some orders are
+		// paid outside the system, and a buyer disputing one is still owed a
+		// hearing. There is simply no captured money to hold. The dispute itself
+		// records the exposure and an operator settles it by bank transfer.
+	}
 	d := &domain.Dispute{
 		ID: uuid.NewString(), ReturnID: &returnID, OrderID: orderID,
 		UserID: userID, SellerID: sellerID, Subject: subject, Description: description, Status: "open",

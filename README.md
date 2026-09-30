@@ -411,10 +411,8 @@ they would cost you in a real deployment.
    them would move money with no accounting record and no way to add one.
    *Still open: the batch run itself, and the per-seller override. `payout_batches`
    and `payout_batch_items` exist but nothing writes them, so there is no T+2/T+7
-   grouping of withdrawals and no remittance file. Seller holds ARE taken (a
-   withdrawal reserves its own amount) and ARE now released; the COD, return and
-   dispute holds that a hold is *for* are the next piece, as is letting a seller
-   choose a lag other than the platform default.*
+   grouping of withdrawals and no remittance file. A COD hold is also still
+   unwritten — the release job knows how to release one, but nothing takes it yet.*
    **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
    a string constant with a comment describing the fraud control it represented, no
    handler on the mux and no entry in the schedule — so the worker started, reported
@@ -433,6 +431,20 @@ they would cost you in a real deployment.
    one of them to be both scheduled and handled. A hand-written list is a list
    nobody remembers to update, and this defect is precisely something nobody did.
    Removing the schedule entry now fails that test by name.
+   **[closed] …and nothing was taking the holds it releases.** The only
+   `seller_reservations` rows in the system were `payout` rows, written when a
+   seller requested a withdrawal. So the release rule was a schedule for holds that
+   did not exist, and the exposure it was built for — a seller withdrawing money
+   that a return or dispute is about to reverse — was unguarded: the reversal would
+   hit an empty wallet, fail `balance >= 0`, and strand the buyer's refund with no
+   path forward. Return claims now hold the **item's** value and open disputes hold
+   the order, both taken *before* the event is recorded — a stray hold self-releases
+   after the lag, whereas an event recorded without a hold has no automatic repair.
+   A test pins the ordering, the kind, and the amount, and a fourth assertion
+   exists because a mutation that rewrote the wiring check to `if false` otherwise
+   survived: the code stayed exactly where it was and became unreachable. A source
+   assertion still cannot prove reachability at runtime — both call sites open their
+   own transactions — and the test says so rather than implying otherwise.
 10. **No COD reconciliation.** COD is implemented with no fee, no aging report
     and no remittance file — so uncollected cash is invisible.
 11. **Search relevance is English-stemmed** and recommendations are global

@@ -1583,6 +1583,52 @@ func (s *PaymentService) PayoutLagDays() int {
 	return s.payoutLagDays
 }
 
+// Seller hold kinds. Each names a reversal that could still arrive, which is why
+// the money is not withdrawable yet.
+const (
+	// HoldCOD is cash the courier is still holding.
+	HoldCOD = "cod"
+	// HoldReturn is money an open return claim could reverse.
+	HoldReturn = "return"
+	// HoldDispute is money an open dispute could reverse.
+	HoldDispute = "dispute"
+)
+
+// HoldSellerFunds takes a hold against a seller's withdrawable balance.
+//
+// The fraud it prevents, in every case: the seller withdraws money that a return
+// or dispute is about to reverse, and by the time the reversal runs there is
+// nothing to take. `WalletTxOn` enforces balance >= 0, so the reversal does not go
+// negative -- it fails, and the buyer's refund is stranded behind
+// INSUFFICIENT_BALANCE with no path forward. The hold is what makes the balance
+// honest.
+//
+// CALL IT BEFORE THE EVENT IT PROTECTS AGAINST, not after.
+//
+//	hold first  -> if the return write fails, a stray hold exists
+//	event first -> if the hold write fails, the seller can withdraw and the buyer
+//	               is stuck
+//
+// A stray hold is the recoverable direction: it self-releases once the lag passes
+// with no open return or dispute, which is exactly the condition that will be true
+// if the return never happened. The other direction has no automatic repair.
+//
+// This runs in its own transaction, which is a real limitation and is why the
+// ordering above matters: the hold and the return are not yet one atomic event.
+// Composing them needs a tx-taking CreateReturn, which is a larger change than the
+// problem currently warrants -- and the fail-safe ordering means the window is
+// survivable.
+func (s *PaymentService) HoldSellerFunds(
+	ctx context.Context, sellerID, orderID, kind, note string, amount float64,
+) error {
+	if s.payments == nil {
+		return domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
+			"the payment service is not wired, so a seller hold cannot be taken; "+
+				"the balance is not protected against a return or dispute")
+	}
+	return s.payments.ReserveSellerPendingTx(ctx, s.payments.Pool(), sellerID, orderID, kind, note, amount)
+}
+
 // Payouts lists a seller's withdrawal history.
 func (s *PaymentService) Payouts(ctx context.Context, userID string) ([]*domain.Payout, error) {
 	return s.payments.Payouts(ctx, userID)

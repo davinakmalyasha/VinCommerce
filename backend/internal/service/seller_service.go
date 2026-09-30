@@ -853,6 +853,23 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	default:
 		return nil, domain.E(domain.KindInvalid, "BAD_REASON", "invalid return reason")
 	}
+	// HOLD FIRST, THEN RECORD THE RETURN. See PaymentService.HoldSellerFunds for
+	// why the order of these two matters: a stray hold self-releases after the lag,
+	// whereas a return recorded without a hold leaves the seller free to withdraw
+	// the money the reversal is about to need.
+	//
+	// The hold is the ITEM's value, not the order's: a return reverses the item.
+	// Holding the whole order would freeze money the seller is entitled to keep.
+	if s.paymentSvc != nil {
+		if err := s.paymentSvc.HoldSellerFunds(ctx, item.SellerID, order.ID,
+			HoldReturn, "return claim "+req.ID, item.Total); err != nil {
+			// Loud. Proceeding without the hold is the exact condition this exists
+			// to prevent, and it fails silently from the buyer's point of view: the
+			// return is accepted, and then the refund is stuck on a balance that is
+			// no longer there.
+			return nil, err
+		}
+	}
 	if err := s.stores.CreateReturn(ctx, req); err != nil {
 		return nil, err
 	}

@@ -388,11 +388,23 @@ func TestALostClaimReturnsBeforeAnythingSettles(t *testing.T) {
 	}
 }
 
-// functionSource extracts one top-level function body from a file in this package.
+// functionSource extracts one method body from a file in this package.
+//
+// The receiver is not fixed to PaymentService: the assertions that use this span
+// three services, and a helper that could only reach one of them would push people
+// back into hand-rolled string slicing, which is where the panics in this file's
+// own history came from.
 func functionSource(t *testing.T, file, fn string) string {
 	t.Helper()
 	body := readSource(t, file)
-	start := strings.Index(body, "func (s *PaymentService) "+fn+"(")
+	start := -1
+	for _, recv := range []string{"*PaymentService", "*SellerService", "*MarketService",
+		"*OrderService", "*LedgerService", "*NotificationService"} {
+		if i := strings.Index(body, "func (s "+recv+") "+fn+"("); i >= 0 {
+			start = i
+			break
+		}
+	}
 	if start < 0 {
 		t.Fatalf("%s not found in %s", fn, file)
 	}
