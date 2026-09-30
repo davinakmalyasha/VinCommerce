@@ -446,6 +446,25 @@ they would cost you in a real deployment.
    capture transaction, under the same `capture:<intent id>` idempotency key as the
    gateway path. Mutation-verified as M28 (the whole block removed, which is what
    makes it compile — `if false` leaves the `err` binding dangling).
+   **[closed] A COD seller could withdraw money a refused delivery would reverse.**
+   `ReleaseEscrow` is the moment COD money first becomes withdrawable, so it is the
+   only place a COD hold can bite — and nothing took one. The obvious spot,
+   `CaptureCOD`, would actively fail: at capture the money is still in `escrow_held`
+   and the seller's balance is zero, so `WalletHeldTxOn` would refuse with
+   `INSUFFICIENT_BALANCE` on every COD order. The hold is taken on the seller's
+   **net**, inside the release transaction, because a refused delivery reverses the
+   seller's net and not the platform's commission — holding the gross would freeze
+   money the platform is entitled to keep and make a bad COD look like a worse one.
+   Verified as M29.
+   **A note on a recurring failure mode, now a shared check.** Three separate
+   mutations in this workstream survived by being *disabled* rather than removed —
+   `if false` on the release handler, and `if false && …` on the COD hold — leaving
+   the guard's text exactly where a substring assertion expected to find it. A guard
+   that is present, in the right place, with the right text and no behaviour is
+   indistinguishable from a working one to a reviewer and to a test alike.
+   `assertNotDisabled` now rejects a short-circuited condition wherever one is
+   asserted, so it is a helper rather than an incidental check at each site.
+
 
 
 

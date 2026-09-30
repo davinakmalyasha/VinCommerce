@@ -15,18 +15,33 @@ import (
 // cannot be entered without a live database.
 
 func TestAholdIsOneTransactionOfFourWrites(t *testing.T) {
-	body := functionSource(t, "payment_service.go", "HoldSellerFunds")
+	wrapper := functionSource(t, "payment_service.go", "HoldSellerFunds")
+	body := functionSource(t, "payment_service.go", "holdSellerFundsTx")
 
-	if !strings.Contains(body, "s.orders.Begin(ctx)") {
+	// The wrapper owns the transaction; the four writes are in the function it
+	// delegates to. Both halves are asserted, because a hold is only one event if
+	// the transaction that contains it also contains all of them -- and an earlier
+	// version of this test found the split the moment it was made.
+	if !strings.Contains(wrapper, "s.orders.Begin(ctx)") {
 		t.Errorf("the hold does not open a transaction:\n%s\n"+
 			"four writes in autocommit mean a failure after the second leaves a "+
-			"journal with no wallet movement, or a wallet movement with no journal", body)
+			"journal with no wallet movement, or a wallet movement with no journal", wrapper)
 	}
-	if !strings.Contains(body, "defer tx.Rollback(ctx)") {
-		t.Errorf("the hold has no rollback:\n%s", body)
+	if !strings.Contains(wrapper, "defer tx.Rollback(ctx)") {
+		t.Errorf("the hold has no rollback:\n%s", wrapper)
 	}
-	if !strings.Contains(body, "return tx.Commit(ctx)") {
-		t.Errorf("the hold never commits:\n%s", body)
+	if !strings.Contains(wrapper, "return tx.Commit(ctx)") {
+		t.Errorf("the hold never commits:\n%s", wrapper)
+	}
+	if !strings.Contains(wrapper, "holdSellerFundsTx(ctx, tx.Querier()") {
+		t.Errorf("the hold does not do its writes inside its own transaction:\n%s\n"+
+			"the writes must run against the transaction the wrapper opened, or the "+
+			"four of them are four transactions", wrapper)
+	}
+	if strings.Contains(body, "s.orders.Begin(") {
+		t.Errorf("the inner hold opens a transaction of its own:\n%s\n"+
+			"it is called from inside a transaction (the COD hold, from "+
+			"ReleaseEscrow) and opening another would nest outside the caller's", body)
 	}
 
 	for _, step := range []struct{ what, needle string }{
@@ -47,6 +62,92 @@ func TestAholdIsOneTransactionOfFourWrites(t *testing.T) {
 		strings.Index(body, `WalletHeldTxOn(ctx, q, sellerID, "hold"`)
 	if postAt < 0 || walletAt < 0 || postAt > walletAt {
 		t.Errorf("the wallet moves before the journal is posted:\n%s", body)
+	}
+}
+
+// assertNotDisabled rejects a condition that has been short-circuited to a literal
+// false while its text stays in place.
+//
+// This has now caught THREE mutations, which is why it is a helper rather than an
+// assertion written at each site:
+//
+//	releasePayoutReservationsHandler guarded by `if false`   -- survived the
+//	    ordering assertion, because the hold's TEXT stayed exactly where it was
+//	M23, `if !wasClaimed` inverted                             -- needed a compiling
+//	    mutation for a different reason, but the same blindness
+//	M29, `if false && intent.Method == ...`                   -- survived an assertion
+//	    looking for the substring `intent.Method == domain.MethodCOD`, which the
+//	    disabled condition still contains
+//
+// A guard that is present, in the right place, with the right text and no behaviour
+// is the failure mode this whole workstream keeps rediscovering. Disabling a
+// condition is the cheapest possible way to ship a regression, so it gets its own
+// check rather than an incidental one.
+func assertNotDisabled(t *testing.T, body, where string) {
+	t.Helper()
+	for _, pattern := range []string{"if false {", "if false &&", "&& false", "if true ||", "|| true {"} {
+		if strings.Contains(body, pattern) {
+			t.Errorf("%s is short-circuited with %q:\n%s\n"+
+				"the code is present and does nothing, which reads exactly like a "+
+				"working guard to a reviewer and to a substring assertion alike",
+				where, pattern, body)
+			return
+		}
+	}
+}
+
+// The COD hold is the case that forced the hold to take a Querier: it must run
+// INSIDE `ReleaseEscrow`'s transaction.
+//
+// Two things go wrong if it does not. The window -- the seller is credited, then
+// the money is held, and in between they withdraw the lot -- which is the whole
+// fraud. And the place: holding at `CaptureCOD` would try to debit a seller's
+// balance that is zero, because the money is still in `escrow_held` until release.
+func TestTheCODHoldRunsInsideTheEscrowRelease(t *testing.T) {
+	release := functionSource(t, "payment_service.go", "ReleaseEscrow")
+
+	holdAt := strings.Index(release, "holdSellerFundsTx(")
+	if holdAt < 0 {
+		t.Fatalf("escrow release takes no COD hold:\n%s\n"+
+			"ReleaseEscrow is the moment COD money becomes withdrawable, so it is the "+
+			"only place a hold can bite; nothing took one", release)
+	}
+	commitAt := strings.Index(release, "tx.Commit(ctx)")
+	if holdAt > commitAt {
+		t.Errorf("the COD hold is taken after the release commits:\n%s\n"+
+			"a separate transaction leaves a window in which the seller can withdraw "+
+			"the entire amount, which is the fraud this prevents", release)
+	}
+	// COD only. A prepaid order has no courier and no uncollected cash, so holding
+	// it would freeze money for a failure mode that cannot happen.
+	if !strings.Contains(release, "intent.Method == domain.MethodCOD") {
+		t.Errorf("the hold is not restricted to COD:\n%s\n"+
+			"a prepaid order has no uncollected cash, so holding its money would "+
+			"freeze the seller for a failure that cannot occur", release)
+	}
+	assertNotDisabled(t, release, "the COD hold condition")
+	// The seller's NET, not the gross. A refused delivery does not take back the
+	// commission. The call is spread over two lines, so read a window from it rather
+	// than trying to balance the parentheses.
+	n := 240
+	if len(release)-holdAt < n {
+		n = len(release) - holdAt
+	}
+	holdCall := release[holdAt : holdAt+n]
+	if !strings.Contains(holdCall, "sellerAmount)") {
+		t.Errorf("the COD hold is not the seller's net:\n%s\n"+
+			"holding the gross would freeze the platform's own commission and make "+
+			"a bad COD look like a worse one", holdCall)
+	}
+	if strings.Contains(holdCall, "intent.Amount)") {
+		t.Errorf("the COD hold is the GROSS rather than the seller's net:\n%s", holdCall)
+	}
+	// And it must be skipped when the net is zero, rather than writing a
+	// zero-amount hold that the `amount > 0` CHECK would reject outright.
+	if !strings.Contains(release, "sellerAmount > 0") {
+		t.Errorf("the COD hold is taken even when the seller is owed nothing:\n%s\n"+
+			"a zero-amount reservation is rejected by the `amount > 0` CHECK, so this "+
+			"would fail the whole release for a commission-only order", release)
 	}
 }
 
@@ -93,7 +194,7 @@ func TestAReleaseIsTheMirrorOfAhold(t *testing.T) {
 	// The two journals must be OPPOSITE, not merely both present. A shared
 	// idempotency key would make the release a duplicate of the hold, and
 	// `Post` returns the original journal without moving anything.
-	hold := functionSource(t, "payment_service.go", "HoldSellerFunds")
+	hold := functionSource(t, "payment_service.go", "holdSellerFundsTx")
 	if h, r := idempotencyKeyOf(hold), idempotencyKeyOf(release); h == r || h == "" || r == "" {
 		t.Errorf("the hold and the release must have distinct idempotency keys:\n"+
 			"  hold:    %q\n  release: %q\n"+
@@ -116,7 +217,7 @@ func idempotencyKeyOf(body string) string {
 // protected, which is what the caller asked for, and returning an error would
 // reject a return claim for a hold it already has.
 func TestAnExistingLiveHoldIsSuccessRatherThanAnError(t *testing.T) {
-	body := functionSource(t, "payment_service.go", "HoldSellerFunds")
+	body := functionSource(t, "payment_service.go", "holdSellerFundsTx")
 	if !strings.Contains(body, "SELLER_HOLD_EXISTS") {
 		t.Errorf("the hold does not recognise its own conflict:\n%s\n"+
 			"a second claim on one order would fail rather than finding the money "+
@@ -128,7 +229,7 @@ func TestAnExistingLiveHoldIsSuccessRatherThanAnError(t *testing.T) {
 // `postLedger`, an unwired ledger used to mean "the money moves and nothing records
 // it" -- the defect this whole sequence exists to close.
 func TestAHoldRefusesRatherThanMovingMoneyWithNoLedger(t *testing.T) {
-	body := functionSource(t, "payment_service.go", "HoldSellerFunds")
+	body := functionSource(t, "payment_service.go", "holdSellerFundsTx")
 	if !strings.Contains(body, "s.ledger == nil") {
 		t.Errorf("the hold does not check that the ledger is wired:\n%s\n"+
 			"an unwired ledger must stop the hold, not let it move money unrecorded", body)

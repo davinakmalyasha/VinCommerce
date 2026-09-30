@@ -382,6 +382,16 @@ func main() {
 				"\t}); err != nil {\n\t\treturn err\n\t}\n",
 			new: "",
 		},
+		{
+			// The COD hold is the only one that bites where the money becomes
+			// withdrawable. Removing it leaves a COD seller free to withdraw money a
+			// refused delivery will reverse, and the refund then fails on
+			// `balance >= amount` with the buyer's money stranded.
+			label: "M29: escrow release credits a COD seller with no hold",
+			file:  svcFile,
+			old:   "\tif intent.Method == domain.MethodCOD && sellerAmount > 0 {",
+			new:   "\tif false && intent.Method == domain.MethodCOD && sellerAmount > 0 {",
+		},
 	}
 
 	caught, missed := 0, 0

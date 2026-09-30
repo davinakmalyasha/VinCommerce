@@ -914,6 +914,37 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 		}),
 	})
 
+	// THE COD HOLD, in this transaction, for this one reason.
+	//
+	// This is the moment COD money first becomes withdrawable, so it is the only
+	// place a hold can actually bite for COD. Holding it at `CaptureCOD` instead --
+	// the obvious spot, since that is where the cash is collected -- would fail:
+	// at capture the money is in `escrow_held`, the seller's `wallets.balance` is
+	// zero, and `WalletHeldTxOn` would refuse with INSUFFICIENT_BALANCE on every
+	// single COD order.
+	//
+	// WHAT IT PROTECTS AGAINST. COD capture assumes the buyer handed over the cash.
+	// Sometimes they did not: the parcel comes back, the courier never collected,
+	// and the order is refunded. That refund reverses the seller's NET out of their
+	// wallet -- so a seller who withdrew after completion leaves nothing to reverse,
+	// the refund fails on `balance >= amount`, and the buyer's money is stranded. The
+	// hold keeps the net out of reach until the lag has passed.
+	//
+	// The SELLER'S NET, not the gross. A refused delivery does not take back the
+	// platform's commission -- the seller did ship, and the platform did its work --
+	// so holding the gross would freeze money the platform is entitled to keep and
+	// make a bad COD look like a worse one.
+	//
+	// Inside the transaction on purpose: a separate one would leave a window between
+	// "the seller is credited" and "the money is held" in which the seller could
+	// withdraw the whole amount. That window is the fraud.
+	if intent.Method == domain.MethodCOD && sellerAmount > 0 {
+		if err := s.holdSellerFundsTx(ctx, q, order.SellerID, orderID, intent.ID,
+			HoldCOD, "COD collected; awaiting the return window", sellerAmount); err != nil {
+			return err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -1763,6 +1794,33 @@ func (s *PaymentService) HoldSellerFunds(
 			"the payment service is not wired, so a seller hold cannot be taken; "+
 				"the balance is not protected against a return or dispute")
 	}
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.holdSellerFundsTx(ctx, tx.Querier(), sellerID, orderID, eventID, kind, note, amount); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// holdSellerFundsTx is the four writes against a caller-owned transaction.
+//
+// Split from HoldSellerFunds so a hold can join an event it is part of rather than
+// racing it. The COD hold is the case that forced this: it belongs INSIDE
+// `ReleaseEscrow`'s transaction, because that is the moment COD money first becomes
+// withdrawable, and a separate transaction would leave a window where the seller
+// could withdraw between the two.
+//
+// It returns nil for SELLER_HOLD_EXISTS for the same reason its caller does: the
+// money is already protected.
+func (s *PaymentService) holdSellerFundsTx(
+	ctx context.Context, q repository.Querier,
+	sellerID, orderID, eventID, kind, note string, amount float64,
+) error {
 	if s.ledger == nil {
 		return domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
 			"the ledger is not wired, so a seller hold would move money with no "+
@@ -1772,13 +1830,6 @@ func (s *PaymentService) HoldSellerFunds(
 	if err != nil {
 		return err
 	}
-
-	tx, err := s.orders.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := tx.Querier()
 
 	if err := s.ledger.EnsurePersonalAccount(ctx, q, sellerID); err != nil {
 		return err
@@ -1804,15 +1855,12 @@ func (s *PaymentService) HoldSellerFunds(
 	}
 
 	if err := s.payments.ReserveSellerPendingTx(ctx, q, sellerID, orderID, kind, note, amount); err != nil {
-		// A live hold for this order and kind already exists, so the money is
-		// already protected -- which is what the caller asked for. Returning an
-		// error here would reject a return claim for a hold it already has.
 		if domain.Is(err, domain.KindConflict, "SELLER_HOLD_EXISTS") {
 			return nil
 		}
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // holdMeta labels the journal lines, so a trial balance grouped by tx_type can say
