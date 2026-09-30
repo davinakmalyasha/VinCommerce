@@ -196,8 +196,16 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 			"the gateway reported a refund with no reference; an operator must reconcile it")
 	}
 
-	// Identifiable and not yet recorded: the provider has moved the money, so the
-	// only thing left is to bring OUR books into line.
+	// Identifiable and not already recorded: the provider has moved the money, so
+	// the only thing left is to bring OUR books into line.
+	//
+	// CLAIMED, NOT CHECKED AND THEN WRITTEN. The lookup above is still the cheap
+	// first line, but it is no longer the guarantee. Two identical webhooks
+	// arriving together both read "not recorded" and both used to insert; Midtrans
+	// retries for up to 24 hours and does not serialise its retries, so that is a
+	// race the retry schedule can win. The claim is a single INSERT against the
+	// unique index from 00045, so the loser of the race is told it lost and returns
+	// the winner's row instead of writing a second one.
 	refund := &repository.Refund{
 		ID:              newRefundID(),
 		PaymentIntentID: intent.ID,
@@ -213,15 +221,21 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 		Status:      RefundStateSubmitted,
 		RequestedAt: time.Now().UTC(),
 	}
-	if err := s.payments.CreateRefund(ctx, s.payments.Pool(), refund); err != nil {
+	claimed, wasClaimed, err := s.payments.ClaimProviderRefund(ctx, s.payments.Pool(), refund)
+	if err != nil {
 		return nil, err
+	}
+	if !wasClaimed {
+		// Someone else got there first. Their row IS this refund, so returning it
+		// stops the provider retrying instead of provoking another notification.
+		return claimed, nil
 	}
 
 	plan := &refundPlan{Amount: moneyRound(ev.Amount)}
-	if err := s.settleProviderRefund(ctx, refund, intent, plan, ev.Reason); err != nil {
-		return refund, err
+	if err := s.settleProviderRefund(ctx, claimed, intent, plan, ev.Reason); err != nil {
+		return claimed, err
 	}
-	return refund, nil
+	return claimed, nil
 }
 
 // refundRecordedForProviderKey finds a refund we already recorded for a provider

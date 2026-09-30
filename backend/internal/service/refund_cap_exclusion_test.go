@@ -347,6 +347,47 @@ func TestAMissingRefundLookupRefusesRatherThanFallingBack(t *testing.T) {
 	}
 }
 
+// A racer that loses the claim must stop there.
+//
+// The claim (migration 00045) is what makes replay a database guarantee rather than
+// a convention: the loser of a concurrent pair is TOLD it lost. Reporting the
+// conflict as a claim instead means the loser goes on to settle the refund on top
+// of the winner's -- the buyer is paid twice, and this time the database recorded
+// only one row, so nothing downstream can detect it.
+//
+// `RecordProviderRefund` cannot be entered without a live database -- it reads the
+// intent by order first -- so the ordering is pinned at the source: the losing
+// branch must return BEFORE anything settles.
+func TestALostClaimReturnsBeforeAnythingSettles(t *testing.T) {
+	body := functionSource(t, "refund_service.go", "RecordProviderRefund")
+
+	lostAt := strings.Index(body, "if !wasClaimed {")
+	if lostAt < 0 {
+		t.Fatalf("RecordProviderRefund does not check whether it won the claim:\n%s\n"+
+			"without that check a racer that lost settles the refund again on top of "+
+			"the winner's", body)
+	}
+	settleAt := strings.Index(body, "settleProviderRefund(")
+	if settleAt < 0 {
+		t.Fatalf("RecordProviderRefund never settles the refund it claimed:\n%s", body)
+	}
+	if lostAt > settleAt {
+		t.Errorf("the claim is settled before the lost-claim check:\n%s\n"+
+			"a racer that lost must return the winner's row, not settle a second one", body)
+	}
+
+	// And the branch must actually return rather than merely be present.
+	branch := body[lostAt:]
+	if end := strings.Index(branch, "\n\t}"); end > 0 {
+		branch = branch[:end]
+	}
+	if !strings.Contains(branch, "return") {
+		t.Errorf("the lost-claim branch does not return:\n%s\n"+
+			"it must hand back the row that already holds the provider's reference, "+
+			"which is also what stops the provider retrying", branch)
+	}
+}
+
 // functionSource extracts one top-level function body from a file in this package.
 func functionSource(t *testing.T, file, fn string) string {
 	t.Helper()

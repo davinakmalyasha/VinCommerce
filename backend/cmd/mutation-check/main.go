@@ -284,6 +284,40 @@ func main() {
 			new: "\tif lookup == nil {\n" +
 				"\t\tlookup = paymentRefundLookup{payments: s.payments}\n\t}",
 		},
+		{
+			// The claim is what makes replay a database guarantee. Remove the
+			// conflict handling and it becomes an ordinary INSERT, which is the
+			// check-then-write race it replaced: two identical webhooks arriving
+			// together both write, and the buyer is refunded twice.
+			label: "M21: the claim conflicts instead of deferring to the winner",
+			file:  repoFile,
+			old:   "\t\tON CONFLICT (gateway, gateway_ref) WHERE gateway_ref IS NOT NULL\n\t\tDO NOTHING\n",
+			new:   "",
+		},
+		{
+			// Postgres requires a partial index's predicate in the conflict target.
+			// Omit it and the INSERT does not deduplicate at all -- the statement
+			// still succeeds, still returns a row, and every replay writes another
+			// one. It looks exactly like a working guard and is no guard at all.
+			label: "M22: the claim does not target the partial unique index",
+			file:  repoFile,
+			old:   "\t\tON CONFLICT (gateway, gateway_ref) WHERE gateway_ref IS NOT NULL\n",
+			new:   "\t\tON CONFLICT (gateway, gateway_ref)\n",
+		},
+		{
+			// A racer that loses must be told it lost. Inverting the check means the
+			// winner returns early and the loser goes on to settle the refund on
+			// top of it -- the exact outcome the index exists to prevent, and the
+			// database now holds only one row, so nothing downstream can detect it.
+			//
+			// Inverted rather than disabled: `if false` leaves `wasClaimed` unused,
+			// which does not compile, and a mutation that does not compile is
+			// reported as missed while testing nothing at all.
+			label: "M23: a racer that lost the claim settles the refund anyway",
+			file:  svcRefund,
+			old:   "\tif !wasClaimed {",
+			new:   "\tif wasClaimed {",
+		},
 	}
 
 	caught, missed := 0, 0

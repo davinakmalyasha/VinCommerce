@@ -245,12 +245,21 @@ func (r *PaymentRepository) RefundsForAdmin(ctx context.Context, status string, 
 	return out, rows.Err()
 }
 
-const refundSelect = `
-	SELECT id, payment_intent_id, order_id, COALESCE(journal_id::text, ''),
-	       gateway, COALESCE(gateway_ref, ''), amount::float8, COALESCE(reason, ''),
-	       status, COALESCE(failure_reason, ''), COALESCE(requested_by::text, ''),
-	       requested_at, settled_at, created_at
-	  FROM refunds`
+// refundSelectColumns is the column list shared by every read of a refund and by
+// the claim's RETURNING clause, so the two cannot disagree about shape or order.
+//
+// Split out from refundSelect because `RETURNING` needs the columns without the
+// FROM clause. Duplicating the list instead would be a second place to forget a
+// column, and scanRefund's positional Scan would then fail at runtime on whichever
+// path was less used.
+const refundSelectColumns = `
+	id, payment_intent_id, order_id, COALESCE(journal_id::text, ''),
+	gateway, COALESCE(gateway_ref, ''), amount::float8, COALESCE(reason, ''),
+	status, COALESCE(failure_reason, ''), COALESCE(requested_by::text, ''),
+	requested_at, settled_at, created_at`
+
+const refundSelect = `SELECT ` + refundSelectColumns + `
+  FROM refunds`
 
 // rowScanner covers both pgx.Row and pgx.Rows, so scanRefund serves the
 // single-row and multi-row paths without duplicating the column order.
@@ -551,7 +560,79 @@ func uuidParam(id *string) any {
 	return *id
 }
 
-// RefundByProviderKey finds a refund already recorded for a provider
+// ClaimProviderRefund records a provider refund, or returns the one already
+// recorded under the same provider reference. `claimed` is false when the
+// reference was already taken, and `existing` is then that row.
+//
+// ONE STATEMENT, BECAUSE TWO WERE A RACE. The service used to ask permission and
+// then write:
+//
+//	already, _ := RefundByProviderKey(ctx, intentID, key)   // "not recorded"
+//	if already == nil {
+//	    CreateRefund(...)                                    // ...so write one
+//	}
+//
+// Two identical webhooks arriving together both read "not recorded" and both
+// inserted. Midtrans retries for up to 24 hours and does not serialise its
+// retries, so this is a race the retry schedule can win -- and the loser of that
+// race applies the refund a second time. A correct lookup does not help: the
+// window is between the SELECT and the INSERT, and no amount of care in the Go
+// closes it.
+//
+// `ON CONFLICT ... DO NOTHING` against the unique index from 00045 closes it in the
+// database. The conflict target repeats the index's predicate, which Postgres
+// requires in order to infer a PARTIAL unique index -- get it wrong and the insert
+// does not deduplicate at all, which would look like a working guard and not be
+// one, so it is written out rather than left to a default.
+//
+// An empty reference cannot be claimed. Claiming it would be meaningless -- there
+// is no key to collide on -- and the unidentifiable case is escalated to an
+// operator instead, so this refuses rather than inserting a row that no future
+// lookup could ever match.
+func (r *PaymentRepository) ClaimProviderRefund(
+	ctx context.Context, q Querier, rf *Refund,
+) (existing *Refund, claimed bool, err error) {
+	if strings.TrimSpace(rf.GatewayRef) == "" {
+		return nil, false, domain.E(domain.KindConflict, "REFUND_REFERENCE_REQUIRED",
+			"a provider refund cannot be claimed without the provider's own reference; "+
+				"it is the only thing that makes the refund identifiable, and therefore "+
+				"the only thing that makes it safe against a replay")
+	}
+
+	inserted, err := scanRefund(q.QueryRow(ctx, `
+		INSERT INTO refunds (id, payment_intent_id, order_id, gateway, gateway_ref,
+		                     amount, reason, status, requested_by, requested_at)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NULLIF($7, ''), $8,
+		        NULLIF($9, '')::uuid, now())
+		ON CONFLICT (gateway, gateway_ref) WHERE gateway_ref IS NOT NULL
+		DO NOTHING
+		RETURNING `+refundSelectColumns,
+		rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,
+		rf.Amount, rf.Reason, rf.Status, rf.RequestedBy))
+	if err == nil {
+		return inserted, true, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, false, err
+	}
+
+	// DO NOTHING returns no row, so the conflict is the expected outcome rather
+	// than an error: read back whoever holds the reference.
+	existing, err = scanRefund(q.QueryRow(ctx, refundSelect+`
+		 WHERE gateway = $1 AND gateway_ref = $2`,
+		rf.Gateway, rf.GatewayRef))
+	if err != nil {
+		// The conflicting row is committed, so it must be findable. If it is not,
+		// something is wrong that this caller cannot resolve by guessing -- and
+		// guessing here is what applies a duplicate refund.
+		return nil, false, domain.E(domain.KindInternal, "REFUND_CLAIM_CONFLICT_UNREADABLE",
+			"another refund already holds this provider reference but could not be "+
+				"read back; refusing rather than recording a second row for a refund "+
+				"the provider has already performed")
+	}
+	return existing, false, nil
+}
+
 // notification, by the provider's own refund reference.
 //
 // This is what makes a REPLAYED webhook a no-op. Providers retry: Midtrans does

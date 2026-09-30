@@ -295,6 +295,25 @@ they would cost you in a real deployment.
    literals against the domain rule — so adding a state fails a test that names the
    query instead of silently producing a cap that reads the wrong rows. M9 now
    mutates the query.
+   **[closed] Replay is a database guarantee, not an application convention.**
+   Migration 00045 adds a unique index on `(gateway, gateway_ref) WHERE gateway_ref
+   IS NOT NULL`, and `ClaimProviderRefund` records a provider refund with a single
+   `INSERT … ON CONFLICT DO NOTHING RETURNING` against it. Two things were wrong
+   with the old arrangement. The `refunds` table had no unique index on the provider
+   reference at all — its own column comment claimed "a refund is never issued
+   twice against the same gateway reference" while creating no constraint that said
+   so. And the check and the write were separate statements, so two identical
+   webhooks arriving together both read "not recorded" and both inserted; Midtrans
+   retries for up to 24 hours without serialising them, and that race is winnable.
+   A correct lookup does not help — the window is between the SELECT and the INSERT.
+   The migration refuses to build over existing duplicate references rather than
+   de-duplicating, because deleting a refund row to satisfy an index would delete
+   the record of money that left. Mutation-verified as M21/M22/M23.
+   **Unverified:** 00045 has never executed against a real database, like 00043 and
+   00044. The SQL is checked structurally by `check-migration.mjs` and the
+   Go↔SQL coupling is asserted by test — the `ON CONFLICT` predicate must match the
+   index's partial predicate or Postgres silently stops deduplicating while still
+   returning a row — but no statement here has been run by Postgres.
 
 
    **[closed] Every full refund failed, after the provider had paid.** The cap
