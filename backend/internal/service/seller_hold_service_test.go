@@ -1,6 +1,10 @@
 package service
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -330,4 +334,54 @@ func TestTheSwallowingPostStillSwallowsAndTheStrictOneDoesNot(t *testing.T) {
 		t.Error("the strict path swallowed a posting failure; the two helpers are " +
 			"then the same function and the strict one is a name with no behaviour")
 	}
+}
+
+// The payout lag bounds are DUPLICATED -- config cannot import service, and the two
+// would otherwise drift.
+//
+// Duplication is acceptable only if something compares the copies, so this does. It
+// reads both files rather than importing, for the same reason the account prefixes
+// are compared by source: the alternative is a dependency the import-boundary check
+// exists to forbid. A check that cannot run is worse than the duplication.
+func TestConfigPayoutLagBoundsMatchTheService(t *testing.T) {
+	cfgSrc, err := os.ReadFile(filepath.Join("..", "config", "config.go"))
+	if err != nil {
+		t.Fatalf("read config.go: %v", err)
+	}
+	svcSrc := readSource(t, "payment_service.go")
+
+	// The service's bounds are constants, so compare against their VALUES rather
+	// than their source text -- a test that matched the literal would keep passing
+	// after the constant changed.
+	minAt := strings.Index(svcSrc, "MinPayoutLagDays = ")
+	maxAt := strings.Index(svcSrc, "MaxPayoutLagDays = ")
+	if minAt < 0 || maxAt < 0 {
+		t.Fatal("the payout lag bounds are not declared in payment_service.go")
+	}
+	min := valueAfter(svcSrc, "MinPayoutLagDays = ")
+	max := valueAfter(svcSrc, "MaxPayoutLagDays = ")
+
+	for _, want := range []string{fmt.Sprintf("%d", min), fmt.Sprintf("%d", max)} {
+		if !strings.Contains(string(cfgSrc), want) {
+			t.Errorf("config.Validate does not use the service's bound %s:\n"+
+				"the bounds are duplicated because config cannot import service, and "+
+				"duplication with nothing comparing it is how a limit stops being "+
+				"enforced in one place", want)
+		}
+	}
+
+	// And the config must actually CHECK them, not merely mention the numbers.
+	if !strings.Contains(string(cfgSrc), "PAYOUT_LAG_DAYS must be between") {
+		t.Error("config.Validate does not range-check the payout lag")
+	}
+	if !strings.Contains(string(cfgSrc), "PayoutLagDays") {
+		t.Error("config has no PayoutLagDays field; the env var cannot reach anything")
+	}
+}
+
+func valueAfter(src, prefix string) int {
+	rest := src[strings.Index(src, prefix)+len(prefix):]
+	end := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
+	n, _ := strconv.Atoi(rest[:end])
+	return n
 }

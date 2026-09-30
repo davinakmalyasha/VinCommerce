@@ -52,6 +52,20 @@ type PaymentConfig struct {
 	// Auto-approve return claims whose item value is at or below this amount.
 	// 0 disables instant approval.
 	ReturnAutoApproveMax float64 `env:"RETURN_AUTO_APPROVE_MAX" envDefault:"50000"`
+	// PayoutLagDays is how long a seller's money is held before it becomes
+	// withdrawable, when no per-seller override applies.
+	//
+	// It has an env var and a default and was NOT READ by anything: `SetPayoutLag`
+	// existed with a full range check and no caller, so the lag was whatever the Go
+	// constant said regardless of how an operator configured the deployment. The
+	// field existed, the setter existed, and the wiring did not -- which is the
+	// third instance in this config of a fully-built capability that nothing reaches.
+	//
+	// Range-checked in Validate rather than only in SetPayoutLag, because a bad
+	// value should stop the boot rather than silently fall back to the default at
+	// the first call: a payout term that quietly is not the configured one is worse
+	// than a refusal.
+	PayoutLagDays int `env:"PAYOUT_LAG_DAYS" envDefault:"7"`
 }
 
 // OAuthConfig enables social login (Google).
@@ -269,6 +283,19 @@ func (c *Config) Validate() error {
 	}
 	// Normalise so downstream comparisons never see a raw, untrimmed value.
 	c.Environment = string(env)
+
+	// The payout lag is a promise to sellers, so a bad value must stop the boot
+	// rather than quietly fall back to 7 at the first call. `SetPayoutLag` checks
+	// the same range, but checking it here means a misconfigured deployment never
+	// reaches the point of releasing or holding anyone's money.
+	//
+	// The bounds are duplicated from the service rather than imported, because
+	// config cannot import service and the two would otherwise drift. The
+	// duplication is deliberate and there is a test asserting the two agree -- see
+	// TestConfigPayoutLagBoundsMatchTheService.
+	if c.Payments.PayoutLagDays < 1 || c.Payments.PayoutLagDays > 90 {
+		return fmt.Errorf("PAYOUT_LAG_DAYS must be between 1 and 90, got %d", c.Payments.PayoutLagDays)
+	}
 
 	prod := env.IsProduction()
 

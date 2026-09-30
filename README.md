@@ -464,6 +464,17 @@ they would cost you in a real deployment.
    indistinguishable from a working one to a reviewer and to a test alike.
    `assertNotDisabled` now rejects a short-circuited condition wherever one is
    asserted, so it is a helper rather than an incidental check at each site.
+   **[closed] `PAYOUT_LAG_DAYS` was configured by nobody.** `SetPayoutLag` existed
+   with a full range check and had **no caller**, so the lag was always the Go
+   constant of 7 regardless of how the deployment was configured — an operator could
+   set the variable and watch nothing happen, which is the worst shape a
+   configuration option can have. Now read by `config.Validate` (which range-checks
+   it, so a bad value stops the boot rather than quietly falling back) and applied
+   in `app.Build`, with an error returned rather than logged-and-ignored. The bounds
+   are duplicated between the two packages because `config` cannot import `service`,
+   so a test compares the copies by value; duplication with nothing comparing it is
+   how a limit stops being enforced in one place.
+
 
 
 

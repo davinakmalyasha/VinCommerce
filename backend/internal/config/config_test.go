@@ -15,7 +15,7 @@ func prodConfig(secret string) *Config {
 	return &Config{
 		Environment: string(EnvProduction),
 		Auth:        AuthConfig{JWTSecret: secret},
-		Payments:    PaymentConfig{Gateway: "midtrans", MidtransEnv: "production"},
+		Payments:    PaymentConfig{Gateway: "midtrans", MidtransEnv: "production", PayoutLagDays: 7},
 		Database:    DatabaseConfig{SSLMode: "require", Password: "s3cr3t-from-vault"},
 	}
 }
@@ -70,10 +70,36 @@ func TestDevelopmentToleratesWeakSecret(t *testing.T) {
 	// Local development must keep working with the documented default.
 	c := prodConfig(composeFallbackSecret)
 	c.Environment = string(EnvDevelopment)
-	c.Payments = PaymentConfig{Gateway: "sandbox", MidtransEnv: "sandbox"}
+	c.Payments = PaymentConfig{Gateway: "sandbox", MidtransEnv: "sandbox", PayoutLagDays: 7}
 	c.Database = DatabaseConfig{SSLMode: "disable", Password: "vincom_dev"}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("development Validate rejected dev defaults: %v", err)
+	}
+}
+
+// A payout lag outside the supported range must stop the boot, in development too.
+//
+// The alternative -- treating an unset or out-of-range value as "use the default" --
+// is a zero that silently means something, and a payout term that quietly is not
+// the configured one is worse than a refusal: the operator believes they have a
+// longer lag than they have.
+func TestAnOutOfRangePayoutLagStopsTheBoot(t *testing.T) {
+	for _, days := range []int{0, -1, 91, 365} {
+		c := prodConfig("a-strong-enough-secret-for-this-test-only")
+		c.Payments.PayoutLagDays = days
+		if err := c.Validate(); err == nil {
+			t.Errorf("PAYOUT_LAG_DAYS=%d was accepted; a payout term outside the "+
+				"supported range must be refused rather than falling back", days)
+		}
+	}
+	// And the edges are valid, so the check is a range and not a rejection of
+	// everything unusual.
+	for _, days := range []int{1, 7, 90} {
+		c := prodConfig("a-strong-enough-secret-for-this-test-only")
+		c.Payments.PayoutLagDays = days
+		if err := c.Validate(); err != nil {
+			t.Errorf("PAYOUT_LAG_DAYS=%d was refused: %v", days, err)
+		}
 	}
 }
 

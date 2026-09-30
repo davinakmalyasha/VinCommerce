@@ -324,6 +324,19 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	// interface describes.
 	paymentSvc.SetPayoutGuard(sellerSvc.AssertPayoutEligible)
 
+	// The payout lag. `SetPayoutLag` has existed with a full range check and had NO
+	// CALLER, so the lag was always the Go default of 7 no matter how the
+	// deployment was configured -- an operator could set PAYOUT_LAG_DAYS and watch
+	// nothing happen, which is the worst shape a configuration option can have.
+	//
+	// Validated in config.Validate as well, so this cannot receive a value outside
+	// the range. An error here is therefore a wiring bug rather than an operator
+	// mistake, and it is returned rather than logged-and-ignored: a payout term that
+	// silently is not the configured one is worse than a failed boot.
+	if err := paymentSvc.SetPayoutLag(cfg.Payments.PayoutLagDays); err != nil {
+		return nil, fmt.Errorf("app.Build: payout lag: %w", err)
+	}
+
 	// Product changes invalidate the cached bestseller feed.
 	productSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
 	sellerSvc.SetOnProductChanged(engagementSvc.InvalidateRecommended)
