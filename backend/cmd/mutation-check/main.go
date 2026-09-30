@@ -252,6 +252,29 @@ func main() {
 			old:   "\t\trf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,",
 			new:   "\t\trf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, \"\",",
 		},
+		{
+			// The lookup is wired in the constructor, so removing it puts production
+			// on the fallback that every test bypasses. The mutation reinstates the
+			// silent fallback rather than deleting the field, because that is the
+			// version that shipped.
+			label: "M20: the replay lookup falls back instead of being wired",
+			file:  svcRefund,
+			old: "\tif lookup == nil {\n" +
+				"\t\t// LOUD, and no longer silent. This branch used to fall back to building the\n" +
+				"\t\t// repository adapter, which meant the wiring omission was invisible: every\n" +
+				"\t\t// test drove a stub, and production silently ran a different implementation\n" +
+				"\t\t// that no test could reach. The constructor wires the lookup, so nil now\n" +
+				"\t\t// means the service was built without one -- and the honest response to\n" +
+				"\t\t// \"I cannot tell whether this refund is a replay\" is to refuse, not to\n" +
+				"\t\t// guess. Proceeding would apply a duplicate refund, which is the one\n" +
+				"\t\t// outcome this guard exists to prevent.\n" +
+				"\t\treturn nil, domain.E(domain.KindInternal, \"REFUND_LOOKUP_UNWIRED\",\n" +
+				"\t\t\t\"the payment service has no refund lookup configured, so a replayed \"+\n" +
+				"\t\t\t\t\"provider notification cannot be recognised; refusing rather than \"+\n" +
+				"\t\t\t\t\"treating every notification as new and refunding the buyer twice\")\n\t}",
+			new: "\tif lookup == nil {\n" +
+				"\t\tlookup = paymentRefundLookup{payments: s.payments}\n\t}",
+		},
 	}
 
 	caught, missed := 0, 0

@@ -294,6 +294,60 @@ func TestEverySettlementExcludesItsOwnRowFromTheCap(t *testing.T) {
 }
 
 // functionSource extracts one top-level function body from a file in this package.
+// The lookup must be wired by the constructor, and there must be no second path.
+//
+// It used to be left nil, and the refund path quietly built the repository adapter
+// itself on the way past. So every test drove a stub, production ran a different
+// implementation, and the production path had no coverage at all -- which is how an
+// empty intent id and a dropped reference both survived a green suite. One
+// constructor, one implementation: whatever the tests drive is what ships.
+func TestTheConstructorWiresTheRefundLookup(t *testing.T) {
+	svc := NewPaymentService(&repository.PaymentRepository{}, nil, nil, "", "")
+
+	if svc.refunds == nil {
+		t.Fatal("NewPaymentService left the refund lookup unwired; the replay guard " +
+			"would then run through a path no test exercises")
+	}
+	if _, ok := svc.refunds.(paymentRefundLookup); !ok {
+		t.Errorf("lookup is %T, want paymentRefundLookup -- the same implementation "+
+			"the repository-backed path uses, not a test-only substitute", svc.refunds)
+	}
+}
+
+// A missing lookup must refuse, not fall back.
+//
+// The old fallback built the repository adapter from `s.payments`, which for an
+// unwired service is nil: the guard would dereference nil and panic inside a
+// webhook handler, or worse, be "fixed" later by a fallback that quietly diverges
+// from what the tests cover. The honest response to not knowing whether a refund
+// is a replay is to refuse -- proceeding applies the refund a second time.
+func TestAMissingRefundLookupRefusesRatherThanFallingBack(t *testing.T) {
+	// `payments` is nil, so any attempt to reach the database panics. The recover
+	// turns that into a readable failure: a panic here is the old fallback
+	// reaching for a repository that was never built, and saying so is more use
+	// than a stack trace through three frames of plumbing.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("the guard fell back to a repository that was never wired and "+
+				"panicked (%v); a silent fallback is what made this path untestable in "+
+				"the first place, and it must refuse instead", r)
+		}
+	}()
+
+	svc := &PaymentService{}
+	ev := providerRefundEvent{OrderID: "o1", Amount: 30000, Gateway: "midtrans", Reference: "rf-77"}
+
+	_, err := svc.refundRecordedForProviderKey(t.Context(), "intent-1", providerRefundKey(ev))
+	if err == nil {
+		t.Fatal("an unwired refund lookup returned no error; the guard would treat " +
+			"every notification as new and refund the buyer again")
+	}
+	if !strings.Contains(err.Error(), "REFUND_LOOKUP_UNWIRED") {
+		t.Errorf("error = %v, want REFUND_LOOKUP_UNWIRED", err)
+	}
+}
+
+// functionSource extracts one top-level function body from a file in this package.
 func functionSource(t *testing.T, file, fn string) string {
 	t.Helper()
 	body := readSource(t, file)

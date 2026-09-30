@@ -66,6 +66,13 @@ func NewPaymentService(payRepo *repository.PaymentRepository, orders *repository
 	return &PaymentService{
 		payments: payRepo, orders: orders, gateways: reg, defaultGW: primary, baseURL: baseURL,
 		statuses: paymentRefundStatuses{payments: payRepo},
+		// Wired here, not lazily. This lookup used to be left nil in the
+		// constructor, and the refund path fell back to building the repository
+		// adapter itself when it found nil -- so the only path any test exercised
+		// was a stub that production never runs, and the production path was the
+		// one nothing covered. One constructor, one implementation: whatever the
+		// tests drive is what ships.
+		refunds: paymentRefundLookup{payments: payRepo},
 	}
 }
 

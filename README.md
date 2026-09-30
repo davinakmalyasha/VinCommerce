@@ -273,6 +273,15 @@ they would cost you in a real deployment.
    alone would have left a guard that still never fires while every test stayed
    green. The first test in `internal/repository` now drives `CreateRefund` and
    asserts the bound reference. Mutation-verified as M19.
+   **[closed] …and none of it was the path production ran.** `NewPaymentService`
+   never assigned the refund lookup, and the refund path quietly built the
+   repository adapter itself on the way past when it found the field nil. So every
+   test drove a stub, production ran a different implementation, and the production
+   path had *no* coverage — which is the structural reason all three defects above
+   could sit behind a green suite simultaneously. The constructor now wires the
+   lookup, so there is exactly one implementation and whatever the tests exercise is
+   what ships; a missing lookup now refuses with `REFUND_LOOKUP_UNWIRED` instead of
+   falling back. Mutation-verified as M20.
 
 
    **[closed] Every full refund failed, after the provider had paid.** The cap

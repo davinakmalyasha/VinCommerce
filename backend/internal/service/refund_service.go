@@ -257,11 +257,18 @@ func (s *PaymentService) refundRecordedForProviderKey(
 	}
 	lookup := s.refunds
 	if lookup == nil {
-		// A nil lookup is a wiring mistake, not a reason to proceed: without it
-		// every notification would look new and a replay would be applied again,
-		// which is the exact bug this function exists to close. Falling back to the
-		// repository keeps production correct while making the omission loud.
-		lookup = paymentRefundLookup{payments: s.payments}
+		// LOUD, and no longer silent. This branch used to fall back to building the
+		// repository adapter, which meant the wiring omission was invisible: every
+		// test drove a stub, and production silently ran a different implementation
+		// that no test could reach. The constructor wires the lookup, so nil now
+		// means the service was built without one -- and the honest response to
+		// "I cannot tell whether this refund is a replay" is to refuse, not to
+		// guess. Proceeding would apply a duplicate refund, which is the one
+		// outcome this guard exists to prevent.
+		return nil, domain.E(domain.KindInternal, "REFUND_LOOKUP_UNWIRED",
+			"the payment service has no refund lookup configured, so a replayed "+
+				"provider notification cannot be recognised; refusing rather than "+
+				"treating every notification as new and refunding the buyer twice")
 	}
 	return lookup.RefundByProviderKey(ctx, intentID, key)
 }
