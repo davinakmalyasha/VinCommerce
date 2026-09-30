@@ -221,6 +221,17 @@ they would cost you in a real deployment.
    the gateway, because it runs inside a caller-owned transaction. Fixing it means
    splitting the return approval and the refund into two steps, which changes the
    admin flow and the return state machine.*
+   **[closed] A returned item was invisible to the cap, so an ordinary return plus
+   an ordinary refund over-refunded the buyer.** `refundInTx` — the path
+   `SellerService.RefundReturn` delegates to — locked the intent, derived the
+   capped plan, debited the seller, reversed commission, credited the buyer and
+   posted a ledger journal. It wrote no `refunds` row, and the cumulative cap reads
+   that table. So return a Rp50,000 item of a Rp100,000 order, then refund the
+   order: the cap still reads zero and authorises the full Rp100,000. Rp150,000 out
+   on a Rp100,000 charge, with no race and no provider retry required — it is what
+   a returned item followed by a refund does on any ordinary order. The path now
+   writes a `succeeded` row inside the caller's transaction, so a refund that is
+   counted is a refund that happened. Mutation-verified as M16.
    **[closed] The double-refund this work introduced.** Unifying the refund paths
    had routed the gateway's *refund notification* through the path for refunds we
    *initiate*, so every `payment.refunded` webhook asked Midtrans to refund the

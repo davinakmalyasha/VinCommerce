@@ -198,6 +198,22 @@ func main() {
 			new: "\t\t   AND status IN ('succeeded', 'manual')\n" +
 				"\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
 		},
+		{
+			// The return path moves money and writes no `refunds` row, so the
+			// cumulative cap -- which reads that table -- cannot see a returned item.
+			// A Rp50,000 return followed by a Rp100,000 gateway refund on the same
+			// order is then individually valid twice over.
+			label: "M16: the return path moves money without recording a refund",
+			file:  svcFile,
+			old: "\tif err := s.payments.CreateRefund(ctx, q, refund); err != nil {\n" +
+				"\t\treturn err\n\t}\n\n" +
+				"\tif err := s.payments.SetIntentStatusGuardedTx(ctx, q, locked.ID,\n" +
+				"\t\t[]string{domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded},\n" +
+				"\t\tplan.NextStatus); err != nil {\n\t\treturn err\n\t}",
+			new: "\tif err := s.payments.SetIntentStatusGuardedTx(ctx, q, locked.ID,\n" +
+				"\t\t[]string{domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded},\n" +
+				"\t\tplan.NextStatus); err != nil {\n\t\treturn err\n\t}\n\t_ = refund",
+		},
 	}
 
 	caught, missed := 0, 0

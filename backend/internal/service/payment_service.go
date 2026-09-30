@@ -1025,10 +1025,48 @@ func (s *PaymentService) refundInTx(
 	if err != nil {
 		return err
 	}
-	// nil: this is the return path, which owns no in-flight `refunds` row of its
-	// own, so there is nothing to exclude. The cap sees every prior refund.
+	// nil: the cap must see every refund that came BEFORE this one, and this
+	// refund's own row does not exist yet -- it is written below, inside this same
+	// transaction, once the plan is known to be valid.
 	plan, err := s.buildRefundPlan(ctx, q, locked, amount, nil)
 	if err != nil {
+		return err
+	}
+
+	// THE REFUND ROW. This path moves money and posts a journal, and until now it
+	// wrote no `refunds` row -- so the cumulative cap, which reads that table,
+	// could not see it. A returned item and a gateway refund on the same order were
+	// each individually capped against a total that excluded the other:
+	//
+	//	return one Rp50,000 item of a Rp100,000 order  -> no row, cap still reads 0
+	//	gateway refund the remaining Rp100,000          -> cap reads 0, ALLOWS it
+	//	                                               -> Rp150,000 out on Rp100,000
+	//
+	// That is not a race and needs no provider retry to happen; it is what a
+	// returned item plus a later refund does on any ordinary order. `refunds` is
+	// meant to be the authoritative record for EVERY path, and this was the one
+	// path that moved money without writing to it.
+	//
+	// `succeeded`, and inside the caller's transaction: the money movement and the
+	// journal that records it are in the same commit, so a refund that is counted
+	// is a refund that happened. `pending` would be wrong here (nothing is in
+	// flight -- the money has already moved) and so would `submitted` (there is no
+	// provider to settle it).
+	//
+	// gateway_ref is empty because this path credits a wallet rather than calling
+	// the provider, so there is no provider id for it. That divergence is
+	// deliberate and separate; see SellerService.RefundReturn.
+	refund := &repository.Refund{
+		ID:              newRefundID(),
+		PaymentIntentID: locked.ID,
+		OrderID:         orderID,
+		Gateway:         locked.Gateway,
+		Amount:          plan.Amount,
+		Reason:          reason,
+		Status:          RefundStateSucceeded,
+		RequestedAt:     time.Now().UTC(),
+	}
+	if err := s.payments.CreateRefund(ctx, q, refund); err != nil {
 		return err
 	}
 
