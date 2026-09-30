@@ -330,8 +330,26 @@ they would cost you in a real deployment.
    the concurrent-double-refund race; an accepted refund must still count against
    a *different* refund, just not against its own. Mutation-verified as M13/M14/M15.
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
-   the balance is only ever credited by refunds. *Closed by the gift-card /
-   voucher-as-product work; until then a refund is the only way in.*
+   the balance is only ever credited by refunds. **The previous version of this item
+   claimed it was "closed by the gift-card / voucher-as-product work". That was
+   false and is retracted.** Vouchers are coupons — `ClaimVoucher` attaches a
+   `domain.Coupon` to an account, and they discount an order rather than funding a
+   balance — and there is no top-up path, no payment-intent for one, and no handler
+   for one (`grep -i 'topup|top-up|AddFunds|FundWallet'` over the backend: zero
+   hits).
+ Every credit to a `wallets` row still comes from a refund, an escrow
+   release, a dispute split or a COD collection. "Pay with wallet balance" therefore
+   has exactly one way to ever have a balance to spend, and it is being refunded.
+   closing this needs a real top-up: a payment intent whose gateway leg funds the
+   wallet rather than an order, an idempotent ledger posting for it, and a seller
+   or buyer surface to trigger it.
+   Precisely, since a seller's wallet is not quite the same case: the only credits
+   to any `wallets` row are `escrow_release` (a seller's earnings),
+   `commission` (the platform's own), `refund` (a buyer, via the refund path or a
+   dispute split), `adjustment` (a failed withdrawal being returned), and the new
+   `seller_held` release. A BUYER's wallet is credited only by a refund. So
+   "pay with wallet balance" has one way to ever hold a balance: be refunded, or
+   lose a dispute.
 3. **[partly closed] No PPN / tax and no compliant invoice.** `handler/invoice.go`
    emits HTML with no tax line, no seller NPWP/NIB and no invoice number sequence.
    Indonesian sellers cannot expense a marketplace invoice without that. The
