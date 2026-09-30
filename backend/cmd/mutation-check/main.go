@@ -164,6 +164,40 @@ func main() {
 			old:   "\tref := strings.TrimSpace(ev.Reference)\n\tif ref == \"\" {",
 			new:   "\tref := ev.Reference\n\tif len(ref) == 0 {",
 		},
+		{
+			// The cap counts the row that is being settled. The reserve step commits
+			// its row as `submitted` before the provider is called, so a full refund
+			// read `already = charge`, computed `remaining = 0` and refused itself --
+			// rolling back the reversal legs and the journal after the buyer had
+			// already been paid. Every full refund failed.
+			label: "M13: the cap counts the refund it is settling",
+			file:  repoFile,
+			old:   "\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
+			new:   "\t\t   AND ($2::uuid IS NOT NULL OR id <> $2::uuid)`,",
+		},
+		{
+			// The same defect from the other end: the SQL is correct and the caller
+			// forgets to identify which row it is settling, so nothing is excluded.
+			// Both halves are mutated because either one alone reinstates the bug,
+			// and a test that only covers one of them passes while the other rots.
+			label: "M14: the settlement stops excluding its own row",
+			file:  svcRefund,
+			old:   "\tfinal, err := s.buildRefundPlan(ctx, q, locked, plan.Amount, &refund.ID)",
+			new:   "\tfinal, err := s.buildRefundPlan(ctx, q, locked, plan.Amount, nil)",
+		},
+		{
+			// An in-flight refund is money the provider accepted and will pay, so it
+			// must still count against a DIFFERENT refund. This is why the fix
+			// excludes by id rather than dropping `submitted` from the cap: the
+			// alternative reinstates the concurrent-double-refund race that
+			// 03a100b closed, and it is a one-line change that looks like a fix.
+			label: "M15: an in-flight refund stops counting against other refunds",
+			file:  repoFile,
+			old: "\t\t   AND status IN ('submitted', 'succeeded', 'manual')\n" +
+				"\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
+			new: "\t\t   AND status IN ('succeeded', 'manual')\n" +
+				"\t\t   AND ($2::uuid IS NULL OR id <> $2::uuid)`,",
+		},
 	}
 
 	caught, missed := 0, 0

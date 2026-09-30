@@ -454,12 +454,21 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 // refunds could together exceed the charge. The ledger is the only source
 // that is guaranteed to agree with the money that actually moved.
 //
+// `excludeRefundID` is the refund row this plan is FOR, and it is left out of the
+// total. A settlement re-derives the plan after the reserve step has already
+// committed its row as `submitted`, and without the exclusion the row is counted
+// against itself -- so a full refund sees `already = charge`, computes
+// `remaining = 0` and refuses itself. Pass nil when no row of ours is in flight
+// yet (the reserve step itself).
+//
 // `q` must be the caller's open transaction, not the pool. See
 // PaymentRepository.SumRefundedByOrder for why that distinction is the whole
 // ballgame under concurrency.
-func (s *PaymentService) refundedTotal(ctx context.Context, q repository.Querier, orderID string) (float64, error) {
+func (s *PaymentService) refundedTotal(
+	ctx context.Context, q repository.Querier, orderID string, excludeRefundID *string,
+) (float64, error) {
 	var total float64
-	if err := s.payments.SumRefundedByOrder(ctx, q, orderID, &total); err != nil {
+	if err := s.payments.SumRefundedByOrder(ctx, q, orderID, excludeRefundID, &total); err != nil {
 		return 0, err
 	}
 	return moneyRound(total), nil
@@ -500,6 +509,7 @@ type refundPlan struct {
 //   - the total may never exceed what was charged
 //   - the two reversal legs sum to the refund amount exactly
 //   - nothing is clawed back if escrow was never released
+//   - the row being settled is excluded from its own total
 //
 // The previous code had these spread across RefundOrder and RefundReturn, and
 // RefundReturn had NONE of them -- which is why a second return refund on the
@@ -507,8 +517,9 @@ type refundPlan struct {
 // no debit anywhere.
 func (s *PaymentService) buildRefundPlan(
 	ctx context.Context, q repository.Querier, intent *domain.PaymentIntent, amount float64,
+	excludeRefundID *string,
 ) (*refundPlan, error) {
-	already, err := s.refundedTotal(ctx, q, intent.OrderID)
+	already, err := s.refundedTotal(ctx, q, intent.OrderID, excludeRefundID)
 	if err != nil {
 		return nil, err
 	}
@@ -1014,7 +1025,9 @@ func (s *PaymentService) refundInTx(
 	if err != nil {
 		return err
 	}
-	plan, err := s.buildRefundPlan(ctx, q, locked, amount)
+	// nil: this is the return path, which owns no in-flight `refunds` row of its
+	// own, so there is nothing to exclude. The cap sees every prior refund.
+	plan, err := s.buildRefundPlan(ctx, q, locked, amount, nil)
 	if err != nil {
 		return err
 	}

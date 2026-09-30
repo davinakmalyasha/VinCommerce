@@ -441,26 +441,10 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Quer
 	return setIntentStatusGuardedOn(q, ctx, intentID, expected, to)
 }
 
-// SumRefundedByOrder totals the refund credits already posted for an order, so
-// a second partial refund can be bounded by what is actually left.
-//
-// Derived from the ledger rather than from a column on payment_intents,
-// because a `partially_refunded` intent does not record how much has already
-// gone back, and the ledger is the only record guaranteed to agree with the
-// money that actually moved.
-// SumRefundedByOrder sums the refund legs already written for an order.
-//
-// `q` may be the pool or an open transaction, and the caller MUST pass the
-// transaction for the value to be correct under concurrency: the refund path
-// locks the intent row and then re-reads this total inside the same transaction
-// so a second concurrent refund sees the first one's ledger rows. Passing the
-// pool here reads on a DIFFERENT connection, outside the transaction and before
-// the lock is held, which is how two partial refunds could each be individually
-// valid and together exceed the charge.
 // SumRefundedByOrder is the CUMULATIVE amount already refunded for an order, and
 // it is the input to the cap that stops a buyer being refunded twice.
 //
-// It reads the `refunds` TABLE, and it used to read `wallet_transactions`:
+// It reads the `refunds` TABLE. It used to read `wallet_transactions`:
 //
 //	SELECT SUM(amount) FROM wallet_transactions
 //	 WHERE ref_id = $1 AND reason = 'refund' AND kind = 'credit'
@@ -470,9 +454,7 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Quer
 // query returned zero after every gateway refund. The cap built specifically to
 // stop over-refunding a buyer was measuring nothing on the path that actually
 // refunds them, and a third partial refund was cheerfully authorised after two
-// had already been paid.
-//
-// `refunds` is the authoritative record of what was refunded, for every path.
+// had already been paid. `refunds` is the authoritative record, for every path.
 //
 // Which STATES count is the whole subtlety, and it is not "everything":
 //
@@ -484,20 +466,75 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Quer
 //	manual     yes -- we OWE the buyer this and a human must send it; not
 //	             counting it would let the platform promise the same rupiah twice
 //
-// The states are read from the same Go constants the service writes, so the query
-// and the writer cannot disagree about which states exist.
-func (r *PaymentRepository) SumRefundedByOrder(ctx context.Context, q Querier, orderID string, out *float64) error {
+// `q` may be the pool or an open transaction, and the caller MUST pass the
+// transaction for the value to be correct under concurrency: the refund path
+// locks the intent row and then re-reads this total inside the same transaction
+// so a second concurrent refund sees the first one's rows. Passing the pool here
+// reads on a DIFFERENT connection, outside the transaction and before the lock is
+// held, which is how two partial refunds could each be individually valid and
+// together exceed the charge.
+//
+// `excludeRefundID` is the row that is CURRENTLY BEING SETTLED, and it is
+// excluded from the total.
+//
+// THE BUG THIS FIXES. This query counts `submitted`, and the reserve step writes
+// the row as `submitted` before the provider is called. So by the time
+// the settlement re-derived the cap -- after the provider had already moved the
+// money -- the row being settled was counted against itself. A full refund of a
+// Rp100,000 charge therefore read `already = 100,000`, computed
+// `remaining = 0`, and refused itself with ALREADY_REFUNDED, rolling back the
+// internal legs and the journal while the buyer's money had already gone. That
+// is the single most common refund on the platform, and it failed every time.
+//
+// Excluding by ID is deliberately narrower than excluding by state. A row
+// inserted as `pending` instead would also stop self-counting, but it would drop
+// every in-flight refund out of the cap, so two concurrent gateway refunds could
+// each be individually valid and together exceed the charge -- the exact race
+// `03a100b` closed. An in-flight refund is money the provider has accepted and
+// will pay, and it must count against a DIFFERENT refund. It must not count
+// against itself.
+//
+// nil means "exclude nothing": the caller has no row of its own in flight, which
+// is the reserve step and the return path. A pointer to an empty string is
+// refused rather than treated as nil, because "no id" and "the empty id" are
+// different claims and only one of them is true.
+func (r *PaymentRepository) SumRefundedByOrder(
+	ctx context.Context, q Querier, orderID string, excludeRefundID *string, out *float64,
+) error {
+	if excludeRefundID != nil && strings.TrimSpace(*excludeRefundID) == "" {
+		return domain.E(domain.KindInternal, "REFUND_EXCLUDE_ID_INVALID",
+			"the refund being settled was excluded from the cap without an id, so the "+
+				"cap cannot be trusted; refusing rather than guessing which row was meant")
+	}
 	var total float64
 	err := q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount), 0)::float8
 		  FROM refunds
 		 WHERE order_id = $1
-		   AND status IN ('submitted', 'succeeded', 'manual')`, orderID).Scan(&total)
+		   AND status IN ('submitted', 'succeeded', 'manual')
+		   AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+		orderID, uuidParam(excludeRefundID)).Scan(&total)
 	if err != nil {
 		return err
 	}
 	*out = total
 	return nil
+}
+
+// uuidParam renders an optional id as something the database will accept for a
+// $n::uuid parameter.
+//
+// A nil pointer must become SQL NULL rather than an empty string, because a
+// $n::uuid parameter given an empty string is `invalid input syntax for type
+// uuid` -- a query error rather than a query result, and one that aborts the
+// whole refund instead of merely finding nothing. An empty sentinel that means
+// "no id" is exactly the kind of value that turns a lookup into a silent
+// no-match, and the replay guard was broken for three commits by one.
+func uuidParam(id *string) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }
 
 // RefundByProviderKey finds a refund already recorded for a provider

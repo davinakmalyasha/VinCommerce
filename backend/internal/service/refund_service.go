@@ -360,7 +360,11 @@ func (s *PaymentService) reserveRefund(
 	if err != nil {
 		return nil, nil, err
 	}
-	plan, err := s.buildRefundPlan(ctx, q, locked, amount)
+	// nil: the row for THIS refund does not exist yet. Deriving the cap before
+	// writing it is the point -- see settleProviderRefund and completeRefund for
+	// the same plan derived AFTER the row is in the table, and why they must
+	// exclude it.
+	plan, err := s.buildRefundPlan(ctx, q, locked, amount, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -433,7 +437,15 @@ func (s *PaymentService) settleProviderRefund(
 	// is left. A provider that reported more than was charged is a finding, not a
 	// reason to pay it: an uncapped trust in the number turns a provider bug into
 	// the platform's loss.
-	already, err := s.refundedTotal(ctx, q, order.ID)
+	//
+	// Excluding this refund's own row is what makes that bound mean anything. The
+	// row was inserted as `submitted` by RecordProviderRefund BEFORE this
+	// transaction, and `submitted` counts toward the cap -- so including it made a
+	// full provider refund read `already = charge`, return ALREADY_REFUNDED, and
+	// strand the refund as `manual` with no internal legs reversed and no journal
+	// posted, for money the provider had already sent back. The provider path was
+	// broken for full refunds.
+	already, err := s.refundedTotal(ctx, q, order.ID, &refund.ID)
 	if err != nil {
 		return err
 	}
@@ -588,11 +600,18 @@ func (s *PaymentService) completeRefund(
 	// reserve and the provider confirming, another refund may have landed. The
 	// cap must be enforced against what is true NOW, not what was true when the
 	// request was made.
+	//
+	// `&refund.ID` excludes this refund's own row. The reserve step committed it
+	// as `submitted` and the provider has now moved the money, so counting it here
+	// charged the refund for itself: a full refund of a Rp100,000 charge read
+	// `already = 100,000`, found `remaining = 0`, and refused with
+	// ALREADY_REFUNDED -- rolling back the reversal legs and the journal while the
+	// buyer had already been paid. Every full refund failed, after the money left.
 	locked, err := s.payments.LockIntentForRefund(ctx, q, intent.ID)
 	if err != nil {
 		return err
 	}
-	final, err := s.buildRefundPlan(ctx, q, locked, plan.Amount)
+	final, err := s.buildRefundPlan(ctx, q, locked, plan.Amount, &refund.ID)
 	if err != nil {
 		return err
 	}

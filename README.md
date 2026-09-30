@@ -238,6 +238,19 @@ they would cost you in a real deployment.
    mutations had been reporting success without running a test, so the coverage
    they claimed did not exist until the harness was fixed to reject a failure
    that names no witness.
+   **[closed] Every full refund failed, after the provider had paid.** The cap
+   counts `submitted`, and the reserve step commits its row as `submitted` before
+   the gateway is called. So when settlement re-derived the cap, the row being
+   settled was counted against itself: a full Rp100,000 refund read
+   `already = 100,000`, computed `remaining = 0`, and refused *itself* with
+   `ALREADY_REFUNDED` — rolling back the reversal legs and the ledger journal
+   while the buyer's money had already gone back. This was the most common refund
+   on the platform and it failed every time, on both the initiate path and the
+   provider-notification path. The cap now excludes the row being settled, by id.
+   Excluding by *state* instead (inserting as `pending`) would also stop the
+   self-count, but it would drop every in-flight refund out of the cap and reopen
+   the concurrent-double-refund race; an accepted refund must still count against
+   a *different* refund, just not against its own. Mutation-verified as M13/M14/M15.
 2. **No wallet top-up.** "Pay with wallet balance" is unreachable in practice;
    the balance is only ever credited by refunds. *Closed by the gift-card /
    voucher-as-product work; until then a refund is the only way in.*
