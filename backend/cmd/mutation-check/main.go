@@ -392,6 +392,26 @@ func main() {
 			old:   "\tif intent.Method == domain.MethodCOD && sellerAmount > 0 {",
 			new:   "\tif false && intent.Method == domain.MethodCOD && sellerAmount > 0 {",
 		},
+		{
+			// The fix for 0cb43d1's incomplete half. `ledger_entries.account_code`
+			// and `account_balances.account_code` both FK to `ledger_accounts(code)`,
+			// so a posting to a seller who has no account row fails on the insert --
+			// and `postLedger` swallows that. This mutation is what the defect WAS:
+			// escrow release, every payout transition and every post-release refund
+			// moving money with no journal.
+			label: "M30: a posting does not ensure the personal accounts it needs",
+			file:  svcPostFile,
+			old:   "\tif err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {\n\t\tslog.Error(\"ledger account missing; the money movement is not accounted for\",",
+			new:   "\tif err := error(nil); err != nil {\n\t\tslog.Error(\"ledger account missing; the money movement is not accounted for\",",
+		},
+		{
+			// And the swallow half of it: with the ensure in place, a failure must
+			// still stop the posting rather than passing silently.
+			label: "M31: a failed account ensure is swallowed on the strict path",
+			file:  svcPostFile,
+			old:   "\tif err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {\n\t\treturn err\n\t}",
+			new:   "\tif err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {\n\t\tslog.Error(\"ensure failed\", \"error\", err.Error())\n\t}",
+		},
 	}
 
 	caught, missed := 0, 0

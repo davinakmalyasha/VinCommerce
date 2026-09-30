@@ -66,12 +66,66 @@ func (s *PaymentService) postLedger(ctx context.Context, q repository.Querier, s
 			"idempotency_key", spec.IdempotencyKey)
 		return
 	}
+	if err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {
+		slog.Error("ledger account missing; the money movement is not accounted for",
+			"tx_type", spec.TxType, "idempotency_key", spec.IdempotencyKey,
+			"error", err.Error())
+		return
+	}
 	if _, err := s.ledger.Post(ctx, q, spec); err != nil {
 		slog.Error("ledger posting failed; the wallet movement is not accounted for",
 			"tx_type", spec.TxType, "ref_id", spec.RefID,
 			"idempotency_key", spec.IdempotencyKey,
 			"error", err.Error())
 	}
+}
+
+// ensureJournalAccounts creates the personal ledger accounts a journal posts to,
+// if they do not exist yet.
+//
+// THIS FUNCTION IS THE FIX. `ledger_entries.account_code` and
+// `account_balances.account_code` both have a FOREIGN KEY to
+// `ledger_accounts(code)`, so a journal that credits `seller_available:<uuid>` for
+// a seller who has no row fails on the insert -- and `postLedger` swallows that,
+// so the money moves and nothing records it.
+//
+// It failed on FIVE call sites, which is the point:
+//
+//	ReleaseEscrow        credits the seller's net
+//	RequestPayout        debits the seller
+//	postPayoutSettled    debits the seller
+//	failPayout           credits the seller
+//	post-release refund  debits the seller
+//
+// Each had to remember. None did. `EnsurePersonalAccount` existed the whole time
+// with zero callers, which is the same defect shape as `cod_receivable`: the
+// mechanism, the naming, the reasoning and the account -- and nothing invoking it.
+//
+// So the ensure lives HERE, above every call site, rather than in them. A posting
+// physically cannot reach `Post` without it, which is the only arrangement that
+// survives the next function somebody adds.
+//
+// Called once per distinct code rather than once per entry: a journal with two legs
+// on the same seller must not issue two INSERTs, and the `ON CONFLICT DO NOTHING`
+// would make that harmless -- but harmless-and-noisy is how a fix gets disabled for
+// being untidy later.
+func (s *PaymentService) ensureJournalAccounts(
+	ctx context.Context, q repository.Querier, entries []LedgerEntry,
+) error {
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if _, personal := personalAccountUserID(e.Account); !personal {
+			continue
+		}
+		if seen[e.Account] {
+			continue
+		}
+		seen[e.Account] = true
+		if err := s.ledger.EnsureAccountForCode(ctx, q, e.Account); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // postLedgerStrict is postLedger for a path that cannot continue without a journal.
@@ -90,6 +144,9 @@ func (s *PaymentService) postLedgerStrict(ctx context.Context, q repository.Quer
 		return domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
 			"the ledger is not wired, so this money movement cannot be accounted for; "+
 				"refusing rather than moving money with no journal")
+	}
+	if err := s.ensureJournalAccounts(ctx, q, spec.Entries); err != nil {
+		return err
 	}
 	if _, err := s.ledger.Post(ctx, q, spec); err != nil {
 		return err

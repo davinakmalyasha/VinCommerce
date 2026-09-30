@@ -406,10 +406,43 @@ they would cost you in a real deployment.
    Fixed by migration 00046: widen to `VARCHAR(64)`, and add a `purpose` column so
    one user can hold both a `seller_available:` and a `seller_held:` account (the
    old `UNIQUE (user_id) WHERE NOT is_system` permitted exactly one).
-   `ledger_account_codes_test.go` now composes every account code the service can
-   produce and asserts each fits the width the schema *ends up* with after all 46
+`ledger_account_codes_test.go` now composes every account code the service can
+   produce and asserts each fits the width the schema *ends up* with after all 47
    migrations, read from the files rather than hardcoded — so re-narrowing fails a
    test that names the code, verified by reverting the widening.
+   **[closed] …and then, even with the width fixed, the accounts still did not
+   exist.** `ledger_entries.account_code` and `account_balances.account_code` both
+   have a **foreign key** to `ledger_accounts(code)`, and `EnsurePersonalAccount` had
+   zero callers — so a posting to a seller who had no account row was rejected by
+   the FK, and `postLedger` swallowed that. Five call sites were affected and each
+   had to remember to ensure the account; none did:
+
+   | posting | touches `PersonalAccount` | ensured the account |
+   |---|---|---|
+   | `ReleaseEscrow` | credits the seller's net | no |
+   | `RequestPayout` | debits the seller | no |
+   | `postPayoutSettled` | debits the seller | no |
+   | `failPayout` | credits the seller | no |
+   | post-release refund | debits the seller | no |
+
+   So **the previous commit closed half of this**, and its "[closed]" was not true
+   when written. The fix belongs where the failure mode was: `postLedger` and
+   `postLedgerStrict` now scan their own entries for the personal namespaces and
+   ensure each distinct account before posting, so no call site *can* forget. That is
+   the arrangement that survives the next function somebody adds — as opposed to
+   adding `EnsurePersonalAccount` to five call sites, which is how it was missed
+   once already.
+   Getting the classification wrong fails in both directions, and both directions
+   are tested by value: missing a personal account reintroduces this defect, while
+   treating a *system* account as personal violates `ledger_accounts_user_side`
+   (a system account must have no `user_id`) and would fail on the very first
+   capture. Also closes a long-standing false claim — `ledger_repo.go` asserted the
+   two packages' copies of the namespace prefixes "are asserted against each other
+   by a repository test", and no such test existed; there are two namespaces now and
+   a third could be added without either side noticing. Mutation-verified as M30
+   (the ensure removed from the posting path — caught on the *swallowing* helper,
+   which is `ReleaseEscrow` and every payout transition) and M31 (a failed ensure
+   swallowed on the strict path).
    **[closed] …and a seller hold moved no money at all.** `HoldSellerFunds` wrote a
    `seller_reservations` row and stopped. `RequestPayout` debits `wallets.balance`
    and reads nothing else, so the "fraud control" left the money fully withdrawable

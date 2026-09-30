@@ -77,6 +77,27 @@ func PersonalAccount(userID string) string { return personalAccountPrefix + user
 // order could still reverse it.
 func SellerHeldAccount(userID string) string { return heldAccountPrefix + userID }
 
+// personalAccountPrefixes is every namespace that is PER USER, and therefore needs
+// an `ledger_accounts` row before anything can post to it.
+var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix}
+
+// personalAccountUserID reports the user id encoded in an account code, and whether
+// the code names a personal account at all.
+//
+// Pure, and separately tested, because it is the only piece of DECISION in
+// ensuring accounts exist. `postLedger` calls it for every journal line, so a bug
+// here either skips a required insert or makes one for an account that needs no
+// row -- and a system account that gets a row is a `ledger_accounts_user_side`
+// constraint violation, because a system account must have no `user_id`.
+func personalAccountUserID(code string) (string, bool) {
+	for _, p := range personalAccountPrefixes {
+		if rest, ok := strings.CutPrefix(code, p); ok && rest != "" {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
 // Ledger entry sides. Re-exported from domain rather than redeclared, so the
 // service and the schema cannot disagree about the spelling and a typo cannot
 // compile.
@@ -305,8 +326,21 @@ func (s *LedgerService) EnsurePersonalAccount(ctx context.Context, q repository.
 // accounts answer different questions and a `held bool` invites the caller to pass
 // the wrong one: every posting that touches a seller's withdrawable balance needs
 // the available account to exist, and a hold needs both.
+//
+// NOTE: `postLedger` now ensures accounts itself, from the journal's own entries,
+// so no caller needs these. They remain for the rare caller that knows it needs a
+// row before a posting exists -- but a caller that reaches for one of these is now
+// almost certainly working around something the posting path should do itself.
 func (s *LedgerService) EnsureHeldAccount(ctx context.Context, q repository.Querier, userID string) error {
 	return s.ledger.EnsureHeldAccount(ctx, q, userID)
+}
+
+// EnsureAccountForCode creates the personal account named `code`, and does nothing
+// for a system account.
+//
+// This is what `postLedger` calls, once per distinct personal code in a journal.
+func (s *LedgerService) EnsureAccountForCode(ctx context.Context, q repository.Querier, code string) error {
+	return s.ledger.EnsureAccountForCode(ctx, q, code)
 }
 
 // TrialBalance returns every account balance, sorted by code.

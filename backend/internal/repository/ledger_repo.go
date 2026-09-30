@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,7 +31,7 @@ func NewLedgerRepository(pool *db.Pool) *LedgerRepository {
 
 // personalAccountPrefix mirrors the service-layer constant. Duplicated rather
 // than shared because the repository must not import the service layer, and the
-// two are asserted against each other by a repository test.
+// two are asserted against each other by TestAccountPrefixesMatchTheService.
 const personalAccountPrefix = "seller_available:"
 
 // heldAccountPrefix mirrors the service-layer constant for the held namespace.
@@ -40,6 +41,39 @@ const personalAccountPrefix = "seller_available:"
 // posts to -- and report clean, because both sides would be zero.
 const heldAccountPrefix = "seller_held:"
 
+// personalAccountPrefixes is every namespace whose accounts are PER USER and
+// therefore must exist as `ledger_accounts` rows before anything can post to them.
+//
+// `ledger_entries.account_code` and `account_balances.account_code` both have a
+// foreign key to `ledger_accounts(code)`, so a posting to `seller_available:<uuid>`
+// for a seller who has no row fails -- and that failure is invisible from the
+// service, which is how escrow release ended up moving money with no journal.
+var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix}
+
+// PersonalAccountPrefixes exposes the personal namespaces so the service layer's
+// copy can be asserted against this one. Exported for the drift test, not for
+// general use: a caller that needs to know "is this personal" should call
+// PersonalAccountUserID, which cannot be got wrong about the set.
+func PersonalAccountPrefixes() []string {
+	out := make([]string, len(personalAccountPrefixes))
+	copy(out, personalAccountPrefixes)
+	return out
+}
+
+// PersonalAccountUserID returns the user id encoded in a personal account code, and
+// whether the code is personal at all.
+//
+// ONE place decides what "personal" means, so the posting path and this function
+// cannot disagree about which accounts need to exist first.
+func PersonalAccountUserID(code string) (string, bool) {
+	for _, p := range personalAccountPrefixes {
+		if rest, ok := strings.CutPrefix(code, p); ok && rest != "" {
+			return rest, true
+		}
+	}
+	return "", false
+}
+
 // Account purposes. The `purpose` column distinguishes the two claims on a
 // seller's money, and it is what lets one user have both accounts: 00046 replaced
 // `UNIQUE (user_id)` with `UNIQUE (user_id, purpose)`.
@@ -47,6 +81,43 @@ const (
 	purposeAvailable = "available"
 	purposeHeld      = "held"
 )
+
+// EnsureAccountForCode creates a personal account named `code` if it does not
+// exist, and does NOTHING for a system account.
+//
+// Taking the whole code rather than a user id is deliberate: the caller is a
+// journal's entry, and it has a code. Making it decompose the code would mean the
+// namespace knowledge lives in two packages, which is exactly the drift this
+// function exists to remove.
+//
+// System accounts are pre-seeded by 00043 and are never missing, so a code with no
+// personal prefix is a no-op rather than an error -- that is what lets the posting
+// path call this unconditionally for every entry.
+func (r *LedgerRepository) EnsureAccountForCode(ctx context.Context, q Querier, code string) error {
+	userID, ok := PersonalAccountUserID(code)
+	if !ok {
+		return nil
+	}
+	purpose := purposeAvailable
+	if strings.HasPrefix(code, heldAccountPrefix) {
+		purpose = purposeHeld
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO ledger_accounts (code, name, class, normal_side, is_system, currency, user_id, purpose)
+		VALUES ($1, $2, 'liability', 'credit', false, 'IDR', $3::uuid, $4)
+		ON CONFLICT (code) DO NOTHING`,
+		code, "Ledger account "+code, userID, purpose)
+	if err != nil {
+		return err
+	}
+	// The balance row too, or `applyBalances` has nothing to upsert into and the
+	// first posting for this seller fails on that foreign key instead of this one.
+	_, err = q.Exec(ctx, `
+		INSERT INTO account_balances (account_code, currency, balance)
+		VALUES ($1, 'IDR', 0)
+		ON CONFLICT (account_code, currency) DO NOTHING`, code)
+	return err
+}
 
 // nullTime maps "" to a real SQL NULL so a single prepared statement can cover
 // both "caller supplied a value" and "caller did not". The alternative is
@@ -207,19 +278,7 @@ func (r *LedgerRepository) EnsureHeldAccount(ctx context.Context, q Querier, use
 func (r *LedgerRepository) ensureUserAccount(
 	ctx context.Context, q Querier, prefix, purpose, namePrefix, userID string,
 ) error {
-	code := prefix + userID
-	if _, err := q.Exec(ctx, `
-		INSERT INTO ledger_accounts (code, name, class, normal_side, is_system, currency, user_id, purpose)
-		VALUES ($1, $2, 'liability', 'credit', false, 'IDR', $3::uuid, $4)
-		ON CONFLICT (code) DO NOTHING`,
-		code, namePrefix+userID, userID, purpose); err != nil {
-		return err
-	}
-	_, err := q.Exec(ctx, `
-		INSERT INTO account_balances (account_code, currency, balance)
-		VALUES ($1, 'IDR', 0)
-		ON CONFLICT (account_code, currency) DO NOTHING`, code)
-	return err
+	return r.EnsureAccountForCode(ctx, q, prefix+userID)
 }
 
 // BalanceOf returns one account's signed balance.

@@ -303,7 +303,7 @@ func TestAFailedJournalStopsTheMoneyMoving(t *testing.T) {
 		Entries:        []LedgerEntry{Debit(PersonalAccount(testUserID), 50000)},
 	}
 
-	err := svc.postLedgerStrict(t.Context(), nil, unbalanced)
+	err := svc.postLedgerStrict(t.Context(), &permissiveQuerier{}, unbalanced)
 	if err == nil {
 		t.Fatal("postLedgerStrict returned no error for a journal that does not " +
 			"balance; the caller would move the money with nothing recording it, which " +
@@ -328,9 +328,9 @@ func TestTheSwallowingPostStillSwallowsAndTheStrictOneDoesNot(t *testing.T) {
 
 	// A nil logger-free service with no ledger: the swallow path logs and returns.
 	bare := &PaymentService{}
-	bare.postLedger(t.Context(), nil, spec) // must not panic
+	bare.postLedger(t.Context(), &permissiveQuerier{}, spec) // must not panic
 
-	if err := svc.postLedgerStrict(t.Context(), nil, spec); err == nil {
+	if err := svc.postLedgerStrict(t.Context(), &permissiveQuerier{}, spec); err == nil {
 		t.Error("the strict path swallowed a posting failure; the two helpers are " +
 			"then the same function and the strict one is a name with no behaviour")
 	}
