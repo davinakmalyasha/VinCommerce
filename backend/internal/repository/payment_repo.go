@@ -1469,3 +1469,298 @@ func (r *PaymentRepository) ActiveFeeTx(ctx context.Context, q Querier) (*Platfo
 		Scan(&f.ID, &f.Pct, &f.Fixed, &f.IsActive, &f.UpdatedAt)
 	return &f, err
 }
+
+// ===========================================================================
+// Payout batches
+// ===========================================================================
+//
+// A batch GROUPS pending withdrawals so an operator can approve one day's worth
+// and hand the bank a single remittance file. It does NOT pay anything.
+//
+// WHAT A BATCH MUST NEVER DO, and this is the whole design:
+//
+// It must never write `payouts.status`.
+//
+// `PayoutForUpdate`, `MarkPayoutSentTx` and `MarkPayoutFailedTx` ALL predicate on
+// `WHERE ... AND status = 'pending'`. A batch that claimed its rows into
+// `processing` would make them un-settleable AND un-failable at once, and their
+// `seller_pending` balance -- credited when the withdrawal was requested, debited
+// only by `payoutSettledEntries` or `payoutFailedEntries` -- would be stranded with
+// no path back. The `payout` reservation would never be released either. There is
+// no repair for that in the codebase.
+//
+// So `processing` and `cancelled` are legal values in the CHECK and are deliberately
+// never written. The batch's own `status` (`draft`/`approved`/...) is the batch's
+// state; the payout's state is untouched until an operator settles it through the
+// existing per-payout endpoint.
+//
+// A test asserts that no statement in this file writes `payouts.status` other than
+// the two existing transitions. That is the constraint that keeps a batch safe, and
+// it is stated as a DB guarantee rather than left to the next reader's caution.
+
+// PayoutBatch is one grouped run of withdrawals.
+type PayoutBatch struct {
+	ID         string
+	BatchRef   string
+	CutoffAt   time.Time
+	Status     string
+	Total      float64
+	ItemCount  int
+	LagDays    int
+	ApprovedBy string
+	ApprovedAt *time.Time
+	PaidAt     *time.Time
+	Note       string
+	CreatedAt  time.Time
+}
+
+// Payout batch statuses, aliased from the domain vocabulary.
+const (
+	PayoutBatchDraft     = "draft"
+	PayoutBatchApproved  = "approved"
+	PayoutBatchSubmitted = "submitted"
+	PayoutBatchPaid      = "paid"
+	PayoutBatchFailed    = "failed"
+	PayoutBatchCancelled = "cancelled"
+)
+
+// CreatePayoutBatch records the batch's receipt and returns its id.
+//
+// Idempotent on `batch_ref`, like `RecordSettlement` and `BeginSettlementImport`:
+// a retried run must find the ORIGINAL batch rather than create a second one for the
+// same cutoff, which would group the same payouts twice. The caller is told which
+// happened by `created`, because "I made a batch" and "a batch was already there"
+// are different things to log.
+func (r *PaymentRepository) CreatePayoutBatch(
+	ctx context.Context, q Querier, ref string, cutoffAt time.Time, lagDays int, note string,
+) (id string, created bool, err error) {
+	if strings.TrimSpace(ref) == "" {
+		return "", false, domain.E(domain.KindInvalid, "PAYOUT_BATCH_REF_REQUIRED",
+			"a payout batch needs a reference; it is the receipt that makes the run "+
+				"re-runnable without grouping the same withdrawals twice")
+	}
+	err = q.QueryRow(ctx, `
+		INSERT INTO payout_batches (batch_ref, cutoff_at, lag_days, status, note)
+		VALUES ($1, $2, $3, 'draft', NULLIF($4, ''))
+		ON CONFLICT (batch_ref) WHERE batch_ref IS NOT NULL DO NOTHING
+		RETURNING id::text`, ref, cutoffAt, lagDays, note).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := q.QueryRow(ctx,
+			`SELECT id::text FROM payout_batches WHERE batch_ref = $1`, ref).Scan(&id); err != nil {
+			return "", false, err
+		}
+		return id, false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+// UngroupedPayouts lists the withdrawals a batch may claim: pending, inside the
+// cutoff, and not already an item of a batch that still stands.
+//
+// The NOT EXISTS is the claim. It is in the SELECT rather than trusted to the
+// caller, because a batch run and a concurrent operator action are exactly the pair
+// that would otherwise both decide "ungrouped" and both insert.
+//
+// Deliberately no `FOR UPDATE`: the caller inserts into `payout_batch_items`, and
+// the unique index from 00049 on (payout_id) is what actually prevents a duplicate
+// when two runs race. Locking here would hold the intent lock across a long
+// grouping insert for no benefit the index does not already provide.
+func (r *PaymentRepository) UngroupedPayouts(
+	ctx context.Context, q Querier, cutoffAt time.Time, limit int,
+) ([]*AdminPayout, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := q.Query(ctx, `
+		SELECT p.id::text, p.wallet_id::text, p.amount::float8, p.status,
+		       COALESCE(p.gateway_ref,''), COALESCE(p.bank_name,''),
+		       COALESCE(p.bank_account,''), p.requested_at, p.processed_at
+		  FROM payouts p
+		 WHERE p.status = 'pending'
+		   AND p.requested_at <= $1
+		   AND NOT EXISTS (
+		       SELECT 1 FROM payout_batch_items i
+		         JOIN payout_batches b ON b.id = i.batch_id
+		        WHERE i.payout_id = p.id
+		          AND b.status <> 'cancelled'
+		   )
+		 ORDER BY p.requested_at ASC
+		 LIMIT $2`, cutoffAt, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*AdminPayout{}
+	for rows.Next() {
+		var p AdminPayout
+		if err := rows.Scan(&p.ID, &p.WalletID, &p.Amount, &p.Status,
+			&p.GatewayRef, &p.BankName, &p.BankAccount, &p.RequestedAt, &p.ProcessedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &p)
+	}
+	return out, rows.Err()
+}
+
+// AddPayoutBatchItems groups withdrawals into a batch and returns how many were
+// actually added.
+//
+// `ON CONFLICT (batch_id, payout_id) DO NOTHING` plus `RETURNING`: a row means this
+// call grouped it, no row means it was already there. The count is what the worker
+// logs, and it is the difference between "a batch with 40 items" and "a batch with
+// 40 items that were already counted" -- reporting the attempted number would make a
+// re-run look like it did work.
+func (r *PaymentRepository) AddPayoutBatchItems(
+	ctx context.Context, q Querier, batchID string, items []*AdminPayout,
+) (int, error) {
+	added := 0
+	for _, p := range items {
+		tag, err := q.Exec(ctx, `
+			INSERT INTO payout_batch_items (batch_id, payout_id, seller_id, amount, status)
+			VALUES ($1, $2::uuid, $3::uuid, $4, 'pending')
+			ON CONFLICT (batch_id, payout_id) DO NOTHING`,
+			batchID, p.ID, p.WalletID, p.Amount)
+		if err != nil {
+			return added, err
+		}
+		if tag.RowsAffected() > 0 {
+			added++
+		}
+	}
+	return added, nil
+}
+
+// RecountPayoutBatch refreshes the cached totals after items change.
+//
+// Recomputed from the ITEMS rather than incremented by the caller, because an
+// incremental counter and the rows can disagree after a retried run, and a
+// `total` that disagrees with its own items is a number an operator will trust in
+// the approval step and be wrong by.
+func (r *PaymentRepository) RecountPayoutBatch(ctx context.Context, q Querier, batchID string) error {
+	_, err := q.Exec(ctx, `
+		UPDATE payout_batches b
+		   SET total = COALESCE(agg.sum, 0),
+		       item_count = COALESCE(agg.n, 0)
+		  FROM (
+		      SELECT batch_id, SUM(amount) AS sum, COUNT(*) AS n
+		        FROM payout_batch_items WHERE batch_id = $1 GROUP BY batch_id
+		  ) agg
+		 WHERE b.id = $1::uuid`, batchID)
+	return err
+}
+
+// ApprovePayoutBatchTx moves a draft batch to approved, recording who and when.
+//
+// Guarded on `status = 'draft'`, so approving twice is a conflict rather than a
+// second approval. It touches ONLY the batch. `payouts` is not read and not written
+// -- see the section comment above.
+func (r *PaymentRepository) ApprovePayoutBatchTx(
+	ctx context.Context, q Querier, batchID, approvedBy string,
+) (int, string, error) {
+	var (
+		status    string
+		itemCount int
+	)
+	err := q.QueryRow(ctx, `
+		UPDATE payout_batches
+		   SET status = 'approved', approved_by = $2::uuid, approved_at = now()
+		 WHERE id = $1::uuid AND status = 'draft'
+		RETURNING status, item_count`, batchID, approvedBy).Scan(&status, &itemCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", domain.E(domain.KindConflict, "PAYOUT_BATCH_NOT_DRAFT",
+			"this batch is not a draft, so it cannot be approved; a batch that is "+
+				"already approved does not need approving twice")
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return itemCount, status, nil
+}
+
+// PayoutBatchByID reads one batch.
+func (r *PaymentRepository) PayoutBatchByID(ctx context.Context, q Querier, batchID string) (*PayoutBatch, error) {
+	var b PayoutBatch
+	err := q.QueryRow(ctx, `
+		SELECT id::text, COALESCE(batch_ref,''), cutoff_at, status, total::float8,
+		       item_count, lag_days, COALESCE(approved_by::text,''), approved_at,
+		       paid_at, COALESCE(note,''), created_at
+		  FROM payout_batches WHERE id = $1::uuid`, batchID).
+		Scan(&b.ID, &b.BatchRef, &b.CutoffAt, &b.Status, &b.Total, &b.ItemCount,
+			&b.LagDays, &b.ApprovedBy, &b.ApprovedAt, &b.PaidAt, &b.Note, &b.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// PayoutBatches lists batches newest first. Empty status means all.
+func (r *PaymentRepository) PayoutBatches(ctx context.Context, q Querier, status string, limit int) ([]*PayoutBatch, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id::text, COALESCE(batch_ref,''), cutoff_at, status, total::float8,
+		       item_count, lag_days, COALESCE(approved_by::text,''), approved_at,
+		       paid_at, COALESCE(note,''), created_at
+		  FROM payout_batches
+		 WHERE ($1::varchar = '' OR status = $1::varchar)
+		 ORDER BY cutoff_at DESC, created_at DESC
+		 LIMIT $2`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*PayoutBatch{}
+	for rows.Next() {
+		var b PayoutBatch
+		if err := rows.Scan(&b.ID, &b.BatchRef, &b.CutoffAt, &b.Status, &b.Total,
+			&b.ItemCount, &b.LagDays, &b.ApprovedBy, &b.ApprovedAt, &b.PaidAt,
+			&b.Note, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &b)
+	}
+	return out, rows.Err()
+}
+
+// PayoutBatchRemittance lists the rows a remittance file is built from, with the
+// bank details the file needs.
+//
+// Ordered by seller then payout so two exports of the same batch are byte-identical,
+// which is what makes one of them auditable against the other. A remittance file
+// whose order depends on a plan choice is a file nobody can diff.
+func (r *PaymentRepository) PayoutBatchRemittance(
+	ctx context.Context, q Querier, batchID string,
+) ([]*AdminPayout, error) {
+	rows, err := q.Query(ctx, `
+		SELECT p.id::text, p.wallet_id::text, i.amount::float8, i.status,
+		       COALESCE(p.gateway_ref,''), COALESCE(p.bank_name,''),
+		       COALESCE(p.bank_account,''), p.requested_at, NULL::timestamptz
+		  FROM payout_batch_items i
+		  JOIN payouts p ON p.id = i.payout_id
+		 WHERE i.batch_id = $1::uuid
+		 ORDER BY p.wallet_id, p.requested_at, p.id`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*AdminPayout{}
+	for rows.Next() {
+		var p AdminPayout
+		if err := rows.Scan(&p.ID, &p.WalletID, &p.Amount, &p.Status,
+			&p.GatewayRef, &p.BankName, &p.BankAccount, &p.RequestedAt, &p.ProcessedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &p)
+	}
+	return out, rows.Err()
+}

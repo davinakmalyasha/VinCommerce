@@ -441,6 +441,65 @@ func main() {
 			old:   "\treturn s.stores.SetPayoutLagDays(ctx, store.OwnerID, days)",
 			new:   "\t_ = store\n\treturn s.stores.SetPayoutLagDays(ctx, storeID, days)",
 		},
+		{
+			// A batch that claims its rows out of `pending` makes them un-settleable
+			// AND un-failable at once, because PayoutForUpdate, MarkPayoutSentTx and
+			// MarkPayoutFailedTx all require status = 'pending'. Their
+			// seller_pending balance is credited on request and debited only by the
+			// two settlement helpers, so it would be stranded with no path back and
+			// no repair anywhere in the codebase.
+			label: "M35: the batch claim let a payout already sit in a live batch",
+			file:  repoFile,
+			old:   "AND NOT EXISTS (\n\t\t\t       SELECT 1 FROM payout_batch_items i",
+			new:   "AND true OR NOT EXISTS (\n\t\t\t       SELECT 1 FROM payout_batch_items i",
+		},
+		{
+			// A CANCELLED batch must release its withdrawals. Treating it as live
+			// strands every payout in it: it can never be batched again, so the money
+			// is withdrawable by the seller but never payable by the operator. Safe,
+			// and permanent.
+			label: "M36: a cancelled batch still held its claim on the payouts",
+			file:  repoFile,
+			old:   "\t\t          AND b.status <> 'cancelled'",
+			new:   "\t\t          AND b.status IS NOT NULL",
+		},
+		{
+			// Without ON CONFLICT, a retried daily run creates a SECOND batch for
+			// the same cutoff and groups the same withdrawals into it -- two remittance
+			// files, two bank runs, one payment paid twice. This is the
+			// settlement_imports lesson from ff15503, restated in 00044:27-34.
+			label: "M37: the batch run was not idempotent, so a retry paid twice",
+			file:  repoFile,
+			old:   "ON CONFLICT (batch_ref) WHERE batch_ref IS NOT NULL DO NOTHING",
+			new:   "ON CONFLICT DO NOTHING",
+		},
+		{
+			// An empty batch is not approvable: the record would claim an operator
+			// reviewed a file with no rows in it.
+			label: "M38: an empty batch could be approved as though it were reviewed",
+			file:  svcFile,
+			old:   "\tif items == 0 {\n\t\treturn 0, domain.E(domain.KindConflict, \"PAYOUT_BATCH_EMPTY\"",
+			new:   "\tif false {\n\t\treturn 0, domain.E(domain.KindConflict, \"PAYOUT_BATCH_EMPTY\"",
+		},
+		{
+			// The remittance file IS the instruction to move money. Generated from a
+			// draft, the daily unattended batch run would produce a payment
+			// instruction nobody looked at, and the approval would be the only thing
+			// that could ever stop it.
+			label: "M39: an unapproved batch produced a payment instruction",
+			file:  svcFile,
+			old:   "\tif batch.Status != repository.PayoutBatchApproved &&",
+			new:   "\tif false && batch.Status != repository.PayoutBatchApproved &&",
+		},
+		{
+			// An incremental counter and the rows disagree after a retried run, and
+			// the operator approves the number. Deriving it from the rows means the
+			// two cannot drift.
+			label: "M40: the batch total was incremented rather than recounted",
+			file:  repoFile,
+			old:   "\t\t   SET total = COALESCE(agg.sum, 0),",
+			new:   "\t\t   SET total = COALESCE(agg.sum, 0) + 1,",
+		},
 	}
 
 	caught, missed := 0, 0

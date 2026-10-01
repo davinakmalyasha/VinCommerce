@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1939,4 +1941,218 @@ func (s *PaymentService) SignWebhook(payload []byte) string {
 		}
 	}
 	return ""
+}
+
+// PayoutBatchView is the batch as the API exposes it.
+//
+// It exists so `internal/httpapi/handler` never imports `internal/repository`: the
+// import-boundary check rejects that outright, and rightly -- seo.go and
+// admin_ops.go both did it and were paid for it. The repository row is the storage
+// shape; this is the wire shape, and the two are allowed to drift.
+type PayoutBatchView struct {
+	ID        string  `json:"id"`
+	BatchRef  string  `json:"batch_ref,omitempty"`
+	Status    string  `json:"status"`
+	LagDays   int     `json:"lag_days"`
+	CutoffAt  string  `json:"cutoff_at"`
+	Total     float64 `json:"total"`
+	ItemCount int     `json:"item_count"`
+	CreatedAt string  `json:"created_at"`
+}
+
+func payoutBatchView(b *repository.PayoutBatch) PayoutBatchView {
+	return PayoutBatchView{
+		ID:        b.ID,
+		BatchRef:  b.BatchRef,
+		Status:    b.Status,
+		LagDays:   b.LagDays,
+		CutoffAt:  b.CutoffAt.UTC().Format(time.RFC3339),
+		Total:     b.Total,
+		ItemCount: b.ItemCount,
+		CreatedAt: b.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// BuildPayoutBatch groups the withdrawals that are old enough into a batch.
+//
+// It GROUPS. It does not pay, and it must never write `payouts.status` -- see the
+// section comment above the repository's batch methods for why claiming a row out
+// of `pending` strands its `seller_pending` balance with no repair.
+//
+// Returns the batch and how many withdrawals it newly grouped. `created` is false
+// when the receipt already existed, which is the normal result of a retried run and
+// the reason the worker logs it rather than treating it as an error.
+func (s *PaymentService) BuildPayoutBatch(
+	ctx context.Context, lagDays int, cutoff time.Time, limit int,
+) (PayoutBatchView, int, bool, error) {
+	if lagDays < MinPayoutLagDays || lagDays > MaxPayoutLagDays {
+		return PayoutBatchView{}, 0, false, domain.E(domain.KindInvalid, "PAYOUT_LAG_OUT_OF_RANGE",
+			fmt.Sprintf("a batch lag of %d days is outside the supported range of %d to %d",
+				lagDays, MinPayoutLagDays, MaxPayoutLagDays))
+	}
+	if cutoff.IsZero() {
+		cutoff = time.Now().UTC()
+	}
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	// The receipt. Keyed on the lag AND the cutoff day, so a T+2 and a T+7 batch
+	// for the same day are different batches rather than fighting over one ref, and
+	// so a retried run finds its own.
+	ref := fmt.Sprintf("payouts:%d:%s", lagDays, cutoff.UTC().Format("2006-01-02"))
+	batchID, created, err := s.payments.CreatePayoutBatch(ctx, q, ref, cutoff, lagDays,
+		fmt.Sprintf("T+%d payout batch", lagDays))
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+
+	// A batch that already exists and is no longer a DRAFT must not be topped up.
+	// Its contents were approved as a set, and silently adding another withdrawal to
+	// an approved batch would change what was approved.
+	batch, err := s.payments.PayoutBatchByID(ctx, q, batchID)
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	if batch.Status != repository.PayoutBatchDraft {
+		return payoutBatchView(batch), batch.ItemCount, created, nil
+	}
+
+	// Only withdrawals older than the lag. `created_at` is the request time, which
+	// is the moment the money left the seller's balance -- not `requested_at`, which
+	// is the same column here but is NOT the same thing for an order placed before
+	// a KYC check delayed the payout request.
+	eligibleCutoff := cutoff.AddDate(0, 0, -lagDays)
+	candidates, err := s.payments.UngroupedPayouts(ctx, q, eligibleCutoff, limit)
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	added, err := s.payments.AddPayoutBatchItems(ctx, q, batchID, candidates)
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	if err := s.payments.RecountPayoutBatch(ctx, q, batchID); err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+
+	batch, err = s.payments.PayoutBatchByID(ctx, s.payments.Pool(), batchID)
+	if err != nil {
+		return PayoutBatchView{}, 0, false, err
+	}
+	return payoutBatchView(batch), added, created, nil
+}
+
+// ApprovePayoutBatch records an operator's approval of a batch.
+//
+// It approves the GROUPING, not the money. Every withdrawal inside is still settled
+// individually through the existing admin endpoint, because that is where the
+// transfer reference and the failure handling live -- and because a batch that could
+// settle would have to move money it does not know how to move.
+func (s *PaymentService) ApprovePayoutBatch(ctx context.Context, batchID, approvedBy string) (int, error) {
+	if approvedBy == "" {
+		return 0, domain.E(domain.KindInvalid, "PAYOUT_BATCH_APPROVER_REQUIRED",
+			"a batch approval records who approved it; without that the approval is "+
+				"not an audit trail")
+	}
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	items, status, err := s.payments.ApprovePayoutBatchTx(ctx, q, batchID, approvedBy)
+	if err != nil {
+		return 0, err
+	}
+	// An approval of an empty batch approves nothing and says so, rather than
+	// recording an operator having reviewed a file with no rows in it.
+	if items == 0 {
+		return 0, domain.E(domain.KindConflict, "PAYOUT_BATCH_EMPTY",
+			"this batch has no withdrawals in it, so there is nothing to approve; "+
+				"it may be an operator running the job before any payout is due")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	_ = status
+	return items, nil
+}
+
+// PayoutBatches lists batches for the operator queue.
+func (s *PaymentService) PayoutBatches(ctx context.Context, status string, limit int) ([]PayoutBatchView, error) {
+	batches, err := s.payments.PayoutBatches(ctx, s.payments.Pool(), status, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PayoutBatchView, 0, len(batches))
+	for _, b := range batches {
+		out = append(out, payoutBatchView(b))
+	}
+	return out, nil
+}
+
+// PayoutRemittanceCSV builds the file an operator hands the bank.
+//
+// REFUSES AN UNAPPROVED BATCH. The file IS the instruction to move money, and
+// generating it from a draft means a batch run -- which happens daily, unattended --
+// produces a payment instruction nobody looked at. The approval is the only thing
+// standing between a scheduled job and an outbound transfer.
+//
+// And it does not settle anything. The file is an instruction a human executes; the
+// actual state change is `ProcessPayout`, per payout, with a real transfer
+// reference.
+func (s *PaymentService) PayoutRemittanceCSV(ctx context.Context, batchID string) ([]byte, error) {
+	batch, err := s.payments.PayoutBatchByID(ctx, s.payments.Pool(), batchID)
+	if err != nil {
+		return nil, err
+	}
+	if batch.Status != repository.PayoutBatchApproved &&
+		batch.Status != repository.PayoutBatchSubmitted &&
+		batch.Status != repository.PayoutBatchPaid {
+		return nil, domain.E(domain.KindConflict, "PAYOUT_BATCH_NOT_APPROVED",
+			"this batch is "+batch.Status+", so it has not been approved and must not "+
+				"be turned into a payment instruction")
+	}
+
+	rows, err := s.payments.PayoutBatchRemittance(ctx, s.payments.Pool(), batchID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, domain.E(domain.KindConflict, "PAYOUT_BATCH_EMPTY",
+			"this batch has no withdrawals in it, so there is nothing to remit")
+	}
+
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	// The header names the amount as IDR and the file carries the batch ref, so a
+	// bank that receives two files can tell them apart without asking.
+	if err := w.Write([]string{
+		"batch_ref", "payout_id", "seller_id", "bank_name", "bank_account",
+		"amount_idr", "requested_at",
+	}); err != nil {
+		return nil, err
+	}
+	for _, p := range rows {
+		if err := w.Write([]string{
+			batch.BatchRef, p.ID, p.WalletID, p.BankName, p.BankAccount,
+			strconv.FormatFloat(p.Amount, 'f', 0, 64),
+			p.RequestedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			return nil, err
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

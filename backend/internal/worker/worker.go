@@ -54,6 +54,16 @@ const (
 	// This is the fraud control made real: a seller cannot withdraw a balance a
 	// return is about to reverse, because the money has not left yet.
 	TaskReleasePayoutReservations = "payouts:release_reservations"
+
+	// TaskBuildPayoutBatches groups the withdrawals that have passed their lag into a
+	// batch an operator can approve and remit.
+	//
+	// It GROUPS and nothing else. It does not approve, it does not settle, and it must
+	// never write payouts.status -- see the repository's batch section for why that
+	// strands a seller_pending balance with no repair. An unattended job that produced a
+	// payment instruction would be a scheduled outbound transfer, so the batch stays
+	// DRAFT until a person approves it.
+	TaskBuildPayoutBatches = "payouts:build_batches"
 )
 
 // Deps is everything the worker needs.
@@ -192,6 +202,7 @@ func jobSpecs(d Deps) []jobSpec {
 		// so a backlog in `low` is a queue of sellers whose balance is not yet
 		// withdrawable.
 		{"@hourly", TaskReleasePayoutReservations, "default", 3 * time.Hour},
+		{"@daily", TaskBuildPayoutBatches, "default", 25 * time.Hour},
 	}
 
 	// A job whose service is absent is dropped rather than registered against a
@@ -284,6 +295,8 @@ func New(d Deps) (*Server, error) {
 			mux.HandleFunc(TaskReconcileSettlements, withTimeout(reconcileSettlementsHandler(d.Payment, logger)))
 			mux.HandleFunc(TaskReleasePayoutReservations,
 				withTimeout(releasePayoutReservationsHandler(d.Payment, logger)))
+			mux.HandleFunc(TaskBuildPayoutBatches,
+				withTimeout(buildPayoutBatchesHandler(d.Payment, logger)))
 		}
 	} else {
 		logger.Warn("ledger not wired: the derived balance caches will never be " +
@@ -763,6 +776,36 @@ func releasePayoutReservationsHandler(pay *service.PaymentService, logger *slog.
 			return nil
 		}
 		logger.Info("released seller holds", "released", released, "lag_days", pay.PayoutLagDays())
+		return nil
+	}
+}
+
+// buildPayoutBatchesHandler groups due withdrawals into a DRAFT batch.
+//
+// Daily, and the receipt means a retry finds the batch it already made rather than
+// creating a second one for the same day -- the same lesson as settlement_imports
+// and as the refund replay lookup.
+func buildPayoutBatchesHandler(pay *service.PaymentService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, _ *asynq.Task) error {
+		lag := pay.PayoutLagDays()
+		batch, added, created, err := pay.BuildPayoutBatch(ctx, lag, time.Time{}, 1000)
+		if err != nil {
+			return err
+		}
+		if added == 0 {
+			// Zero is the normal steady state, and `created` distinguishes "there
+			// is nothing due yet" from "I already built this one" -- an operator
+			// reading only the count would otherwise find an empty batch with no
+			// stated reason for it.
+			logger.Info("no payouts were due for batching",
+				"batch_id", batch.ID, "status", batch.Status,
+				"created", created, "lag_days", lag)
+			return nil
+		}
+		logger.Info("grouped payouts into a draft batch",
+			"batch_id", batch.ID, "batch_ref", batch.BatchRef,
+			"grouped", added, "items", batch.ItemCount,
+			"total", batch.Total, "lag_days", lag, "created", created)
 		return nil
 	}
 }

@@ -218,3 +218,126 @@ func TestThePayoutLagRangeRefusesTheValuesThatWouldDefeatTheHold(t *testing.T) {
 			"never takes effect", body)
 	}
 }
+
+// A remittance file IS the instruction to move money, and it must require approval.
+//
+// Generated from a draft, a daily unattended batch run would produce a payment
+// instruction nobody looked at -- the approval is the only thing standing between a
+// scheduled job and an outbound transfer. This asserts the refusal exists, because
+// "the operator is supposed to check first" is not a control.
+func TestARemittanceFileRequiresAnApprovedBatch(t *testing.T) {
+	body := functionSource(t, "payment_service.go", "PayoutRemittanceCSV")
+
+	if !strings.Contains(body, "PAYOUT_BATCH_NOT_APPROVED") {
+		t.Errorf("an unapproved batch produces a payment instruction:\n%s\n"+
+			"the file IS the instruction to move money, and the batch run is daily "+
+			"and unattended", body)
+	}
+	// The GUARD, not the error code. Asserting that "PAYOUT_BATCH_NOT_APPROVED"
+	// appears in the body passes just as well on `if false &&` -- the message is
+	// still sitting there in dead code. That is a false pass, and it is precisely
+	// the shape of the 690cec8 harness bug this project keeps re-learning, so the
+	// condition that REACHES the refusal is what is asserted.
+	if !strings.Contains(body, "if batch.Status != repository.PayoutBatchApproved") {
+		t.Errorf("the refusal is not reached, so a draft batch still exports:\n%s\n"+
+			"an error code inside `if false` is not a control", body)
+	}
+	// Every settled state is acceptable, not only `approved`: a batch that has
+	// already been submitted or paid must still be exportable for the bank's
+	// acknowledgement, and refusing would leave an operator unable to prove a
+	// transfer happened.
+	for _, ok := range []string{"PayoutBatchApproved", "PayoutBatchSubmitted", "PayoutBatchPaid"} {
+		if !strings.Contains(body, ok) {
+			t.Errorf("%s does not accept a %s batch for export:\n%s\n"+
+				"a bank that asks for the file after paying must be able to produce it",
+				"PayoutRemittanceCSV", ok, body)
+		}
+	}
+	// And it must not settle anything while exporting.
+	for _, forbidden := range []string{"MarkPayoutSentTx", "MarkPayoutFailedTx", "postPayoutSettled"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("the export settles payouts (%s):\n%s\n"+
+				"the file is an instruction a human executes; the state change is "+
+				"ProcessPayout, per payout, with a real transfer reference",
+				forbidden, body)
+		}
+	}
+}
+
+// An empty batch is not approvable. An operator approving a file with no rows in it
+// is being asked to review nothing, and the approval record would claim otherwise.
+func TestAnEmptyBatchCannotBeApproved(t *testing.T) {
+	body := functionSource(t, "payment_service.go", "ApprovePayoutBatch")
+	// The CONDITION, for the same reason as M39: the error code survives in dead
+	// code, so asserting its presence proves nothing about whether the refusal can
+	// ever fire.
+	if !strings.Contains(body, "if items == 0 {") {
+		t.Errorf("an empty batch is approvable:\n%s\n"+
+			"the record would say an operator approved a batch of zero withdrawals. "+
+			"(Asserting the error code instead of this condition passes on `if "+
+			"false` -- see M39)", body)
+	}
+	// And the guard must run BEFORE the commit, or the tx rolls the refusal back.
+	commit := strings.Index(body, "tx.Commit(ctx)")
+	guard := strings.Index(body, "if items == 0 {")
+	if guard < 0 || commit < 0 || guard > commit {
+		t.Errorf("the empty-batch guard does not precede the commit:\n%s\n"+
+			"a guard after the commit is a guard that does not stop anything", body)
+	}
+	// And the approver must be recorded, or the approval is not an audit trail.
+	if !strings.Contains(body, "PAYOUT_BATCH_APPROVER_REQUIRED") {
+		t.Errorf("a batch can be approved with nobody recorded as approving it:\n%s", body)
+	}
+	// A re-run must not top up a batch that is past draft: its contents were
+	// approved as a set.
+	build := functionSource(t, "payment_service.go", "BuildPayoutBatch")
+	if !strings.Contains(build, "PayoutBatchDraft") {
+		t.Errorf("a batch run does not check the batch is still a draft:\n%s\n"+
+			"adding a withdrawal to an approved batch changes what was approved, and "+
+			"the operator approved a different set", build)
+	}
+}
+
+// Payout batch endpoints. The route strings must exist and must sit behind the
+// admin guard: a remittance file is a list of where to send real bank transfers,
+// and a batch approval is an operator recording that they reviewed one.
+func TestPayoutBatchRoutesAreRegisteredInsideTheAdminGuard(t *testing.T) {
+	src, err := os.ReadFile(filepathJoin("..", "httpapi", "router.go"))
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+	body := string(src)
+
+	for _, want := range []string{
+		`r.Get("/payout-batches", wallet.PayoutBatches)`,
+		`r.Post("/payout-batches/build", wallet.BuildPayoutBatch)`,
+		`r.Post("/payout-batches/{id}/approve", wallet.ApprovePayoutBatch)`,
+		`r.Get("/payout-batches/{id}/remittance.csv", wallet.PayoutRemittance)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("router.go does not register %s", want)
+		}
+	}
+
+	// Bounded by the admin group rather than searched globally: a route string
+	// appearing anywhere is not evidence it is behind the guard.
+	start := strings.Index(body, `r.Route("/admin"`)
+	if start < 0 {
+		t.Fatal("no /admin group in router.go")
+	}
+	admin := body[start:]
+	for _, guard := range []string{"payout-batches", "payout-lag"} {
+		if !strings.Contains(admin, guard) {
+			t.Errorf("%q is not inside the /admin group", guard)
+		}
+	}
+	// And nothing batch-related may appear in the seller group.
+	if s := strings.Index(body, `r.Route("/seller"`); s >= 0 {
+		if end := strings.Index(body[s:], "\n\t\tr.Route("); end > 0 {
+			if strings.Contains(body[s:s+end], "payout") {
+				t.Error("a payout-related route appears inside the /seller group; " +
+					"batching and remittance are operator actions")
+			}
+		}
+	}
+}

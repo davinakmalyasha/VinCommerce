@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vincommerce/backend/internal/domain"
@@ -246,4 +247,103 @@ func (h *Wallet) ProcessPayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"processed": true})
+}
+
+// PayoutBatches handles GET /admin/payout-batches?status=draft.
+//
+// Rejects an unknown status rather than returning an empty list, for the reason
+// `Refunds` does: an empty list and a misspelled filter look identical, and an
+// operator's conclusion from "no batches" would be wrong.
+func (h *Wallet) PayoutBatches(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	if status != "" && !validPayoutBatchStatus(status) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_STATUS",
+			"status must be one of draft, approved, submitted, paid, failed, cancelled"))
+		return
+	}
+	batches, err := h.svc.PayoutBatches(r.Context(), status, intQuery(r.URL.Query().Get("limit"), 100))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	out := make([]service.PayoutBatchView, 0, len(batches))
+	out = append(out, batches...)
+	writeJSON(w, http.StatusOK, map[string]any{"batches": out})
+}
+
+// BuildPayoutBatch handles POST /admin/payout-batches/build.
+//
+// Exposed as an endpoint as well as a scheduled job, because an operator building a
+// batch on demand before a bank cut-off is the normal case and waiting for the daily
+// run is not something anyone should have to do.
+//
+// `lag_days` defaults to the seller's platform lag rather than to 7: an operator
+// pressing this button means "batch what is due", and the due date is whatever the
+// configured lag says.
+func (h *Wallet) BuildPayoutBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LagDays int `json:"lag_days,omitempty"`
+		Limit   int `json:"limit,omitempty"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if req.LagDays == 0 {
+		req.LagDays = h.svc.PayoutLagDays()
+	}
+	batch, added, created, err := h.svc.BuildPayoutBatch(r.Context(), req.LagDays,
+		time.Time{}, req.Limit)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	// `created` is reported rather than hidden: "I built a batch" and "one was
+	// already there for this day" are different things for an operator to know.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"batch":   batch,
+		"added":   added,
+		"created": created,
+	})
+}
+
+// ApprovePayoutBatch handles POST /admin/payout-batches/{id}/approve.
+//
+// The approver is the ADMIN who clicked, not a body field. An approval whose
+// subject can be chosen by the client is not an audit trail -- and the admin guard
+// has already established who is calling.
+func (h *Wallet) ApprovePayoutBatch(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	items, err := h.svc.ApprovePayoutBatch(r.Context(), chi.URLParam(r, "id"), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approved": true, "items": items})
+}
+
+// PayoutRemittance handles GET /admin/payout-batches/{id}/remittance.csv.
+//
+// Served as a download rather than as JSON, because its consumer is a person
+// uploading it to a bank portal -- and it is refused for an unapproved batch, so an
+// unattended job cannot produce a payment instruction.
+func (h *Wallet) PayoutRemittance(w http.ResponseWriter, r *http.Request) {
+	csvBytes, err := h.svc.PayoutRemittanceCSV(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename=%q", "payout-remittance-"+chi.URLParam(r, "id")+".csv"))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(csvBytes)
+}
+
+func validPayoutBatchStatus(s string) bool {
+	switch s {
+	case "draft", "approved", "submitted", "paid", "failed", "cancelled":
+		return true
+	}
+	return false
 }

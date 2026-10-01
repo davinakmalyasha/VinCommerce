@@ -589,10 +589,38 @@ they would cost you in a real deployment.
    repository methods that used to do this in their own transaction are **deleted**,
    not deprecated, because a repository cannot reach the ledger and a caller using
    them would move money with no accounting record and no way to add one.
-   *Still open: the batch run itself, and the per-seller override. `payout_batches`
-   and `payout_batch_items` exist but nothing writes them, so there is no T+2/T+7
-   grouping of withdrawals and no remittance file. A COD hold is also still
-   unwritten — the release job knows how to release one, but nothing takes it yet.*
+   **[closed] The batch run, and the remittance file.** `payout_batches` and
+   `payout_batch_items` existed since 00043 with zero Go references. They now have
+   a daily `TaskBuildPayoutBatches` run that groups the withdrawals past their lag
+   into a **draft**, `POST /admin/payout-batches/{id}/approve` records an operator's
+   approval, and `GET /admin/payout-batches/{id}/remittance.csv` produces the file
+   the bank consumes.
+   **A batch groups and never pays.** It must not write `payouts.status`, because
+   `PayoutForUpdate`, `MarkPayoutSentTx` and `MarkPayoutFailedTx` all require
+   `status = 'pending'`: a batch that claimed its rows into `processing` would make
+   them un-settleable *and* un-failable at once, stranding the `seller_pending`
+   balance and the `payout` reservation with no repair in the codebase. Each
+   withdrawal is still settled individually through the existing
+   `POST /admin/payouts/{id}/process`, which is where the transfer reference and the
+   failure handling live. The remittance file **refuses an unapproved batch**: the
+   file *is* the instruction to move money, and an unattended daily job must not be
+   able to produce one.
+   Two DDL gaps in 00043 would have made the batch dangerous, so 00049 closes them.
+   `payout_batch_items` had `PRIMARY KEY (batch_id, payout_id)`, which permits the
+   same payout in two batches — a payout paid twice from two remittance files; the
+   claim is now enforced by `UngroupedPayouts`' `NOT EXISTS`, which excludes only
+   payouts in a *non-cancelled* batch so a cancelled batch releases its withdrawals.
+   And there was no receipt, so a retried run would build a second batch for the
+   same cutoff; `batch_ref` is that receipt, with the same partial unique index
+   `settlement_imports` got in ff15503 and 00044:27-34 describes.
+   *Still open, and it is the important half: nothing actually MOVES the money.* The
+   remittance file is executed by a human at a bank, and `ProcessPayout` is called
+   per payout afterwards. There is no payment-rail integration, so settlement still
+   depends on someone uploading the CSV and typing the transfer references. That is
+   a deliberate boundary, not an oversight — but it does mean `approved` batches sit
+   until a person acts, and no job notices or reports that.
+   *A COD hold is also still unwritten — the release job knows how to release one,
+   but nothing takes it yet.*
    **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
    a string constant with a comment describing the fraud control it represented, no
    handler on the mux and no entry in the schedule — so the worker started, reported
