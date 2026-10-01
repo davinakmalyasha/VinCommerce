@@ -1,0 +1,27 @@
+# Working-tree line endings are LF, always.
+#
+# `core.autocrlf=true` was set on this machine, which means Git checked files out with
+# CRLF while the repository stores LF. That is invisible in a diff and it broke a
+# build gate: `gofmt -l` reported two files as unformatted, because gofmt rewrites
+# CRLF to LF and so considers a CRLF file "not formatted".
+#
+# It also silently disabled four mutation anchors. They are Go string literals
+# containing "\n", so a multi-line anchor can never match a CRLF file -- every
+# single-line anchor still matched, every multi-line one did not, and the checker
+# reported "patch did not apply" for a file that was demonstrably clean.
+#
+# Pinning `eol=lf` makes the working tree agree with the repository and with gofmt,
+# so neither the gate nor the harness can be broken again by a checkout.
+* text=auto eol=lf
+
+# These must never be treated as text to be normalised.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.zip binary

@@ -33,3 +33,8 @@ Thumbs.db
 
 # --- Local data ---
 infra/data/
+
+# mutation-check writes a source backup here while a file is mutated, and removes it
+# after restoring. A run killed mid-test leaves both behind; the next run recovers from
+# them, so a stray copy in the tree is a bug, not a working state.
+.mutation-backup/

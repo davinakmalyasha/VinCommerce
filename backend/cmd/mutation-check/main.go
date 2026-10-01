@@ -46,7 +46,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type mutation struct {
@@ -96,6 +99,173 @@ const (
 // never performed, which is worse than being slow -- it is the 690cec8 defect and
 // the cf370f3 defect wearing a new hat.
 const allPkgs = "./..."
+
+// backupDir holds a copy of every source file while it is mutated.
+//
+// The `defer` restore in the mutation loop is not enough, and this file has been
+// bitten by that three times. `defer` fires when main RETURNS -- so a run killed
+// mid-`go test` leaves the mutation in place, and the next `go test` fails for a
+// reason that has nothing to do with the code under test. It happened three times in
+// this session, and once the leftover `if false {` was only noticed because a test
+// happened to assert on the surrounding condition.
+//
+// So the original is written to disk BEFORE the mutation and removed only after the
+// restore. That survives a SIGKILL, which a signal handler would not.
+const backupDir = ".mutation-backup"
+
+// stage backs a file up before mutating it.
+//
+// The backup keeps the path structure, so the parent directory has to be created
+// too -- the first version only made `backupDir` itself and therefore failed for
+// every file under internal/. That failure was SAFE (the mutation is refused rather
+// than applied without a backup, so the tree is never left mutated) but it skipped
+// every mutation in the suite, which is a failure that looks exactly like "all tests
+// pass" if the tally is not read carefully.
+func stage(path string, content []byte) error {
+	dest := filepath.Join(backupDir, filepath.ToSlash(path))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dest, content, 0o644)
+}
+
+// unstage clears a file's backup once it has been restored.
+func unstage(path string) {
+	_ = os.Remove(filepath.Join(backupDir, filepath.ToSlash(path)))
+}
+
+// restoreFile puts a backed-up file back and reports whether it had to.
+func restoreFile(path string) bool {
+	backup := filepath.Join(backupDir, filepath.ToSlash(path))
+	content, err := os.ReadFile(backup)
+	if err != nil {
+		return false
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return false
+	}
+	_ = os.Remove(backup)
+	return true
+}
+
+// recoverInterrupted restores anything left mutated by a killed run.
+//
+// Called at startup, BEFORE any test runs, because the alternative is that the first
+// mutation of a fresh run is judged against a tree the previous run corrupted. A
+// stale backup is reported loudly rather than applied quietly: it means a previous
+// run died, and that is worth knowing.
+func recoverInterrupted(files []string) {
+	if _, err := os.Stat(backupDir); err != nil {
+		return
+	}
+
+	// WALK, not ReadDir. The backup preserves the path structure, so the top level
+	// of backupDir contains `internal`, `cmd` -- directories. The first version used
+	// os.ReadDir and then tried to restore "internal" AS A FILE, printing
+	//
+	//     FAILED to restore internal -- remove .mutation-backup\internal manually
+	//
+	// which is both useless advice and a lie: it is a directory, and the real file
+	// underneath was still sitting mutated.
+	var stale []string
+	_ = filepath.WalkDir(backupDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(backupDir, p)
+		if rerr != nil {
+			return nil
+		}
+		stale = append(stale, filepath.FromSlash(rel))
+		return nil
+	})
+	if len(stale) == 0 {
+		return
+	}
+
+	fmt.Printf("recovering %d file(s) left mutated by an interrupted run:\n", len(stale))
+	for _, rel := range stale {
+		if restoreFile(rel) {
+			fmt.Printf("  restored %s\n", rel)
+		} else {
+			fmt.Printf("  FAILED to restore %s -- copy it back from %s manually\n",
+				rel, filepath.Join(backupDir, rel))
+		}
+	}
+	fmt.Println()
+}
+
+// installSignalGuard restores the in-flight mutation on Ctrl-C.
+//
+// This covers the polite case; stage/recover covers the impolite one. Both exist
+// because a long run WILL be interrupted -- these runs take minutes and a terminal
+// timeout is a normal thing to hit.
+func installSignalGuard() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-ch
+		if inFlight.path != "" {
+			fmt.Printf("\nreceived %s; restoring %s\n", sig, inFlight.path)
+			if restoreFile(inFlight.path) {
+				inFlight.path = ""
+			}
+		}
+		os.Exit(130)
+	}()
+}
+
+// inFlight is the file currently mutated, for the signal guard.
+var inFlight struct {
+	path string
+}
+
+// anchorFor finds the anchor in `body`, tolerating line endings, and returns the
+// form that matched.
+//
+// LINE ENDINGS SILENTLY KILLED FOUR MUTATIONS.
+//
+// The anchors are Go string literals, so they contain `\n`. A file checked out on
+// Windows with `core.autocrlf=true` contains `\r\n`. Every SINGLE-line anchor still
+// matched, and every MULTI-line anchor did not -- with no error, because the
+// checker's own "does not apply" path was a `continue` that used to print nothing
+// and then failed to be counted (3b9ce88).
+//
+// It surfaced here as "4 mutations never applied" on files that were demonstrably
+// clean: the anchor byte count matched, every line of the anchor was present in the
+// file, and only the joined form was absent. Nothing in the message said CRLF, and
+// it was my own `git checkout` -- run to undo a corrupted file -- that rewrote
+// payment_service.go from LF to CRLF and took M16, M25, M28 and M38 down with it.
+//
+// A harness that breaks on the platform's line endings is not portable, and the fix
+// is not "normalise the file": the file is fine, the comparison was wrong.
+func anchorFor(body, old string) (string, bool) {
+	if strings.Contains(body, old) {
+		return old, true
+	}
+	if !strings.Contains(body, "\r\n") {
+		return old, false
+	}
+	crlf := strings.ReplaceAll(old, "\n", "\r\n")
+	if strings.Contains(body, crlf) {
+		return crlf, true
+	}
+	return old, false
+}
+
+// lineEndings describes a file's line endings for a diagnostic.
+func lineEndings(body string) string {
+	crlf := strings.Count(body, "\r\n")
+	bare := strings.Count(body, "\n") - crlf
+	switch {
+	case crlf > 0 && bare == 0:
+		return fmt.Sprintf("CRLF (%d)", crlf)
+	case bare > 0 && crlf == 0:
+		return fmt.Sprintf("LF (%d)", bare)
+	default:
+		return fmt.Sprintf("MIXED (crlf=%d lf=%d)", crlf, bare)
+	}
+}
 
 func main() {
 	nl := "\n"
@@ -643,6 +813,9 @@ func main() {
 	// its anchor was off by one tab, and 2814c52 shipped claiming "39/39 mutations
 	// caught". It was 38 of 39. The batch claim -- the NOT EXISTS that stops a
 	// payout being in two remittance files -- had no coverage at all.
+	recoverInterrupted(mutatedFiles(muts))
+	installSignalGuard()
+
 	caught, missed, skipped := 0, 0, 0
 	for _, m := range muts {
 		orig, err := os.ReadFile(m.file)
@@ -652,27 +825,74 @@ func main() {
 			continue
 		}
 		body := string(orig)
-		if !strings.Contains(body, m.old) {
+		pat, anchored := anchorFor(body, m.old)
+		if !anchored {
 			skipped++
 			fmt.Printf("FAIL %s\n       NOT CHECKED -- the anchor does not appear in %s, so "+
 				"this mutation was never applied and proves nothing either way. An anchor "+
 				"one tab out of place is how a mutation sits unrun while the tally reads "+
 				"clean.\n", m.label, m.file)
+			// Print the anchor. Without it this failure is a guessing game: the
+			// message says the text is absent and gives no way to see which text.
+			// Four anchors drifted during F2 and the only way to find them was to
+			// read each one out of this file by hand.
+			fmt.Printf("       anchor (%d bytes): %q\n", len(m.old), truncate(m.old, 220))
+			fmt.Printf("       looking in      : %q\n", truncate(m.file, 220))
+			// The line endings. This turned out to be the cause of every one of these
+			// failures, and nothing else in the message hinted at it.
+			fmt.Printf("       file line ends  : %s\n", lineEndings(body))
+			// Say WHICH LINE diverges. Four multi-line anchors failed during F2 with
+			// a message that said only "not found", and each one turned out to be
+			// present when checked by hand -- so the byte count matched, the file was
+			// clean, and there was nothing to act on. Reporting the first line that
+			// is absent makes the failure actionable instead of a guessing game.
+			for i, line := range strings.Split(m.old, "\n") {
+				if line == "" {
+					continue
+				}
+				if !strings.Contains(body, line) {
+					fmt.Printf("       line %d absent : %q\n", i+1, truncate(line, 160))
+				}
+			}
 			continue
 		}
-		mutated := strings.Replace(body, m.old, m.new, 1)
+		// `pat` is `m.old` in the FILE's line endings, and `repl` is `m.new` in the
+		// same. Applying an LF anchor to a CRLF file would write LF lines into a CRLF
+		// file, which gofmt then rewrites and which makes the diff unreadable.
+		repl := m.new
+		if pat != m.old {
+			repl = strings.ReplaceAll(m.new, "\n", "\r\n")
+		}
+		mutated := strings.Replace(body, pat, repl, 1)
+		// Back the original up to DISK before mutating. The defer below restores on
+		// a normal return; this survives being killed.
+		if err := stage(m.file, orig); err != nil {
+			skipped++
+			fmt.Printf("FAIL %s\n       NOT CHECKED -- could not back the file up: %v\n",
+				m.label, err)
+			continue
+		}
 		if err := os.WriteFile(m.file, []byte(mutated), 0o644); err != nil {
 			skipped++
+			_ = stage(m.file, orig)
 			fmt.Printf("FAIL %s\n       NOT CHECKED -- %v\n", m.label, err)
 			continue
 		}
+		inFlight.path = m.file
 		// Restore on EVERY exit path, including a panic. Without this, a
 		// Ctrl-C mid-run leaves a mutated source file in the working tree and the
 		// next test run fails for a reason that has nothing to do with the code --
 		// which happened during development and cost a confused debugging detour.
-		defer func(path string, content []byte) {
-			_ = os.WriteFile(path, content, 0o644)
-		}(m.file, orig)
+		// Belt: restore on every normal exit path from here on. The braces are
+		// deliberate -- `defer` inside a loop body registers on the FUNCTION, so it
+		// does not fire per iteration, and every earlier version of this comment was
+		// quietly wrong about that.
+		restore := func() {
+			_ = os.WriteFile(m.file, orig, 0o644)
+			unstage(m.file)
+			inFlight.path = ""
+		}
+		defer restore()
 
 		pkg := allPkgs
 		// Fields, not pkg: a single argument containing a space is one malformed
@@ -682,7 +902,10 @@ func main() {
 		args = append(args, "-count=1")
 		cmd := exec.Command("go", args...)
 		out, _ := cmd.CombinedOutput()
-		os.WriteFile(m.file, orig, 0o644)
+		// Restore immediately rather than waiting for the deferred copy: the window
+		// between a mutation being written and being restored is exactly the window
+		// in which a killed process leaves the tree broken.
+		restore()
 
 		got := strings.TrimSpace(string(out))
 		failed := strings.Contains(got, "FAIL") || strings.Contains(got, "build failed")
@@ -761,4 +984,25 @@ func indent(s string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// mutatedFiles lists every file any mutation targets.
+//
+// recoverInterrupted is given this list so a stale backup for a file no longer under
+// mutation is not silently ignored, and so a backup with no corresponding mutation
+// can be reported rather than left to rot.
+func mutatedFiles(list []mutation) []string {
+	out := make([]string, 0, len(list))
+	for _, m := range list {
+		out = append(out, m.file)
+	}
+	return out
+}
+
+// truncate shortens a string for display, marking that it was cut.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }
