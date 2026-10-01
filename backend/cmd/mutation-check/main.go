@@ -68,9 +68,30 @@ const (
 	svcPostFile = "internal/service/ledger_postings.go"
 	repoFile    = "internal/repository/payment_repo.go"
 	capFile     = "internal/service/refund_cap.go"
-	servicePkg  = "./internal/service/"
-	serviceAndR = "./internal/service/ ./internal/repository/"
 )
+
+// allPkgs is what a mutation is tested against.
+//
+// It was `servicePkg` by default with `serviceAndR` for payment_repo.go, i.e. a
+// hardcoded list of files with a special case. That list had already gone stale
+// once: adding shipment_repo.go produced a mutation that rewrote the repository
+// and then ran only tests in ./internal/service, which never read it. The checker
+// reported SURVIVED -- a lie. The honest result was "never checked".
+//
+// The tempting fix is to derive the package from the file's directory. That is
+// wrong in the other direction, and the attempt is kept in this comment because
+// getting it wrong is instructive: it dropped the count from 39 caught to 30. The
+// reason is that this project's tests are largely SOURCE-TEXT ASSERTIONS that live
+// in a different package from the file they check -- payout_lag_override_test.go
+// sits in internal/service and reads ../repository/payment_repo.go. So the set of
+// tests that can observe a given file is not derivable from that file's path, and
+// any static list of them rots.
+//
+// Therefore: run everything. Slower, and correct. A mutation harness that cannot
+// distinguish "no test noticed" from "no test ran" manufactures passes that were
+// never performed, which is worse than being slow -- it is the 690cec8 defect and
+// the cf370f3 defect wearing a new hat.
+const allPkgs = "./..."
 
 func main() {
 	nl := "\n"
@@ -527,10 +548,7 @@ func main() {
 			_ = os.WriteFile(path, content, 0o644)
 		}(m.file, orig)
 
-		pkg := servicePkg
-		if m.file == repoFile {
-			pkg = serviceAndR
-		}
+		pkg := allPkgs
 		// Fields, not pkg: a single argument containing a space is one malformed
 		// package path, and `go test` answers that with "[setup failed]" -- a line
 		// containing "FAIL" and no test in it. See the file header.
