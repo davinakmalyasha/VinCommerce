@@ -65,11 +65,13 @@ const (
 	// distinction between the swallowing `postLedger` and the strict
 	// `postLedgerStrict` IS the guard, and a mutation that swaps a call site cannot
 	// express it without failing to compile.
-	svcPostFile = "internal/service/ledger_postings.go"
-	repoFile    = "internal/repository/payment_repo.go"
-	capFile     = "internal/service/refund_cap.go"
-	domainFile  = "internal/domain/order.go"
-	shipFile    = "internal/repository/shipment_repo.go"
+	svcPostFile   = "internal/service/ledger_postings.go"
+	repoFile      = "internal/repository/payment_repo.go"
+	capFile       = "internal/service/refund_cap.go"
+	domainFile    = "internal/domain/order.go"
+	shipFile      = "internal/repository/shipment_repo.go"
+	orderRepoFile = "internal/repository/order_repo.go"
+	shipSvcFile   = "internal/service/shipment_service.go"
 )
 
 // allPkgs is what a mutation is tested against.
@@ -560,6 +562,75 @@ func main() {
 			file:  shipFile,
 			old:   "AND shipped_quantity + $2 <= quantity",
 			new:   "AND shipped_quantity + $2 >= 0",
+		},
+		{
+			// THE SPLIT-SHIPMENT DEADLOCK. Recording the first parcel of a two-parcel
+			// order moves the order to partially_shipped; the shortcut then refuses
+			// everything that is not `packed`, so the second parcel can never be
+			// recorded. The seller is left with half an order and no way to finish it.
+			label: "M45: a split order could never finish shipping",
+			file:  sellerFile,
+			old:   "if order.Status == domain.OrderPartiallyShipped {",
+			new:   "if false && order.Status == domain.OrderPartiallyShipped {",
+		},
+		{
+			// Cancelling a half-shipped order tells a buyer their order is off while
+			// parcels are physically gone and paid for. (M43 covers the state machine;
+			// this is the seller endpoint that reaches it.)
+			label: "M46: a seller could cancel an order that is already in a box",
+			file:  shipSvcFile,
+			old:   "order.Status == domain.OrderCancelled || order.Status == domain.OrderReturned",
+			new:   "false",
+		},
+		{
+			// The parcel exists but the order still says packed. Every reader of the
+			// order -- the buyer page, the seller list, admin search -- believes nothing
+			// has shipped while a parcel says otherwise.
+			label: "M47: the order status was no longer derived from the parcels",
+			file:  shipSvcFile,
+			old:   "\tif err := s.applyDerivedStatus(ctx, q, orderID, order.Status); err != nil {",
+			new:   "\tif err := error(nil); err != nil {",
+		},
+		{
+			// Notifying the buyer on the FIRST parcel of two tells them their order is
+			// on its way when most of it is still in a warehouse.
+			label: "M48: the buyer was told the order shipped while half of it was still in a warehouse",
+			file:  sellerFile,
+			// `if true {` was the first version and it does NOT compile: `allShipped`
+			// becomes declared and not used, the package fails to build, and the
+			// checker correctly refuses to count a build failure as coverage -- which
+			// it reported as "the mutation did not compile, so no test ran".
+			//
+			// The tautology below always fires while still USING the variable, which
+			// is what makes this a real mutation rather than a build error.
+			old: "\tif allShipped {",
+			new: "\tif allShipped || !allShipped {",
+		},
+		{
+			// Cancelled and returned lines must be excluded from the derivation. Count
+			// them and an order of three units with one cancelled can never reach
+			// "shipped" -- every retry re-derives the same wrong answer.
+			label: "M49: cancelled lines counted towards the shipped total, so an order could never complete",
+			file:  orderRepoFile,
+			// The anchor is the TAIL of the DeriveShippingStatus query, not the bare
+			// predicate: the same predicate also appears in SyncOrderItemStatuses, and
+			// Replace(..., 1) mutates the FIRST match. An anchor that appears twice
+			// silently checks the wrong method -- this one reported M49 SURVIVED while
+			// editing code no assertion reads.
+			old: "COUNT(*) FILTER (WHERE shipped_quantity < quantity)\n" +
+				"\t\t  FROM order_items\n\t\t WHERE order_id = $1::uuid\n" +
+				"\t\t   AND status NOT IN ('cancelled', 'returned')`, orderID).",
+			new: "COUNT(*) FILTER (WHERE shipped_quantity < quantity)\n" +
+				"\t\t  FROM order_items\n\t\t WHERE order_id = $1::uuid\n" +
+				"\t\t   AND true`, orderID).",
+		},
+		{
+			// A derivation the machine refuses must be reported. Silently ignoring it
+			// leaves the parcel recorded and the status lying.
+			label: "M50: an illegal derived status was forced through",
+			file:  shipSvcFile,
+			old:   "\tif !domain.CanTransition(current, derived) {",
+			new:   "\tif false {",
 		},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -394,21 +395,23 @@ func TestALostClaimReturnsBeforeAnythingSettles(t *testing.T) {
 // three services, and a helper that could only reach one of them would push people
 // back into hand-rolled string slicing, which is where the panics in this file's
 // own history came from.
+//
+// The receiver is matched with a pattern rather than from a list of known service
+// types. The list was `*PaymentService, *SellerService, ...` and every method it
+// could not find reported "not found" -- which is how `*ShipmentService` had to be
+// added the moment it was written. That is the same rot that made the mutation
+// harness's hardcoded file list miss `shipment_repo.go`, and the same lesson: a
+// static list of the things a helper knows about has to be updated by hand and will
+// not be.
 func functionSource(t *testing.T, file, fn string) string {
 	t.Helper()
 	body := readSource(t, file)
-	start := -1
-	for _, recv := range []string{"*PaymentService", "*SellerService", "*MarketService",
-		"*OrderService", "*LedgerService", "*NotificationService"} {
-		if i := strings.Index(body, "func (s "+recv+") "+fn+"("); i >= 0 {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
+	re := regexp.MustCompile(`(?m)^func \([a-z] \*\w+\) ` + regexp.QuoteMeta(fn) + `\(`)
+	loc := re.FindStringIndex(body)
+	if loc == nil {
 		t.Fatalf("%s not found in %s", fn, file)
 	}
-	rest := body[start:]
+	rest := body[loc[0]:]
 	end := strings.Index(rest, "\nfunc ")
 	if end < 0 {
 		end = len(rest)

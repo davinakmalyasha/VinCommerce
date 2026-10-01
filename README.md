@@ -684,6 +684,48 @@ they would cost you in a real deployment.
    tracking numbers are typed in by hand and nothing polls a carrier. `manual` is a
    first-class carrier precisely so those orders stay recordable in the meantime.*
 
+   **[closed] A split order could never finish shipping.** 00050 made parcels
+   expressible but left FulfillOrder(to=shipped) accepting packed and refusing
+   everything else. So the moment the first parcel of a two-parcel order was
+   recorded the order read partially_shipped — and the SECOND parcel could never be
+   recorded at all. The seller was left with half an order and no way to finish it.
+
+   That is not a subtle interaction. It is the schema and the state machine
+   disagreeing about what a parcel means, and it was only visible once both existed.
+
+   ShipmentService now records the parcel, its contents and the order status in ONE
+   commit. That is why TransitionOrderTx was added: TransitionOrder opens its own
+   transaction, so deriving the status separately leaves a window where the boxes
+   exist and the order still reads packed. Same reasoning that deleted
+   FailPayout/CompletePayout — a repository method that cannot join a transaction
+   cannot compose.
+
+   **The order status is DERIVED from what is in the boxes, never requested.** No
+   shipment method accepts a status. DeriveShippingStatus counts
+   shipped_quantity against quantity — excluding cancelled and 
+eturned lines,
+   which is the whole reason it is a query and not arithmetic on the parcel rows. An
+   order of three units with one line cancelled has two to ship; counting the
+   cancelled one leaves it permanently one unit short of shipped, and every retry
+   re-derives the same wrong answer. M49 pins that predicate.
+
+   A derivation the state machine refuses is reported as SHIPMENT_STATUS_NOT_REACHABLE
+   and the parcel is still recorded. Silently ignoring it would leave the boxes and
+   the status disagreeing; blaming the seller would be wrong, because they did not
+   create the state.
+
+   The buyer is notified when the LAST parcel is dispatched, not the first —
+   announcing parcel one of two tells a buyer their order is on its way while most of
+   it is in a warehouse, which produces exactly the ticket that one email instead of
+   two would have avoided. ShipmentService sends no mail at all: emailBuyer
+   already resolves the buyer, and a first draft declared a Mailer interface whose
+   argument order was the REVERSE of mail.Client.Send (subject before template),
+   which would have compiled and swapped every subject line in production.
+
+   *Still open: there is no HTTP surface for parcels yet, and
+   emailBuyer discards every error it can return — so a buyer whose shipped mail
+   fails to send is not told, and neither is the platform.*
+
    **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
    a string constant with a comment describing the fraud control it represented, no
    handler on the mux and no entry in the schedule — so the worker started, reported

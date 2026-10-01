@@ -82,6 +82,7 @@ type Repositories struct {
 	Reviews       *repository.ReviewRepository
 	Carts         *repository.CartRepository
 	Orders        *repository.OrderRepository
+	Shipments     *repository.ShipmentRepository
 	Addresses     *repository.AddressRepository
 	Payments      *repository.PaymentRepository
 	Stores        *repository.StoreRepository
@@ -148,6 +149,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 		Reviews:       repository.NewReviewRepository(pool),
 		Carts:         repository.NewCartRepository(pool),
 		Orders:        repository.NewOrderRepository(pool),
+		Shipments:     repository.NewShipmentRepository(pool),
 		Addresses:     repository.NewAddressRepository(pool),
 		Payments:      repository.NewPaymentRepository(pool),
 		Stores:        repository.NewStoreRepository(pool),
@@ -223,6 +225,10 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	orderSvc := service.NewOrderService(r.Carts, r.Orders, r.Addresses)
 	paymentSvc := service.NewPaymentService(r.Payments, r.Orders, gateways, cfg.Payments.Gateway, cfg.App.BaseURL)
 	sellerSvc := service.NewSellerService(r.Stores, r.Users, r.Products, r.Orders, r.Payments)
+	// Parcels. A setter rather than constructor arguments: DispatchParcel notifies
+	// through SellerService.emailBuyer, so passing a mail client to both would be
+	// two paths to one inbox.
+	sellerSvc.SetShipmentService(service.NewShipmentService(r.Orders, r.Shipments))
 	engagementSvc := service.NewEngagementService(r.Wishlist, r.Products)
 	marketSvc := service.NewMarketService(r.Market)
 	supportSvc := service.NewSupportService(r.Support, r.Orders)

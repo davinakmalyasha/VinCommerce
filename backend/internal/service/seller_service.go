@@ -26,7 +26,12 @@ type SellerService struct {
 	// repository is raw persistence, the service owns the money invariants
 	// (cumulative refund cap, leg derivation, state transitions). Anything that
 	// MOVES money must go through the service, never the repository.
-	paymentSvc       *PaymentService
+	paymentSvc *PaymentService
+	// shipSvc owns parcels. Nil until SetShipmentService runs, and the parcel endpoints
+	// REFUSE when it is nil rather than falling back to a repository call: the point
+	// of the parcel service is that the parcel, its contents and the order status commit
+	// together, and a fallback would quietly drop that.
+	shipSvc          *ShipmentService
 	sessions         *repository.SessionRepository
 	mailer           *mail.Client
 	webURL           string
@@ -576,6 +581,61 @@ func (s *SellerService) UpdateProduct(ctx context.Context, sellerID, productID s
 	return existing, nil
 }
 
+// SetShipmentService joins the parcel service to this one.
+//
+// A setter rather than a constructor argument, for the same reason SetPaymentService
+// is one. The parcel service needs no mailer of its own -- DispatchParcel notifies
+// through `emailBuyer` below, which already resolves the buyer for an order -- so
+// the coupling is a single notification, not a shared dependency.
+func (s *SellerService) SetShipmentService(ship *ShipmentService) {
+	s.shipSvc = ship
+}
+
+// CreateParcel records a parcel for a seller order.
+func (s *SellerService) CreateParcel(
+	ctx context.Context, sellerID, orderID, carrier string, lines []ParcelLine,
+) (*repository.Shipment, error) {
+	if s.shipSvc == nil {
+		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so parcels cannot be recorded")
+	}
+	return s.shipSvc.CreateParcel(ctx, sellerID, orderID, carrier, lines)
+}
+
+// DispatchParcel records hand-over of one of the seller's parcels, and notifies the
+// buyer only when this was the LAST one.
+//
+// Announcing parcel one of two tells a buyer their order is on its way when most of
+// it is still in a warehouse, which produces exactly the "where is my order" ticket
+// that one email instead of two would have avoided.
+func (s *SellerService) DispatchParcel(
+	ctx context.Context, sellerID, shipmentID, tracking string,
+) (*repository.Shipment, error) {
+	if s.shipSvc == nil {
+		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so parcels cannot be dispatched")
+	}
+	out, allShipped, err := s.shipSvc.DispatchParcel(ctx, sellerID, shipmentID, tracking)
+	if err != nil {
+		return nil, err
+	}
+	if allShipped {
+		// A failed notification does NOT fail the dispatch. The parcel HAS left, and
+		// an error here would tell the seller it did not go out, so they would send
+		// it a second time -- a duplicate parcel for goods already gone.
+		//
+		// `emailBuyer` returns nothing and discards its own errors on every branch
+		// (including `_ = s.mailer.Send`), so there is nothing here to check even if
+		// one wanted to. That silence is pre-existing and is recorded as an open gap
+		// rather than hidden: a buyer whose "your order shipped" mail fails to send
+		// is not told, and neither is the platform.
+		s.emailBuyer(ctx, out.OrderID, "order_shipped",
+			"Pesanan dikirim \u2014 VinCommerce",
+			map[string]any{"Carrier": out.Carrier, "Tracking": out.Tracking})
+	}
+	return out, nil
+}
+
 // FulfillOrder moves a seller's order to the next fulfillment state.
 // paid -> packed (by seller), packed -> shipped (by seller, with tracking).
 func (s *SellerService) FulfillOrder(ctx context.Context, sellerID, orderID, to, trackingNumber, carrier string) error {
@@ -594,6 +654,23 @@ func (s *SellerService) FulfillOrder(ctx context.Context, sellerID, orderID, to,
 		}
 		return s.orders.TransitionOrder(ctx, orderID, domain.OrderPaid, domain.OrderPacked, sellerID)
 	case domain.OrderShipped:
+		// This is the "the whole order went in one box" shortcut, and it only applies
+		// to an order that has never been split.
+		//
+		// It used to accept `packed` and refuse everything else, which meant that once
+		// the first parcel of a split shipment was recorded the order read
+		// `partially_shipped` and the SECOND parcel could never be recorded at all --
+		// the seller was left with half an order and no way to finish shipping it.
+		//
+		// So the refusal now names the way out instead of only denying: once any units
+		// are reserved, the parcel endpoint is the only correct path, and shipping
+		// from here would claim goods went into a box that does not exist.
+		if order.Status == domain.OrderPartiallyShipped {
+			return domain.E(domain.KindConflict, "ORDER_ALREADY_PARTLY_SHIPPED",
+				"part of this order is already in a parcel, so the rest has to be "+
+					"shipped as another parcel; record it through the shipment endpoint "+
+					"so the boxes and the order status agree")
+		}
 		if order.Status != domain.OrderPacked {
 			return domain.E(domain.KindConflict, "INVALID_TRANSITION",
 				fmt.Sprintf("cannot move order from %s to %s", order.Status, to))

@@ -491,7 +491,28 @@ func (r *OrderRepository) TransitionOrder(ctx context.Context, orderID, from, to
 	}
 	defer tx.Rollback(ctx)
 
-	tag, err := tx.Exec(ctx, `
+	if err := r.TransitionOrderTx(ctx, tx, orderID, from, to, actorID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// TransitionOrderTx is TransitionOrder inside a caller's transaction.
+//
+// It exists because a parcel and its contents have to move the order's status in
+// the SAME commit. Deriving "partially_shipped" from what is actually in the boxes
+// is only meaningful if the boxes and the status agree; a repository method that
+// opens its own transaction makes that impossible, and the alternative -- calling
+// TransitionOrder after committing the parcels -- leaves a window where the parcels
+// exist and the order still reads "packed", which is exactly the disagreement that
+// makes a buyer and a seller argue.
+//
+// Same reasoning that deleted FailPayout and CompletePayout: composition has to be
+// possible, and a method that cannot join a transaction cannot compose.
+func (r *OrderRepository) TransitionOrderTx(
+	ctx context.Context, q Querier, orderID, from, to, actorID string,
+) error {
+	tag, err := q.Exec(ctx, `
 		UPDATE orders SET status = $2::varchar, updated_at = now(),
 			paid_at = CASE WHEN $2::varchar = 'paid' THEN now() ELSE paid_at END,
 			shipped_at = CASE WHEN $2::varchar = 'shipped' THEN now() ELSE shipped_at END,
@@ -506,13 +527,80 @@ func (r *OrderRepository) TransitionOrder(ctx context.Context, orderID, from, to
 		return domain.E(domain.KindConflict, "INVALID_TRANSITION",
 			fmt.Sprintf("order is not in state %s", from))
 	}
-	if _, err := tx.Exec(ctx, `
+	if _, err := q.Exec(ctx, `
 		INSERT INTO order_events (order_id, from_status, to_status, actor_id)
 		VALUES ($1, $2, $3, NULLIF($4, '')::uuid)`,
 		orderID, from, to, actorID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
+}
+
+// DeriveShippingStatus works out what an order's shipping status should be from what
+// is actually in its boxes, and moves the order there if that is legal.
+//
+// DERIVED, NEVER ASKED. A caller telling the service "this order is shipped" is how
+// `orders.shipped_at` came to mean "a seller pressed a button" rather than "the
+// goods went". Split shipping makes that worse: with two parcels, "is it shipped"
+// has no single answer to type in.
+//
+// The counts EXCLUDE cancelled and returned lines, and that exclusion is the
+// whole reason this is a query and not arithmetic on the parcel rows. An order of
+// three units where one was cancelled has two units to ship; counting the cancelled
+// one would leave the order permanently one unit short of "shipped", and every retry
+// would re-derive the same wrong answer.
+//
+// 'shipped_at' is NOT touched here. TransitionOrderTx sets it on the transition to
+// shipped, which is the moment the LAST parcel left -- not the moment the first one
+// did, and not every time a parcel is added.
+func (r *OrderRepository) DeriveShippingStatus(
+	ctx context.Context, q Querier, orderID string,
+) (derived string, changed bool, err error) {
+	var ordered, shipped, withRemaining int
+	err = q.QueryRow(ctx, `
+		SELECT COALESCE(SUM(quantity), 0),
+		       COALESCE(SUM(shipped_quantity), 0),
+		       COUNT(*) FILTER (WHERE shipped_quantity < quantity)
+		  FROM order_items
+		 WHERE order_id = $1::uuid
+		   AND status NOT IN ('cancelled', 'returned')`, orderID).
+		Scan(&ordered, &shipped, &withRemaining)
+	if err != nil {
+		return "", false, err
+	}
+
+	switch {
+	case ordered == 0 || shipped == 0:
+		// Nothing has gone yet, so there is nothing to derive. Returning "" and
+		// changed=false rather than "packed" keeps this from dragging an order
+		// BACKWARDS: an order that is paid but not yet packed is not "packed".
+		return "", false, nil
+	case shipped >= ordered:
+		derived = domain.OrderShipped
+	case withRemaining > 0:
+		derived = domain.OrderPartiallyShipped
+	default:
+		return "", false, nil
+	}
+	return derived, true, nil
+}
+
+// SyncOrderItemStatuses writes the per-line shipping status from the shipped
+// counters, so the seller packing view agrees with the boxes.
+//
+// One statement, not a loop: a line-by-line loop here would be N round trips inside
+// a transaction that is already holding row locks on those same lines.
+func (r *OrderRepository) SyncOrderItemStatuses(ctx context.Context, q Querier, orderID string) error {
+	_, err := q.Exec(ctx, `
+		UPDATE order_items
+		   SET status = CASE
+		       WHEN shipped_quantity = 0 THEN status
+		       WHEN shipped_quantity >= quantity THEN 'shipped'
+		       ELSE 'partially_shipped'
+		   END
+		 WHERE order_id = $1::uuid
+		   AND status NOT IN ('cancelled', 'returned')`, orderID)
+	return err
 }
 
 // ShipOrder marks an order shipped with tracking details.
