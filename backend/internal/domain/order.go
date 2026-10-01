@@ -4,15 +4,20 @@ import "time"
 
 // Order statuses (state machine).
 const (
-	OrderPending         = "pending"
-	OrderPaid            = "paid"
-	OrderPacked          = "packed"
-	OrderShipped         = "shipped"
-	OrderDelivered       = "delivered"
-	OrderCompleted       = "completed"
-	OrderCancelled       = "cancelled"
-	OrderReturnRequested = "return_requested"
-	OrderReturned        = "returned"
+	OrderPending = "pending"
+	OrderPaid    = "paid"
+	OrderPacked  = "packed"
+	// OrderPartiallyShipped means at least one parcel has gone and at least one
+	// line still has units to send. 00004 had no such state, so the only way to
+	// say "sent" was packed -> shipped, and a split shipment had to either lie
+	// or overwrite the first parcel's tracking number.
+	OrderPartiallyShipped = "partially_shipped"
+	OrderShipped          = "shipped"
+	OrderDelivered        = "delivered"
+	OrderCompleted        = "completed"
+	OrderCancelled        = "cancelled"
+	OrderReturnRequested  = "return_requested"
+	OrderReturned         = "returned"
 )
 
 // Payment statuses.
@@ -33,13 +38,17 @@ const (
 
 // Order transitions allowed by the state machine.
 var allowedTransitions = map[string][]string{
-	OrderPending:         {OrderPaid, OrderCancelled},
-	OrderPaid:            {OrderPacked, OrderCancelled},
-	OrderPacked:          {OrderShipped, OrderCancelled},
-	OrderShipped:         {OrderDelivered},
-	OrderDelivered:       {OrderCompleted, OrderReturnRequested},
-	OrderCompleted:       {OrderReturnRequested},
-	OrderReturnRequested: {OrderReturned, OrderCancelled},
+	OrderPending: {OrderPaid, OrderCancelled},
+	OrderPaid:    {OrderPacked, OrderCancelled},
+	OrderPacked:  {OrderPartiallyShipped, OrderShipped, OrderCancelled},
+	// NOT cancellable. Some parcels are already with the carrier, and "cancel"
+	// here would mean telling a buyer their order is off when part of it is
+	// physically gone and paid for. A return is the route back from here.
+	OrderPartiallyShipped: {OrderShipped, OrderDelivered},
+	OrderShipped:          {OrderDelivered},
+	OrderDelivered:        {OrderCompleted, OrderReturnRequested},
+	OrderCompleted:        {OrderReturnRequested},
+	OrderReturnRequested:  {OrderReturned, OrderCancelled},
 }
 
 // CanTransition reports whether from->to is allowed.

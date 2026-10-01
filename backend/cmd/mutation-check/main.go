@@ -473,7 +473,7 @@ func main() {
 			// no repair anywhere in the codebase.
 			label: "M35: the batch claim let a payout already sit in a live batch",
 			file:  repoFile,
-			old:   "AND NOT EXISTS (\n\t\t\t       SELECT 1 FROM payout_batch_items i",
+			old:   "AND NOT EXISTS (\n\t\t       SELECT 1 FROM payout_batch_items i",
 			new:   "AND true OR NOT EXISTS (\n\t\t\t       SELECT 1 FROM payout_batch_items i",
 		},
 		{
@@ -531,16 +531,16 @@ func main() {
 			// TaskReleasePayoutReservations).
 			label: "M41: the state machine refused every split shipment",
 			file:  domainFile,
-			old:   "\\tOrderPacked:          {OrderPartiallyShipped, OrderShipped, OrderCancelled},",
-			new:   "\\tOrderPacked:          {OrderShipped, OrderCancelled},",
+			old:   "\tOrderPacked:  {OrderPartiallyShipped, OrderShipped, OrderCancelled},",
+			new:   "\tOrderPacked:  {OrderShipped, OrderCancelled},",
 		},
 		{
 			// The second parcel of a split shipment could never be recorded, so a
 			// two-parcel order would stay partially_shipped for ever.
 			label: "M42: a half-shipped order could never finish shipping",
 			file:  domainFile,
-			old:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
-			new:   "\\tOrderPartiallyShipped: {},",
+			old:   "\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
+			new:   "\tOrderPartiallyShipped: {},",
 		},
 		{
 			// Allowing cancel from a half-shipped order tells a buyer their order is
@@ -548,8 +548,8 @@ func main() {
 			// shipped lines with no path back.
 			label: "M43: a half-shipped order could be cancelled",
 			file:  domainFile,
-			old:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
-			new:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered, OrderCancelled},",
+			old:   "\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
+			new:   "\tOrderPartiallyShipped: {OrderShipped, OrderDelivered, OrderCancelled},",
 		},
 		{
 			// Over-shipping is the defect the whole shipped_quantity column exists to

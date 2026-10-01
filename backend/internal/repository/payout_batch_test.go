@@ -95,10 +95,6 @@ func TestAGroupedPayoutIsClaimedByExactlyOneLiveBatch(t *testing.T) {
 	}
 	body := string(raw)
 
-	// The NOT EXISTS that is the claim.
-	if !strings.Contains(body, "FROM payout_batch_items i") {
-		t.Fatalf("UngroupedPayouts does not exclude already-grouped payouts:\n%s", body)
-	}
 	i := strings.Index(body, "func (r *PaymentRepository) UngroupedPayouts(")
 	if i < 0 {
 		t.Fatal("UngroupedPayouts not found")
@@ -106,6 +102,33 @@ func TestAGroupedPayoutIsClaimedByExactlyOneLiveBatch(t *testing.T) {
 	fn := body[i:]
 	if end := strings.Index(fn[1:], "\nfunc "); end > 0 {
 		fn = fn[:end]
+	}
+
+	// The NOT EXISTS that is the claim, checked INSIDE this function and required to
+	// be a CONJUNCT of the WHERE clause.
+	//
+	// Two earlier versions of this assertion were wrong in instructive ways.
+	//
+	// The first was `strings.Contains(body, "FROM payout_batch_items i")` against the
+	// WHOLE FILE, which deleting the NOT EXISTS did not break, because the same
+	// string appears in AddPayoutBatchItems. M35 survived it.
+	//
+	// The second required merely that "NOT EXISTS" appear in the function. M35
+	// survived that too, because M35 rewrites the conjunct as
+	//
+	//     AND true OR NOT EXISTS (...)
+	//
+	// which still contains the phrase while defeating the claim: SQL binds AND
+	// tighter than OR, so the exclusion stops being a condition on the row and the
+	// grouped payouts come back.
+	//
+	// So the assertion is that the exclusion is ANDed into the WHERE -- not present,
+	// but conjunctive. That is the property, and it is what a mutation has to break.
+	if !strings.Contains(fn, "AND NOT EXISTS (") {
+		t.Errorf("the exclusion is not a conjunct of the WHERE clause:\n%s\n"+
+			"`AND true OR NOT EXISTS (...)` still reads like a claim but is not one: "+
+			"AND binds tighter than OR, so a payout already grouped in a live batch "+
+			"is selected again and paid twice from two remittance files", fn)
 	}
 	// A cancelled batch must NOT hold its claim: its withdrawals return to the
 	// pool. Getting this wrong is safe-but-permanent -- every payout in a cancelled

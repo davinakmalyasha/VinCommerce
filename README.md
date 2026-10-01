@@ -180,6 +180,25 @@ they are covered by guards and constraints rather than by tests. The money
 invariants are enforced in the schema specifically because they are not
 test-covered.
 
+## Corrections to earlier claims in this file
+
+* **`2814c52` claimed "39/39 mutations caught". It was 38 of 39.** M35 -- the
+  mutation for the `NOT EXISTS` that stops a payout sitting in two remittance files
+  -- never ran. Its anchor was one tab out of place, and the harness printed `SKIP`
+  and then `continue`d without counting it, so the summary read `38 caught, 0
+  missed, 39 total` and exited 0. The arithmetic invites the reader to conclude
+  39/39. Fixed in `3b9ce88`; M35's anchor and two false passes in the test that was
+  supposed to catch it are fixed here. The claim was uncovered while the report said
+  otherwise.
+
+* **Mutations outside a hardcoded file list were never tested at all.** The runner
+  chose the package with `if m.file == repoFile`, so any other file fell through to
+  `./internal/service`; a mutation that rewrote `shipment_repo.go` ran only tests
+  that never read it and was reported `SURVIVED`. Fixed in `d5d3e13`, which runs
+  every package -- deriving the package from the path was tried first and is wrong,
+  because this project's tests are largely source-text assertions that live in a
+  different package from the file they inspect.
+
 ## Known gaps
 
 Written by the audit that produced the status tags above. Ordered by how much
@@ -621,6 +640,50 @@ they would cost you in a real deployment.
    until a person acts, and no job notices or reports that.
    *A COD hold is also still unwritten — the release job knows how to release one,
    but nothing takes it yet.*
+   **[closed] An order could only ever be one parcel.** `orders` has carried a single
+   `tracking_number` and a single `carrier` since 00004:3-4, so one order was one
+   parcel, and two real situations could not be recorded at all:
+
+   * **Split shipping.** One seller order leaving in two parcels -- different
+     warehouses, a heavy item going separately. The second parcel had nowhere to
+     record its tracking number, so it overwrote the first.
+   * **Partial shipment of a line.** `order_items` has `quantity` and no shipped
+     counter, so shipping 2 of 3 units was not expressible. The only honest option
+     was to mark the whole line shipped, which tells the buyer three are coming when
+     two are, and tells the seller to ship three.
+
+   00050 adds `shipments` (one row per parcel) and `shipment_items` (what is in it,
+   and how many), plus `order_items.shipped_quantity` and a `partially_shipped`
+   state on both the order and its lines. The state machine in
+   `domain/order.go` now has `packed -> partially_shipped -> shipped`; without it
+   `CanTransition` (enforced at order_service.go:918) would have rejected every
+   split shipment, and 00050's tables would have sat there holding nothing -- the
+   same shape as 00043's payout batches and `TaskReleasePayoutReservations`.
+
+   **Over-shipping is prevented by two things that are not interchangeable.**
+   `order_items.shipped_quantity <= quantity` is a CHECK: the invariant, in the
+   database. But it only fires when the ITEM row is written, so two concurrent
+   parcels would each pass it and jointly overshoot. The mechanism is the
+   conditional update `WHERE shipped_quantity + $2 <= quantity`, whose zero
+   rows-affected *is* the refusal, decided atomically against the row lock. The sum
+   of `shipment_items.quantity` across live shipments is the property that actually
+   matters and is maintained by that update and nothing else -- a CHECK cannot see
+   other rows and a UNIQUE cannot sum. M44 pins the predicate.
+
+   Existing tracking data is backfilled into parcel 1 of each shipped-or-later
+   order, with the lines attached at full quantity, because the old single-tracking
+   model meant exactly that. Orders shipped with **no** tracking number are included
+   with carrier `manual`, because COD and local deliveries routinely have no AWB and
+   `00004` made tracking optional -- excluding them would invent parcels that were
+   never dispatched.
+
+   A parcel's weight is derived from its contents and never accepted from the
+   seller: a typed weight is the weight the carrier charges for.
+
+   *Still open, F2 onwards: no carrier integration exists yet, so labels and
+   tracking numbers are typed in by hand and nothing polls a carrier. `manual` is a
+   first-class carrier precisely so those orders stay recordable in the meantime.*
+
    **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
    a string constant with a comment describing the fraud control it represented, no
    handler on the mux and no entry in the schedule — so the worker started, reported
