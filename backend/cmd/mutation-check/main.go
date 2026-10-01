@@ -68,6 +68,8 @@ const (
 	svcPostFile = "internal/service/ledger_postings.go"
 	repoFile    = "internal/repository/payment_repo.go"
 	capFile     = "internal/service/refund_cap.go"
+	domainFile  = "internal/domain/order.go"
+	shipFile    = "internal/repository/shipment_repo.go"
 )
 
 // allPkgs is what a mutation is tested against.
@@ -521,23 +523,76 @@ func main() {
 			old:   "\t\t   SET total = COALESCE(agg.sum, 0),",
 			new:   "\t\t   SET total = COALESCE(agg.sum, 0) + 1,",
 		},
+		{
+			// Removing partially_shipped from the packed row makes every split
+			// shipment fail at order_service.go:918 with a transition error, while
+			// 00050's tables sit there holding nothing -- the same shape as the two
+			// dead things already found here (00043's payout batches, and
+			// TaskReleasePayoutReservations).
+			label: "M41: the state machine refused every split shipment",
+			file:  domainFile,
+			old:   "\\tOrderPacked:          {OrderPartiallyShipped, OrderShipped, OrderCancelled},",
+			new:   "\\tOrderPacked:          {OrderShipped, OrderCancelled},",
+		},
+		{
+			// The second parcel of a split shipment could never be recorded, so a
+			// two-parcel order would stay partially_shipped for ever.
+			label: "M42: a half-shipped order could never finish shipping",
+			file:  domainFile,
+			old:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
+			new:   "\\tOrderPartiallyShipped: {},",
+		},
+		{
+			// Allowing cancel from a half-shipped order tells a buyer their order is
+			// off while parcels are physically gone and paid for, and strands the
+			// shipped lines with no path back.
+			label: "M43: a half-shipped order could be cancelled",
+			file:  domainFile,
+			old:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered},",
+			new:   "\\tOrderPartiallyShipped: {OrderShipped, OrderDelivered, OrderCancelled},",
+		},
+		{
+			// Over-shipping is the defect the whole shipped_quantity column exists to
+			// prevent. The CHECK on order_items is the backstop; this predicate is the
+			// mechanism, because the CHECK only fires when the item row is written and
+			// two concurrent parcels would each pass it.
+			label: "M44: a parcel could claim more units than were bought",
+			file:  shipFile,
+			old:   "AND shipped_quantity + $2 <= quantity",
+			new:   "AND shipped_quantity + $2 >= 0",
+		},
 	}
 
-	caught, missed := 0, 0
+	// skipped is counted SEPARATELY from missed, and both are fatal. A skip is
+	// "never checked", which is a different and worse failure than "checked and
+	// not caught" -- and it used to print SKIP, then `continue` without touching
+	// `missed`, so the run ended with "0 missed", exited 0, and read as success.
+	//
+	// That is not hypothetical: M35 was skipped at the moment it was added because
+	// its anchor was off by one tab, and 2814c52 shipped claiming "39/39 mutations
+	// caught". It was 38 of 39. The batch claim -- the NOT EXISTS that stops a
+	// payout being in two remittance files -- had no coverage at all.
+	caught, missed, skipped := 0, 0, 0
 	for _, m := range muts {
 		orig, err := os.ReadFile(m.file)
 		if err != nil {
-			fmt.Printf("SKIP %s: %v\n", m.label, err)
+			skipped++
+			fmt.Printf("FAIL %s\n       NOT CHECKED -- %v\n", m.label, err)
 			continue
 		}
 		body := string(orig)
 		if !strings.Contains(body, m.old) {
-			fmt.Printf("SKIP %s: patch did not apply\n", m.label)
+			skipped++
+			fmt.Printf("FAIL %s\n       NOT CHECKED -- the anchor does not appear in %s, so "+
+				"this mutation was never applied and proves nothing either way. An anchor "+
+				"one tab out of place is how a mutation sits unrun while the tally reads "+
+				"clean.\n", m.label, m.file)
 			continue
 		}
 		mutated := strings.Replace(body, m.old, m.new, 1)
 		if err := os.WriteFile(m.file, []byte(mutated), 0o644); err != nil {
-			fmt.Printf("SKIP %s: %v\n", m.label, err)
+			skipped++
+			fmt.Printf("FAIL %s\n       NOT CHECKED -- %v\n", m.label, err)
 			continue
 		}
 		// Restore on EVERY exit path, including a panic. Without this, a
@@ -608,8 +663,16 @@ func main() {
 		}
 	}
 
-	fmt.Printf("\n%d caught, %d missed, %d total\n", caught, missed, len(muts))
-	if missed > 0 {
+	// The counts are printed together and the skipped one is spelled out, because
+	// "38 caught, 0 missed, 39 total" invites the reader to do 38+0=39 and conclude
+	// everything passed. It did not: one was never run.
+	fmt.Printf("\n%d caught, %d missed, %d never checked, %d total\n",
+		caught, missed, skipped, len(muts))
+	if skipped > 0 {
+		fmt.Printf("FAIL: %d mutation(s) were never applied. An unapplied mutation is "+
+			"not a passing mutation; its anchor has drifted and needs fixing.\n", skipped)
+	}
+	if missed > 0 || skipped > 0 {
 		os.Exit(1)
 	}
 }
