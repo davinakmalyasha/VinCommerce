@@ -267,6 +267,23 @@ func lineEndings(body string) string {
 	}
 }
 
+// proveBaseline runs the test suite once, unmutated.
+//
+// Without this the checker cannot tell "no test noticed" from "no test ran". That is
+// the same confusion as the skipped-mutation bug in 3b9ce88 arriving by a different
+// route: there the tests never ran; here they ran and ALL of them failed, and the
+// result was still reported as forty-eight mutations with no coverage.
+func proveBaseline(pkg string) error {
+	args := append([]string{"test"}, strings.Fields(pkg)...)
+	args = append(args, "-count=1")
+	out, err := exec.Command("go", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("go test %s failed on the UNMUTATED tree:\n%s",
+		strings.Join(strings.Fields(pkg), " "), string(out))
+}
+
 func main() {
 	nl := "\n"
 
@@ -816,6 +833,31 @@ func main() {
 	recoverInterrupted(mutatedFiles(muts))
 	installSignalGuard()
 
+	// A BROKEN BASELINE MUST ABORT, NOT REPORT.
+	//
+	// Every result below is the DIFFERENCE between "the tests pass" and "the tests
+	// fail with this one change". With a baseline that does not build, that
+	// difference is meaningless -- and the checker does not look meaningless.
+	//
+	// A full C: drive made every package fail to build, and the run reported
+	//
+	//     1 caught, 48 missed, 0 never checked, 49 total
+	//
+	// which reads exactly like "48 mutations have no coverage" -- the precise alarm
+	// this tool exists to raise, pointed at nothing. Each was classified as a compile
+	// error in the mutation, which it was not: the BASELINE did not compile.
+	//
+	// So the baseline is proved once, first, and a failure aborts with a non-zero exit
+	// and no per-mutation table at all.
+	if err := proveBaseline(allPkgs); err != nil {
+		fmt.Printf("ABORT: the baseline does not pass, so no mutation result would mean "+
+			"anything.\n"+
+			"       Every result is a comparison against this run, and with no clean "+
+			"run to compare against the whole table is noise.\n\n%s\n", indent(err.Error()))
+		os.Exit(2)
+	}
+
+	mutationCount := 0
 	caught, missed, skipped := 0, 0, 0
 	for _, m := range muts {
 		orig, err := os.ReadFile(m.file)
@@ -902,6 +944,17 @@ func main() {
 		args = append(args, "-count=1")
 		cmd := exec.Command("go", args...)
 		out, _ := cmd.CombinedOutput()
+		// The build cache grows by roughly a full rebuild per mutation, because each
+		// mutation invalidates every package that depends on the mutated file. Fifty
+		// mutations filled 11 GB of C:, and the next thing that failed was the disk --
+		// a failure that looks exactly like a code problem.
+		//
+		// Cleaned every few mutations so the ceiling is a few GB rather than the whole
+		// drive. `go clean -cache` is cheap next to a run that fails for no reason.
+		mutationCount++
+		if mutationCount%6 == 0 {
+			_ = exec.Command("go", "clean", "-cache").Run()
+		}
 		// Restore immediately rather than waiting for the deferred copy: the window
 		// between a mutation being written and being restored is exactly the window
 		// in which a killed process leaves the tree broken.
