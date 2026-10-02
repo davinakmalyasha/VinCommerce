@@ -611,6 +611,79 @@ func (s *SellerService) BuyLabel(
 	return s.shipSvc.BuyLabel(ctx, sellerID, shipmentID, format)
 }
 
+// CreateReturnParcel records the box a buyer's return travels in.
+//
+// The BUYER calls this, not the seller, so it is NOT on SellerService -- a seller who
+// could create and dispatch the return parcel could mark goods as returned without
+// them ever having left the buyer, which is the fraud the whole feature is exposed to.
+// The seller issues the LABEL, which they pay for, and controls the address it goes
+// to.
+//
+// It lives on OrderService because the buyer-facing surfaces already do. Exported
+// here as a comment-only reference so the ownership split is discoverable from the
+// seller side, where a reader is most likely to assume otherwise.
+//
+// See OrderService.CreateReturnParcel.
+var _ = 0
+
+// BuyReturnLabel buys the label for a return parcel. The seller issues it: the seller
+// pays for the carriage and states where the goods go back to.
+//
+// DESTINATION IS THE SELLER'S `stores.return_address`, never the order's
+// `shipping_address`. See `ShipmentService.returnDestinationFor`; sending a return to
+// the buyer is the single most damaging mistake available in this area.
+func (s *SellerService) BuyReturnLabel(ctx context.Context, returnID, format string) (ParcelView, string, error) {
+	if s.shipSvc == nil {
+		return ParcelView{}, "", domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so return labels cannot be bought")
+	}
+	return s.shipSvc.BuyReturnLabel(ctx, returnID, format)
+}
+
+// NoteReturnArrived records that a return parcel has been delivered, which unblocks
+// the refund a human still has to perform. It moves the return row and NOTHING else.
+func (s *SellerService) NoteReturnArrived(ctx context.Context, returnID string) (bool, error) {
+	if s.shipSvc == nil {
+		return false, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so arrivals cannot be recorded")
+	}
+	return s.shipSvc.NoteReturnArrived(ctx, returnID)
+}
+
+// SetReturnAddress records where this seller's returns go.
+//
+// Seller-only, scoped to their own store by `owner_id`. There is deliberately no admin
+// path: an admin editing a pickup address is how returns start arriving somewhere the
+// seller cannot collect them.
+func (s *SellerService) SetReturnAddress(ctx context.Context, ownerID string, addr map[string]any) error {
+	if s.stores == nil {
+		return domain.E(domain.KindInternal, "STORES_NOT_WIRED",
+			"the store repository is not available, so a return address cannot be set")
+	}
+	return s.stores.SetReturnAddress(ctx, ownerID, addr)
+}
+
+// ReturnAddress returns where this seller's returns go, or nil when unset.
+func (s *SellerService) ReturnAddress(ctx context.Context, ownerID string) (map[string]any, error) {
+	if s.stores == nil {
+		return nil, domain.E(domain.KindInternal, "STORES_NOT_WIRED",
+			"the store repository is not available, so a return address cannot be read")
+	}
+	return s.stores.ReturnAddress(ctx, s.stores.Pool(), ownerID)
+}
+
+// ReturnParcelFor returns the parcel a return travels in, or nil when there is none.
+//
+// Nil is a legitimate answer, not an error: a return that has been approved but not
+// yet sent back has no parcel, and the seller queue has to render that.
+func (s *SellerService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+	if s.shipSvc == nil {
+		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so return parcels cannot be read")
+	}
+	return s.shipSvc.ReturnParcelFor(ctx, returnID)
+}
+
 // CreateParcel records a parcel for a seller order.
 func (s *SellerService) CreateParcel(
 	ctx context.Context, sellerID, orderID, carrier string, lines []ParcelLine,

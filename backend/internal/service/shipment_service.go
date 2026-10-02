@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"strings"
 	"time"
 
@@ -89,11 +91,22 @@ type ShipmentService struct {
 	orders    *repository.OrderRepository
 	shipments *repository.ShipmentRepository
 	carriers  *carrier.LabelRegistry
+	// stores carries the seller's RETURN address (00051). It is a separate
+	// dependency from `orders` because an order's `shipping_address` is the BUYER's
+	// and must never be consulted for a return -- see `returnDestinationFor`.
+	stores *repository.StoreRepository
+	// returns reads return_requests. Those live on StoreRepository, not on a
+	// ReturnRepository, which is odd placement but pre-existing (00006 created
+	// return_requests inside the marketplace migration). Moving them is a refactor
+	// with no bearing on the gap this file closes, so the odd shape is inherited
+	// rather than fixed here.
+	returns *repository.StoreRepository
 }
 
 // NewShipmentService creates a ShipmentService.
 func NewShipmentService(
-	orders *repository.OrderRepository, shipments *repository.ShipmentRepository, carriers *carrier.LabelRegistry,
+	orders *repository.OrderRepository, shipments *repository.ShipmentRepository,
+	carriers *carrier.LabelRegistry, stores *repository.StoreRepository,
 ) *ShipmentService {
 	if carriers == nil {
 		// Never nil. A nil registry would panic on the first label request, and the
@@ -102,7 +115,16 @@ func NewShipmentService(
 		// carrier, which is the useful failure.
 		carriers = carrier.NewLabelRegistry()
 	}
-	return &ShipmentService{orders: orders, shipments: shipments, carriers: carriers}
+	// `returns` and `stores` are the same repository. Assigning it to both names
+	// rather than threading a second dependency is honest about where the data
+	// actually lives while leaving room to move it later.
+	return &ShipmentService{
+		orders:    orders,
+		shipments: shipments,
+		carriers:  carriers,
+		stores:    stores,
+		returns:   stores,
+	}
 }
 
 // ParcelLine is one line the seller says goes in a parcel.
@@ -336,6 +358,205 @@ func (s *ShipmentService) BuyLabel(
 	return parcelView(out), nil
 }
 
+// ===========================================================================
+// Return parcels
+// ===========================================================================
+//
+// The return journey. A seller approves a return, the buyer is emailed "silakan
+// kirim barang kembali", and until this existed there was no way for the buyer to
+// comply. This is the code that makes that email true.
+//
+// NOTHING HERE MOVES MONEY.
+//
+// A return parcel is a label and a tracking number. It does not release escrow, does
+// not post a journal, does not debit a wallet and does not reserve a payout. The
+// refund is `RefundReturn`, an explicit seller action, and the seller hold taken when
+// the return was raised (fbab73f) is released by the existing reservation job. A
+// carrier webhook that can be made to say "delivered" must not be able to pay out a
+// seller, so the only thing a delivery event does is move a parcel and then set
+// `return_requests.status = 'returned'` -- which unblocks a refund a human still has
+// to perform.
+//
+// That is asserted by a test over this file, the same way `payout_batch_test.go`
+// asserts that no batch path writes `payouts.status`.
+
+// CreateReturnParcel records the box a buyer's return travels in.
+//
+// The BUYER may create it, not the seller. A seller who could create and dispatch the
+// return parcel could mark goods as returned without them ever having left the buyer,
+// which is the fraud this whole feature is exposed to. The seller issues the LABEL
+// (so the seller pays for the carriage and controls the address); the buyer
+// physically hands it over.
+func (s *ShipmentService) CreateReturnParcel(
+	ctx context.Context, returnID, carrier string, quantity int,
+) (ParcelView, error) {
+	orderID, itemID, buyerID, sellerID, status, err := s.returnFacts(ctx, returnID)
+	if err != nil {
+		return ParcelView{}, err
+	}
+	// Only an APPROVED return may be parcelled. A `requested` return is one the seller
+	// has not agreed to, and a parcel for it is goods in motion that nobody has
+	// accepted responsibility for.
+	if status != domain.ReturnApproved {
+		return ParcelView{}, domain.E(domain.KindConflict, "RETURN_NOT_APPROVED",
+			"this return is "+status+", so a return label cannot be issued for it; "+
+				"only a return the seller has approved can be sent back")
+	}
+
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return ParcelView{}, err
+	}
+	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	parcel, err := s.shipments.CreateReturnParcel(ctx, q, returnID, orderID, itemID,
+		buyerID, sellerID, carrier, quantity)
+	if err != nil {
+		return ParcelView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ParcelView{}, err
+	}
+	out, err := s.shipments.ShipmentByID(ctx, s.shipments.Pool(), parcel.ShipmentID)
+	if err != nil {
+		return ParcelView{}, err
+	}
+	return parcelView(out), nil
+}
+
+// BuyReturnLabel buys the label for a return parcel.
+//
+// The destination is the SELLER, which is the reverse of every outbound label, and is
+// the single most likely thing to get wrong: a return label addressed to the buyer is
+// a second parcel of the same goods, going back where they came from, at the seller's
+// expense. M64 pins it.
+//
+// The label is idempotent on the PARCEL, exactly as the outbound path is, because it
+// spends the same kind of money.
+func (s *ShipmentService) BuyReturnLabel(
+	ctx context.Context, returnID, format string,
+) (ParcelView, string, error) {
+	parcel, err := s.shipments.ReturnParcelFor(ctx, s.shipments.Pool(), returnID)
+	if err != nil {
+		return ParcelView{}, "", err
+	}
+	if parcel == nil {
+		return ParcelView{}, "", domain.E(domain.KindConflict, "RETURN_NOT_PARCELED",
+			"this return has no parcel yet, so there is nothing to label; the buyer "+
+				"creates the return parcel first")
+	}
+
+	shipment, err := s.shipments.ShipmentByID(ctx, s.shipments.Pool(), parcel.ShipmentID)
+	if err != nil {
+		return ParcelView{}, "", err
+	}
+	if shipment.DeliveredAt != nil {
+		return ParcelView{}, "", domain.E(domain.KindConflict, "SHIPMENT_ALREADY_DELIVERED",
+			"this return has already arrived, so a new label would be money spent on a "+
+				"box that is not going anywhere")
+	}
+
+	c, err := s.carriers.Get(shipment.Carrier)
+	if err != nil {
+		return ParcelView{}, "", domain.E(domain.KindInvalid, "CARRIER_NOT_CONFIGURED", err.Error())
+	}
+
+	label, err := c.BuyLabel(ctx, carrier.BuyLabelInput{
+		ParcelID:    shipment.ID,
+		OrderID:     shipment.OrderID,
+		Carrier:     shipment.Carrier,
+		Service:     shipment.Service,
+		Format:      format,
+		WeightGrams: shipment.WeightGrams,
+		// `shipment.SellerID`, NOT `shipment.OrderID`.
+		//
+		// Both are strings, so the compiler cannot help here, and getting it wrong is
+		// silent: the lookup is `stores.return_address WHERE owner_id = $1`, an order id
+		// never matches a store owner, so EVERY return label is refused with
+		// "no destination" and the return feature is dead while every test on the
+		// carrier package still passes.
+		//
+		// The order id is what the OUTBOUND path passes, which is exactly how the
+		// wrong one gets there. M64 pins it.
+		Destination: s.returnDestinationFor(ctx, shipment.SellerID),
+		Idempotency: shipment.ID,
+		ContainsCod: false,
+	})
+	if err != nil {
+		return ParcelView{}, "", domain.E(domain.KindInvalid, "CARRIER_REJECTED_LABEL", err.Error())
+	}
+
+	// Attach to BOTH the parcel (durable: format, created_at, carrier ref) and the
+	// return row (a pointer, for the buyer's convenience). One is the record, one is
+	// the link.
+	if err := s.shipments.AttachShipmentLabel(ctx, s.shipments.Pool(), shipment.ID,
+		label.Format, label.URL, label.CarrierRef, label.Tracking); err != nil {
+		return ParcelView{}, "", err
+	}
+	if err := s.shipments.AttachReturnLabel(ctx, s.shipments.Pool(),
+		returnID, shipment.ID, label.Format, label.URL); err != nil {
+		return ParcelView{}, "", err
+	}
+
+	out, err := s.shipments.ShipmentByID(ctx, s.shipments.Pool(), shipment.ID)
+	if err != nil {
+		return ParcelView{}, "", err
+	}
+	return parcelView(out), label.URL, nil
+}
+
+// NoteReturnArrived records that a return parcel has been delivered, which unblocks
+// the refund a human still has to perform.
+//
+// It moves `return_requests` to 'returned' and NOTHING ELSE. The refund is
+// `RefundReturn`, the seller hold is released by the existing reservation job, and no
+// ledger posting happens on this path.
+func (s *ShipmentService) NoteReturnArrived(ctx context.Context, returnID string) (bool, error) {
+	return s.shipments.MarkReturnArrived(ctx, s.shipments.Pool(), returnID)
+}
+
+// returnDestinationFor resolves the SELLER's pickup address for a return label.
+//
+// THIS IS THE OPPOSITE of `destinationFor`, and using the wrong one is the single
+// most damaging mistake available in this file: it posts the returned goods straight
+// back to the buyer, at the seller's expense, as a second parcel of the same items.
+//
+// The source is `stores.return_address` (00051) and nothing else. `orders.shipping_address`
+// is the BUYER's and is never consulted here, even as a fallback -- a fallback that
+// is sometimes right is a fallback that will be wrong in production.
+//
+// When the seller has not set one, this returns the ZERO address, and the carrier's
+// `BuyLabelInput.Destination.IsZero()` refuses the label. That is the correct failure:
+// loud, named, and impossible to misread as success. The alternative -- sending the
+// parcel somewhere plausible -- is the defect this function exists to prevent.
+func (s *ShipmentService) returnDestinationFor(ctx context.Context, sellerID string) carrier.Address {
+	if s.stores == nil {
+		return carrier.Address{}
+	}
+	raw, err := s.stores.ReturnAddress(ctx, s.stores.Pool(), sellerID)
+	if err != nil || len(raw) == 0 {
+		return carrier.Address{}
+	}
+	return addressFromMap(raw)
+}
+
+// returnFacts reads what a return needs, in one place so the two call sites cannot
+// disagree about which columns matter.
+func (s *ShipmentService) returnFacts(
+	ctx context.Context, returnID string,
+) (orderID, itemID, buyerID, sellerID, status string, err error) {
+	orderID, itemID, buyerID, sellerID, status, err = s.returns.ReturnFacts(
+		ctx, s.returns.Pool(), returnID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", "", "", domain.ErrNotFound
+	}
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	return orderID, itemID, buyerID, sellerID, status, nil
+}
+
 // TrackParcel asks the carrier where a parcel is.
 //
 // A carrier that cannot track says so by not implementing TrackingCarrier, and the
@@ -378,27 +599,15 @@ func (s *ShipmentService) destinationFor(ctx context.Context, orderID string) ca
 	if err != nil {
 		return carrier.Address{}
 	}
-	raw := order.ShippingAddress
-	if raw == nil {
+	if order.ShippingAddress == nil {
 		return carrier.Address{}
 	}
-	str := func(keys ...string) string {
-		for _, k := range keys {
-			if v, ok := raw[k].(string); ok && strings.TrimSpace(v) != "" {
-				return v
-			}
-		}
-		return ""
-	}
-	return carrier.Address{
-		Name:     str("name", "Name", "recipient", "full_name"),
-		Phone:    str("phone", "Phone", "telephone"),
-		Street:   str("street", "Street", "address", "address_line1", "line1"),
-		City:     str("city", "City"),
-		Province: str("province", "Province", "state"),
-		Postcode: str("postcode", "Postcode", "zip", "postal_code"),
-		Country:  str("country", "Country"),
-	}
+	return addressFromMap(order.ShippingAddress)
+}
+
+// ReturnParcelFor returns the parcel a return travels in, or nil.
+func (s *ShipmentService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+	return s.shipments.ReturnParcelFor(ctx, s.shipments.Pool(), returnID)
 }
 
 // OrderParcels lists an order's parcels for the seller and buyer views.
@@ -428,4 +637,38 @@ func (s *ShipmentService) ParcelDue(ctx context.Context, shipmentID string) (boo
 	}
 	return shipment.Status == repository.ShipmentLabelCreated ||
 		(shipment.Status == repository.ShipmentReady && shipment.Carrier == "manual"), nil
+}
+
+// addressFromMap reads one of the platform's JSONB address shapes into a carrier
+// address.
+//
+// KEY NAMES ARE TRIED IN SEVERAL SPELLINGS because the shape is not enforced
+// anywhere: `orders.shipping_address` is written by checkout, and nothing has ever
+// pinned its keys. Reading only one spelling means a parcel that is silently
+// undeliverable, so every plausible spelling is accepted and a value is taken from
+// whichever appears.
+//
+// It returns the ZERO address when nothing usable is present, so the caller's
+// emptiness check still fires. A partially-populated address is the dangerous case --
+// a name and a street with no city is not deliverable -- so emptiness is judged by
+// `IsZero` on the fields the carrier actually needs rather than on whether the map
+// has any keys at all.
+func addressFromMap(raw map[string]any) carrier.Address {
+	str := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := raw[k].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	return carrier.Address{
+		Name:     str("name", "Name", "recipient", "recipient_name", "full_name", "contact_name"),
+		Phone:    str("phone", "Phone", "telephone", "contact_phone", "mobile"),
+		Street:   str("street", "Street", "address", "address_line1", "line1", "street_address"),
+		City:     str("city", "City", "city_name"),
+		Province: str("province", "Province", "state", "region"),
+		Postcode: str("postcode", "Postcode", "zip", "postal_code", "zip_code"),
+		Country:  str("country", "Country", "country_code"),
+	}
 }

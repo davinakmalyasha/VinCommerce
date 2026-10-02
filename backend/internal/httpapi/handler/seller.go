@@ -432,6 +432,108 @@ func (h *Seller) BuyParcelLabel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"parcel": shipment})
 }
 
+// addressRequest is a JSONB address as a client sends it.
+//
+// Typed as a map rather than a struct because the platform has never pinned its keys
+// -- `orders.shipping_address` is written by checkout and read by the carrier
+// shaper, which tries several spellings. Declaring a struct here would make the
+// client believe the shape is enforced when it is not.
+type addressRequest map[string]any
+
+// SetReturnAddress handles PUT /seller/return-address.
+func (h *Seller) SetReturnAddress(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req addressRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if len(req) == 0 {
+		// Empty is a legitimate state -- "I will decide later" -- and it is what
+		// makes a return label REFUSED rather than mis-addressed. An empty body is not
+		// the same as a missing one, so it is accepted explicitly.
+		req = addressRequest{}
+	}
+	if err := h.svc.SetReturnAddress(r.Context(), user.ID, map[string]any(req)); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
+}
+
+// ReturnAddress handles GET /seller/return-address.
+func (h *Seller) ReturnAddress(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	addr, err := h.svc.ReturnAddress(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"return_address": addr})
+}
+
+// BuyReturnLabel handles POST /seller/returns/{id}/return-label.
+//
+// The seller issues it, because the seller pays for the carriage and states where the
+// goods go back to. The BUYER creates the parcel -- see the comment on
+// `SellerService.BuyReturnLabel` for why that ownership split is deliberate.
+func (h *Seller) BuyReturnLabel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Format  string `json:"format,omitempty"`
+		Carrier string `json:"carrier,omitempty"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if req.Format == "" {
+		req.Format = "pdf"
+	}
+	parcel, labelURL, err := h.svc.BuyReturnLabel(r.Context(), chi.URLParam(r, "id"), req.Format)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcel": parcel, "label_url": labelURL})
+}
+
+// ReturnParcels handles GET /seller/returns/{id}/parcel.
+func (h *Seller) ReturnParcels(w http.ResponseWriter, r *http.Request) {
+	parcels, err := h.svc.ReturnParcelFor(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcel": parcels})
+}
+
+// NoteReturnArrived handles POST /seller/returns/{id}/arrived.
+//
+// Records that the return parcel has been delivered, which unblocks the refund a human
+// still has to perform. It moves `return_requests.status` and NOTHING else: no escrow
+// release, no journal, no wallet debit. The refund is `RefundReturn`, an explicit
+// seller action.
+//
+// The alternative -- releasing escrow from here -- would pay a seller on the say-so of
+// a carrier webhook.
+func (h *Seller) NoteReturnArrived(w http.ResponseWriter, r *http.Request) {
+	returnID := chi.URLParam(r, "id")
+	arrived, err := h.svc.NoteReturnArrived(r.Context(), returnID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	// `arrived: false` is a real, common answer: a seller clicking "it arrived" when
+	// the parcel has not been delivered yet, or clicking twice. It is reported as
+	// 200 with a false, not as a 409, because the seller asking is not an error -- but
+	// it is NOT silent either, because a silent false reads as "done".
+	writeJSON(w, http.StatusOK, map[string]any{
+		"arrived":       arrived,
+		"next_step":     "refund the buyer once the return is marked returned",
+		"still_blocked": "the refund is not automatic; nothing here moves money",
+	})
+}
+
 // The parcel is already a `service.ParcelView`, so it is returned directly.
 //
 // There was a `parcelJSON(*repository.Shipment)` here first, which meant the handler

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/repository"
@@ -85,10 +87,14 @@ type OrderService struct {
 	broker        *stream.Broker
 	payments      *PaymentService
 	notifications *NotificationService
-	mailer        *mail.Client
-	webURL        string
-	insurancePct  float64
-	logger        *slog.Logger
+	// shipments is the parcel service. The BUYER creates a return parcel through
+	// it, while the seller issues the label through SellerService -- see the
+	// ownership note on `CreateReturnParcel` for why that split is deliberate.
+	shipments    *ShipmentService
+	mailer       *mail.Client
+	webURL       string
+	insurancePct float64
+	logger       *slog.Logger
 }
 
 // NewOrderService creates an OrderService.
@@ -131,6 +137,7 @@ func (s *OrderService) SetPaymentService(p *PaymentService) { s.payments = p }
 
 // SetNotificationService persists order events as in-app notifications.
 func (s *OrderService) SetNotificationService(n *NotificationService) { s.notifications = n }
+func (s *OrderService) SetShipmentService(ship *ShipmentService)      { s.shipments = ship }
 
 // SetMailer enables transactional order emails.
 func (s *OrderService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
@@ -1451,4 +1458,76 @@ func orderAddress(fallback *domain.Address, bySeller map[string]*domain.Address,
 		}
 	}
 	return fallback
+}
+
+// CreateReturnParcel records the box a buyer's return travels in.
+//
+// THE BUYER CREATES IT; THE SELLER ISSUES THE LABEL. That split is the whole fraud
+// control on this feature.
+//
+// A seller who could create and dispatch a return parcel could mark goods as returned
+// without them ever having left the buyer's house, and the refund that follows is real
+// money. So the party that physically hands the parcel over is the party that records
+// it, and the party that pays for the carriage and owns the destination -- the seller
+// -- is the one who buys the label.
+//
+// The identity check is against the RETURN's buyer, not the order's, because a return
+// is per order line and the buyer on it is the authoritative party for this claim.
+func (s *OrderService) CreateReturnParcel(
+	ctx context.Context, buyerID, returnID, carrier string, quantity int,
+) (ParcelView, error) {
+	if s.shipments == nil {
+		return ParcelView{}, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so a return cannot be sent back")
+	}
+	if err := s.assertReturnBuyer(ctx, returnID, buyerID); err != nil {
+		return ParcelView{}, err
+	}
+	return s.shipments.CreateReturnParcel(ctx, returnID, carrier, quantity)
+}
+
+// ReturnParcelFor returns the parcel this buyer's return travels in.
+func (s *OrderService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+	if s.shipments == nil {
+		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so return parcels cannot be read")
+	}
+	return s.shipments.ReturnParcelFor(ctx, returnID)
+}
+
+// AssertReturnOwner refuses a return that is not the caller's.
+//
+// Exported for the handler, which must NOT run its own ownership query: two checks in
+// two packages drift, and the one that drifts is the read path, where nobody notices
+// because in every test the data already belongs to the caller.
+func (s *OrderService) AssertReturnOwner(ctx context.Context, returnID, buyerID string) error {
+	return s.assertReturnBuyer(ctx, returnID, buyerID)
+}
+
+// assertReturnBuyer refuses a return claim that is not the caller's.
+//
+// A NOT_FOUND rather than a FORBIDDEN for someone else's return, so the endpoint
+// cannot be used to discover which return ids exist -- the same distinction the order
+// detail endpoint draws.
+//
+// The check is against the RETURN's buyer rather than the order's. A return is per
+// order line, and the buyer recorded on the return is the authoritative party for that
+// claim; using the order's buyer would be correct only while the two always agree,
+// which is exactly the assumption that rots.
+func (s *OrderService) assertReturnBuyer(ctx context.Context, returnID, buyerID string) error {
+	if s.stores == nil {
+		return domain.E(domain.KindInternal, "STORES_NOT_WIRED",
+			"the store repository is not available, so the return cannot be checked")
+	}
+	_, _, owner, _, _, err := s.stores.ReturnFacts(ctx, s.stores.Pool(), returnID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if owner != buyerID {
+		return domain.ErrNotFound
+	}
+	return nil
 }

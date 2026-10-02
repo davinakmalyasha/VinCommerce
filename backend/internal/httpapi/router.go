@@ -287,6 +287,11 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/{id}/complete", ordersH.Complete)
 			r.Post("/{id}/reviews", ordersH.ReviewOrderItem)
 			r.Post("/{id}/reorder", ordersH.Reorder)
+			// Returns. The BUYER creates the parcel -- the party that physically hands it
+			// over is the party that records it. The seller issues the label, on the
+			// /seller group.
+			r.Post("/returns/{id}/parcel", ordersH.CreateReturnParcel)
+			r.Get("/returns/{id}/parcel", ordersH.ReturnParcel)
 		})
 
 		r.Route("/payments", func(r chi.Router) {
@@ -360,6 +365,13 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Get("/orders/{id}/parcels", seller.OrderParcels)
 				r.Post("/parcels/{id}/dispatch", seller.DispatchParcel)
 				r.Post("/parcels/{id}/label", seller.BuyParcelLabel)
+				// Returns. The seller issues the LABEL and owns the destination;
+				// the buyer creates the parcel and physically hands it over.
+				r.Put("/return-address", seller.SetReturnAddress)
+				r.Get("/return-address", seller.ReturnAddress)
+				r.Get("/returns/{id}/parcel", seller.ReturnParcels)
+				r.Post("/returns/{id}/return-label", seller.BuyReturnLabel)
+				r.Post("/returns/{id}/arrived", seller.NoteReturnArrived)
 				r.Get("/live", liveH.MySessions)
 				r.Post("/live", liveH.Create)
 				r.Post("/live/{id}/transition", liveH.Transition)

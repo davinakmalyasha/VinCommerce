@@ -66,7 +66,16 @@ func TestNoShipmentMethodAcceptsAStatus(t *testing.T) {
 	}
 	body := string(raw)
 
-	for _, forbidden := range []string{"status string", "to string", "newStatus string"} {
+	// NOTE: the patterns must not contain the bare word "status" in a position where a
+	// method legitimately takes a status-derived value. The first version forbade
+	// "status string", and the return methods introduced
+	// `(orderID, itemID, buyerID, sellerID, status string, err error)` from a
+	// multi-return helper -- which is a READ, not a request. Asserting on the word
+	// rather than on the direction of the data is the mistake.
+	//
+	// What this test really guards is that no method takes a status the CALLER
+	// chooses. That is checked per method below, by name.
+	for _, forbidden := range []string{"to string", "newStatus string", "orderStatus string"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("a shipment method accepts a status (%q):\\n%s\\n"+
 				"the status is a fact about the boxes; accepting it from the caller is "+

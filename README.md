@@ -726,6 +726,65 @@ eturned lines,
    emailBuyer discards every error it can return — so a buyer whose shipped mail
    fails to send is not told, and neither is the platform.*
 
+   **[closed] The platform told the buyer to send the goods back and gave them no
+   way to.** `SellerDecideReturn` emails "Silakan kirim barang kembali" on approval
+   — please send the goods back — and until 00051 there was no return label, no
+   return parcel, no RMA, and nothing at all that wrote `shipments.kind = 'return'`,
+   a value 00050 had carried unused since the day it was added. A buyer complying with
+   that email had to find a courier themselves and guess the seller's address off the
+   order page.
+
+   Three things turned out to be missing, not one:
+
+   1. **A destination.** `stores` had *no address column at all* — `00006_marketplace.sql`
+      created it with name, slug, description, logo, banner, status and counters. So a
+      return label had nowhere correct to be sent. Both available fallbacks are wrong:
+      reusing `orders.shipping_address` is the BUYER's address, which posts the returned
+      goods back to the buyer at the seller's expense as a second parcel of the same
+      items; inventing one from the store's city is an address nobody chose. So the
+      seller states it (`PUT /seller/return-address`), and an unset address makes the
+      label REFUSE rather than guess.
+
+   2. **The parcel.** `return_requests` gains `return_shipment_id` and
+      `return_label_url`. The label URL is a pointer, not state — it is signed and
+      expiring in every real carrier; the durable record is the parcel's `label_format`
+      and `label_created_at`. The FK is `ON DELETE SET NULL`, because `shipments` is
+      `CASCADE` from `orders` and a plain FK would make deleting an order fail on a
+      constraint in a table nobody was thinking about.
+
+   3. **The counter that must NOT move.** `shipped_quantity` is the over-shipment
+      counter, and `DeriveShippingStatus` compares it against `quantity` to decide
+      `partially_shipped` vs `shipped`. Incrementing it for goods travelling the OTHER
+      direction would make a delivered order re-assert `shipped` and count one unit
+      twice — once out, once back. So the return path writes a bare `shipment_items`
+      row and does not go near `AddShipmentItems`, whose entire job is the reservation.
+      That is the same disagreement 00050 had to fix for the order status, one level
+      down and through the return door.
+
+   **No new value on `return_requests.status`.** The journey lives on the parcel; the
+   return row says whether the return was approved and whether the refund happened. An
+   `in_transit` value there would duplicate the journey in two tables that can then
+   disagree. A return reaches `returned` only when its parcel is actually `delivered`
+   (M63, M66) — a seller clicking "it arrived" is not evidence, and a return marked
+   returned with the box still in a depot is a refund paid for goods nobody has.
+
+   **Ownership is split, and that is the fraud control.** The BUYER creates the parcel
+   — the party that physically hands it over is the party that records it. The SELLER
+   issues the label, because the seller pays for the carriage and owns the
+   destination. A seller who could create and dispatch a return parcel could mark goods
+   as returned without them ever leaving the buyer's house, and the refund that follows
+   is real money. M65 pins the ownership check.
+
+   **Nothing on this path moves money.** A return label is a label: no escrow release,
+   no journal, no wallet debit. The refund is `RefundReturn`, an explicit seller action,
+   and the seller hold is released by the existing reservation job. Asserted over the
+   whole file, the way `payout_batch_test.go` asserts that no batch path writes
+   `payouts.status`.
+
+   *Still open: no real carrier adapter, and `return_address` has no validation beyond
+   "is it empty" — a seller can set a street that does not exist, and the parcel will
+   simply fail to arrive.*
+
    **[closed] There was no carrier integration, and `manual` is a real one.**
    `internal/carrier` is the boundary between a parcel and whatever physically moves
    it, shaped like the payment `Gateway` interface that already existed: one required

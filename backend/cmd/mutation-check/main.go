@@ -68,16 +68,18 @@ const (
 	// distinction between the swallowing `postLedger` and the strict
 	// `postLedgerStrict` IS the guard, and a mutation that swaps a call site cannot
 	// express it without failing to compile.
-	svcPostFile   = "internal/service/ledger_postings.go"
-	repoFile      = "internal/repository/payment_repo.go"
-	capFile       = "internal/service/refund_cap.go"
-	domainFile    = "internal/domain/order.go"
-	shipFile      = "internal/repository/shipment_repo.go"
-	orderRepoFile = "internal/repository/order_repo.go"
-	shipSvcFile   = "internal/service/shipment_service.go"
-	carrierFile   = "internal/carrier/carrier.go"
-	manualFile    = "internal/carrier/manual.go"
-	routerFile    = "internal/httpapi/router.go"
+	svcPostFile    = "internal/service/ledger_postings.go"
+	repoFile       = "internal/repository/payment_repo.go"
+	capFile        = "internal/service/refund_cap.go"
+	domainFile     = "internal/domain/order.go"
+	shipFile       = "internal/repository/shipment_repo.go"
+	orderRepoFile  = "internal/repository/order_repo.go"
+	shipSvcFile    = "internal/service/shipment_service.go"
+	carrierFile    = "internal/carrier/carrier.go"
+	manualFile     = "internal/carrier/manual.go"
+	returnRepoFile = "internal/repository/return_parcel_repo.go"
+	routerFile     = "internal/httpapi/router.go"
+	orderSvcFile   = "internal/service/order_service.go"
 )
 
 // allPkgs is what a mutation is tested against.
@@ -897,6 +899,94 @@ func main() {
 			file:  shipSvcFile,
 			old:   "\tif shipment.DeliveredAt != nil {",
 			new:   "\tif false {",
+		},
+		{
+			// THE ONE THAT WAS WRITTEN AND CAUGHT IN THE SAME SITTING.
+			//
+			// returnDestinationFor takes a sellerID; the call site passed
+			// shipment.OrderID. Both are strings, so THE COMPILER WAS HAPPY. The lookup
+			// is `WHERE owner_id = $1`, an order id never matches a store owner, so every
+			// return label is refused with "no destination" and the whole return feature
+			// is dead -- while every carrier test still passes, because the carrier is
+			// behaving perfectly on an empty address.
+			label: "M64: the return label was addressed to the order, so no return label could ever be bought",
+			file:  shipSvcFile,
+			old:   "returnDestinationFor(ctx, shipment.SellerID)",
+			new:   "returnDestinationFor(ctx, shipment.OrderID)",
+		},
+		{
+			// shipped_quantity is the over-shipment counter, and
+			// DeriveShippingStatus compares it against quantity to decide partially_shipped
+			// vs shipped. Counting a return makes a delivered order re-assert `shipped`
+			// and counts one unit twice: once out, once back.
+			label: "M60: a return parcel reserved shipped units, as if it were a new outbound shipment",
+			file:  returnRepoFile,
+			old:   "INSERT INTO shipment_items (shipment_id, order_item_id, quantity)",
+			new: "INSERT INTO shipment_items (shipment_id, order_item_id, quantity) " +
+				"-- and UPDATE order_items SET shipped_quantity = quantity",
+		},
+		{
+			// A `requested` return is one the seller has not agreed to. A parcel for it is
+			// goods in motion that nobody has accepted responsibility for.
+			label: "M61: an unapproved return could be sent back",
+			file:  shipSvcFile,
+			old:   "if status != domain.ReturnApproved {",
+			new:   "if false {",
+		},
+		{
+			// Two boxes arriving against one approved refund means one matches nothing
+			// and the seller decides by eye.
+			label: "M62: a return could have a second parcel",
+			file:  returnRepoFile,
+			old:   "if err == nil {\n\t\treturn nil, ErrReturnAlreadyParcelled\n\t}",
+			new:   "if false {\n\t\treturn nil, ErrReturnAlreadyParcelled\n\t}",
+		},
+		{
+			// A return marked returned with the box still in a depot is a refund paid for
+			// goods nobody has. The guard must be the PARCEL's delivery, not the seller's
+			// word -- and a seller clicking "it arrived" is not evidence.
+			label: "M63: a return could be marked returned before its parcel arrived",
+			file:  returnRepoFile,
+			old:   "AND s.status = 'delivered'",
+			new:   "AND s.status <> 'cancelled'",
+		},
+		{
+			// The seller owning the pickup address is the fraud control on the whole
+			// feature: a seller who can create and dispatch a return parcel marks goods
+			// as returned without them ever leaving the buyer, and the refund is real.
+			// The buyer-ownership check on the return parcel path.
+			//
+			// The first version of this mutation rewrote a function signature to invent
+			// a seller-side parcel creator, and it DID NOT COMPILE. The checker correctly
+			// refused to count a build failure as coverage and reported "the mutation did
+			// not compile, so no test ran" -- which is the right answer and still a hole
+			// in the evidence.
+			//
+			// The property that actually matters is narrower, and it is the one a
+			// careless caller or a future refactor would break: the check that the
+			// return belongs to the caller. Disable it and ANY party can create a return
+			// parcel for ANY return -- which is the fraud control on this whole feature,
+			// because a caller who can mark goods as returned without them ever leaving
+			// the buyer gets a real refund.
+			// `false &&` rather than plain `false`: a bare `if false` leaves `owner`
+			// declared and unused, the package fails to build, and the checker refuses
+			// to count a build failure as coverage. That is the right behaviour and still
+			// a hole in the evidence, so the mutation has to compile -- which is also
+			// how this bug actually appears in practice: a guard "temporarily" relaxed
+			// with a `&& false`.
+			label: "M65: the return-ownership check was disabled, so any caller could send a return back",
+			file:  orderSvcFile,
+			old:   "\tif owner != buyerID {",
+			new:   "\tif false && owner != buyerID {",
+		},
+		{
+			// The journey lives on the parcel. A return row claiming `in_transit` would
+			// duplicate it in a second table, which is the same disagreement 00050 had to
+			// fix for the order status, one level down.
+			label: "M66: a new in_transit status was added to the return row",
+			file:  returnRepoFile,
+			old:   "SET status = 'returned', updated_at = now()",
+			new:   "SET status = 'in_transit', updated_at = now()",
 		},
 	}
 

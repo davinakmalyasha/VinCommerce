@@ -21,6 +21,15 @@ func NewStoreRepository(pool *db.Pool) *StoreRepository {
 	return &StoreRepository{pool: pool}
 }
 
+// Pool exposes the pool, so a service holding only a StoreRepository can still reach
+// the database for the return columns it needs.
+//
+// Added with the return-parcel work: `stores` had no accessor, so a service that
+// needed `return_address` had no way to read it without the repository growing a
+// method per call site. The other repositories (Order, Payment, Shipment, Ledger)
+// all have this.
+func (r *StoreRepository) Pool() *db.Pool { return r.pool }
+
 // FreeShippingThreshold returns the seller's free-shipping threshold (nil if unset).
 func (r *StoreRepository) FreeShippingThreshold(ctx context.Context, ownerID string) (*float64, error) {
 	var t *float64
@@ -692,3 +701,85 @@ func scanReturn(row returnRow) (*domain.ReturnRequest, error) {
 }
 
 var _ = time.Second
+
+// ReturnAddress is where a seller's returns go.
+//
+// `stores` had NO address column until 00051 -- 00006_marketplace.sql:1-16 created it
+// with name, slug, description, logo, banner, status and counters, and no location at
+// all. So a return label had nowhere correct to be sent, and the two available
+// fallbacks are both wrong: reusing `orders.shipping_address` posts the returned goods
+// back to the BUYER at the seller's expense, and inventing one from the store's city
+// is an address nobody chose.
+//
+// An empty address is returned as a nil map rather than a guessed one, so the caller
+// cannot mistake "unset" for "set to something plausible".
+func (r *StoreRepository) ReturnAddress(ctx context.Context, q Querier, ownerID string) (map[string]any, error) {
+	var raw []byte
+	err := q.QueryRow(ctx, `
+		SELECT return_address FROM stores WHERE owner_id = $1::uuid`, ownerID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		// A malformed address is treated as absent rather than propagated: a
+		// half-readable address that gets partially filled in is how a parcel ends up
+		// addressed to a street that does not exist.
+		return nil, nil
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// SetReturnAddress records where a seller's returns go.
+//
+// A seller may only set their OWN store's address, which is the whole of the
+// ownership check: there is no admin path here on purpose, because an admin editing a
+// pickup address is how returns start arriving somewhere the seller cannot collect
+// them.
+func (r *StoreRepository) SetReturnAddress(
+	ctx context.Context, ownerID string, addr map[string]any,
+) error {
+	raw, err := json.Marshal(addr)
+	if err != nil {
+		return err
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE stores SET return_address = $2::jsonb, updated_at = now()
+		 WHERE owner_id = $1::uuid`, ownerID, raw)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindNotFound, "STORE_NOT_FOUND",
+			"no store is registered for this account, so a return address cannot be set")
+	}
+	return nil
+}
+
+// ReturnFacts reads the columns a return parcel needs, in one query.
+//
+// Deliberately NOT reusing `returnBy`, which joins `order_items` and scans an
+// evidence array and a product name that none of this needs. A parcel path that pulls
+// the whole return row is a parcel path that breaks when the return row grows a
+// column.
+func (r *StoreRepository) ReturnFacts(
+	ctx context.Context, q Querier, returnID string,
+) (orderID, itemID, buyerID, sellerID, status string, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT order_id::text, order_item_id::text, buyer_id::text, seller_id::text, status
+		  FROM return_requests WHERE id = $1::uuid`, returnID).
+		Scan(&orderID, &itemID, &buyerID, &sellerID, &status)
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	return orderID, itemID, buyerID, sellerID, status, nil
+}

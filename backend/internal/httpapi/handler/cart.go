@@ -467,7 +467,6 @@ func (h *Orders) ByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // ByNumber handles GET /orders/tracking/{number}.
-// ByNumber handles GET /orders/tracking/{number}.
 //
 // Two independent defects used to meet here, and either alone was enough.
 //
@@ -489,6 +488,56 @@ func (h *Orders) ByID(w http.ResponseWriter, r *http.Request) {
 //
 // The response is also narrowed, because a scoped lookup still should not echo
 // identifiers the tracking UI has no use for.
+// CreateReturnParcel handles POST /returns/{id}/parcel.
+//
+// The BUYER sends the goods back, so the buyer creates the parcel. The seller issues
+// the label -- see the ownership note on `OrderService.CreateReturnParcel` for why
+// that split is the fraud control rather than an accident of routing.
+func (h *Orders) CreateReturnParcel(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		Carrier  string `json:"carrier,omitempty"`
+		Quantity int    `json:"quantity"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if req.Quantity <= 0 {
+		writeErr(w, r, domain.E(domain.KindInvalid, "RETURN_QUANTITY_INVALID",
+			"a return parcel must say how many units are going back"))
+		return
+	}
+	parcel, err := h.svc.CreateReturnParcel(r.Context(), user.ID, chi.URLParam(r, "id"),
+		req.Carrier, req.Quantity)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"parcel": parcel})
+}
+
+// ReturnParcel handles GET /returns/{id}/parcel.
+//
+// "Where is my return" needs to answer "none yet" as clearly as "here it is", so an
+// absent parcel is a 200 with a null body rather than a 404.
+func (h *Orders) ReturnParcel(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	returnID := chi.URLParam(r, "id")
+	// The same ownership check the create path makes. A 404 rather than a 403, so this
+	// cannot be used to discover which return ids exist.
+	if err := h.svc.AssertReturnOwner(r.Context(), returnID, user.ID); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	parcel, err := h.svc.ReturnParcelFor(r.Context(), returnID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcel": parcel})
+}
+
 func (h *Orders) ByNumber(w http.ResponseWriter, r *http.Request) {
 	o, err := h.svc.ByNumber(r.Context(), chi.URLParam(r, "number"), middleware.ActorFrom(r.Context()))
 	if err != nil {

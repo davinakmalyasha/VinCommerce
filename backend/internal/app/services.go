@@ -235,8 +235,13 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	// configured; an unregistered one is NAMED in the error rather than silently
 	// answered with the manual carrier.
 	carrierRegistry := carrier.NewLabelRegistry(carrier.NewManual())
-	sellerSvc.SetShipmentService(
-		service.NewShipmentService(r.Orders, r.Shipments, carrierRegistry))
+	shipmentSvc := service.NewShipmentService(r.Orders, r.Shipments, carrierRegistry, r.Stores)
+	sellerSvc.SetShipmentService(shipmentSvc)
+	// The BUYER needs the same service: the buyer creates a return parcel, the seller
+	// issues the label. One service instance for both, deliberately -- two instances
+	// would be two carriers, two registries and two sets of in-memory manual labels,
+	// and a label bought through one would be unknown to the other.
+	orderSvc.SetShipmentService(shipmentSvc)
 	engagementSvc := service.NewEngagementService(r.Wishlist, r.Products)
 	marketSvc := service.NewMarketService(r.Market)
 	supportSvc := service.NewSupportService(r.Support, r.Orders)
