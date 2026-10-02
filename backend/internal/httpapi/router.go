@@ -353,6 +353,13 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Get("/orders", ordersH.SellerList)
 				r.Post("/returns/{id}/decide", seller.DecideReturn)
 				r.Post("/orders/{id}/transition", seller.FulfillOrder)
+				// Parcels. The single-parcel shortcut above still works for an order
+				// that was never split; these are for the orders where it is not
+				// expressible.
+				r.Post("/orders/{id}/parcels", seller.CreateParcel)
+				r.Get("/orders/{id}/parcels", seller.OrderParcels)
+				r.Post("/parcels/{id}/dispatch", seller.DispatchParcel)
+				r.Post("/parcels/{id}/label", seller.BuyParcelLabel)
 				r.Get("/live", liveH.MySessions)
 				r.Post("/live", liveH.Create)
 				r.Post("/live/{id}/transition", liveH.Transition)

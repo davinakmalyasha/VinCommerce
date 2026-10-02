@@ -327,6 +327,119 @@ func (h *Seller) FulfillOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"transitioned": true})
 }
 
+// parcelLineRequest is one line the seller says is in a parcel.
+type parcelLineRequest struct {
+	OrderItemID string `json:"order_item_id"`
+	Quantity    int    `json:"quantity"`
+}
+
+// createParcelRequest asks for a parcel.
+//
+// A whole-parcel request. There is deliberately no "contents" field: letting the
+// caller name the contents freely is how a parcel ends up holding units that were
+// never bought, and the shipped_quantity counter is the thing that has to be
+// maintained by the server, not trusted to the request.
+type createParcelRequest struct {
+	Carrier string              `json:"carrier,omitempty"`
+	Items   []parcelLineRequest `json:"items"`
+}
+
+// CreateParcel handles POST /seller/orders/{id}/parcels.
+func (h *Seller) CreateParcel(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req createParcelRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if len(req.Items) == 0 {
+		// Named, rather than letting an empty parcel be created and then found
+		// meaningless later. A parcel with nothing in it has no weight, no contents
+		// and no reason to exist.
+		writeErr(w, r, domain.E(domain.KindInvalid, "SHIPMENT_EMPTY",
+			"a parcel needs at least one line in it"))
+		return
+	}
+	lines := make([]service.ParcelLine, 0, len(req.Items))
+	for _, it := range req.Items {
+		lines = append(lines, service.ParcelLine{OrderItemID: it.OrderItemID, Quantity: it.Quantity})
+	}
+	shipment, err := h.svc.CreateParcel(r.Context(), user.ID, chi.URLParam(r, "id"),
+		req.Carrier, lines)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"parcel": shipment})
+}
+
+// OrderParcels handles GET /seller/orders/{id}/parcels.
+//
+// Every parcel, including cancelled and voided. The sequence numbers are the audit
+// trail, and hiding parcel 2 because it was cancelled leaves a parcel 3 with no
+// explanation of where parcel 2 went.
+func (h *Seller) OrderParcels(w http.ResponseWriter, r *http.Request) {
+	parcels, err := h.svc.OrderParcels(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcels": parcels})
+}
+
+// DispatchParcel handles POST /seller/parcels/{id}/dispatch.
+func (h *Seller) DispatchParcel(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		TrackingNumber string `json:"tracking_number,omitempty"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	shipment, err := h.svc.DispatchParcel(r.Context(), user.ID, chi.URLParam(r, "id"),
+		req.TrackingNumber)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcel": shipment})
+}
+
+// BuyParcelLabel handles POST /seller/parcels/{id}/label.
+//
+// Separate from dispatch on purpose: buying a label SPENDS MONEY and is often
+// irreversible at the carrier, while handing the box over is free and happens later.
+// Collapsing them means a seller who buys a label and then discovers he cannot get a
+// colleague to the depot has spent money he cannot get back.
+func (h *Seller) BuyParcelLabel(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		Format string `json:"format,omitempty"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if req.Format == "" {
+		req.Format = "pdf"
+	}
+	shipment, err := h.svc.BuyLabel(r.Context(), user.ID, chi.URLParam(r, "id"), req.Format)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"parcel": shipment})
+}
+
+// The parcel is already a `service.ParcelView`, so it is returned directly.
+//
+// There was a `parcelJSON(*repository.Shipment)` here first, which meant the handler
+// imported `internal/repository` -- the exact violation check-import-boundaries
+// rejects, and the same one it flagged in seo.go and admin_ops.go. The rule is right:
+// a handler that knows the storage shape cannot be changed without changing storage.
+// The service owns the wire shape, as it already does for PayoutBatchView.
+
 // PublicStore handles GET /stores/{slug}.
 func (h *Seller) PublicStore(w http.ResponseWriter, r *http.Request) {
 	userID := ""

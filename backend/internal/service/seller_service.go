@@ -591,12 +591,32 @@ func (s *SellerService) SetShipmentService(ship *ShipmentService) {
 	s.shipSvc = ship
 }
 
+// OrderParcels lists an order's parcels for the seller packing view.
+func (s *SellerService) OrderParcels(ctx context.Context, orderID string) ([]ParcelView, error) {
+	if s.shipSvc == nil {
+		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so parcels cannot be listed")
+	}
+	return s.shipSvc.OrderParcels(ctx, orderID)
+}
+
+// BuyLabel buys a printable label for one of the seller's parcels.
+func (s *SellerService) BuyLabel(
+	ctx context.Context, sellerID, shipmentID, format string,
+) (ParcelView, error) {
+	if s.shipSvc == nil {
+		return ParcelView{}, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+			"the shipment service is not available, so labels cannot be bought")
+	}
+	return s.shipSvc.BuyLabel(ctx, sellerID, shipmentID, format)
+}
+
 // CreateParcel records a parcel for a seller order.
 func (s *SellerService) CreateParcel(
 	ctx context.Context, sellerID, orderID, carrier string, lines []ParcelLine,
-) (*repository.Shipment, error) {
+) (ParcelView, error) {
 	if s.shipSvc == nil {
-		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+		return ParcelView{}, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so parcels cannot be recorded")
 	}
 	return s.shipSvc.CreateParcel(ctx, sellerID, orderID, carrier, lines)
@@ -610,14 +630,14 @@ func (s *SellerService) CreateParcel(
 // that one email instead of two would have avoided.
 func (s *SellerService) DispatchParcel(
 	ctx context.Context, sellerID, shipmentID, tracking string,
-) (*repository.Shipment, error) {
+) (ParcelView, error) {
 	if s.shipSvc == nil {
-		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
+		return ParcelView{}, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so parcels cannot be dispatched")
 	}
 	out, allShipped, err := s.shipSvc.DispatchParcel(ctx, sellerID, shipmentID, tracking)
 	if err != nil {
-		return nil, err
+		return ParcelView{}, err
 	}
 	if allShipped {
 		// A failed notification does NOT fail the dispatch. The parcel HAS left, and

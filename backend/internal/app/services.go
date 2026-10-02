@@ -36,6 +36,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/vincommerce/backend/internal/ai"
 	"github.com/vincommerce/backend/internal/cache"
+	"github.com/vincommerce/backend/internal/carrier"
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
 	"github.com/vincommerce/backend/internal/domain"
@@ -228,7 +229,14 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	// Parcels. A setter rather than constructor arguments: DispatchParcel notifies
 	// through SellerService.emailBuyer, so passing a mail client to both would be
 	// two paths to one inbox.
-	sellerSvc.SetShipmentService(service.NewShipmentService(r.Orders, r.Shipments))
+	// Carriers. `manual` is always registered: cash-on-delivery and local delivery
+	// have no AWB, and without it those parcels would be unrepresentable -- which is
+	// the exact defect 00050 removed. Real carriers are added here as they are
+	// configured; an unregistered one is NAMED in the error rather than silently
+	// answered with the manual carrier.
+	carrierRegistry := carrier.NewLabelRegistry(carrier.NewManual())
+	sellerSvc.SetShipmentService(
+		service.NewShipmentService(r.Orders, r.Shipments, carrierRegistry))
 	engagementSvc := service.NewEngagementService(r.Wishlist, r.Products)
 	marketSvc := service.NewMarketService(r.Market)
 	supportSvc := service.NewSupportService(r.Support, r.Orders)

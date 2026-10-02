@@ -75,6 +75,9 @@ const (
 	shipFile      = "internal/repository/shipment_repo.go"
 	orderRepoFile = "internal/repository/order_repo.go"
 	shipSvcFile   = "internal/service/shipment_service.go"
+	carrierFile   = "internal/carrier/carrier.go"
+	manualFile    = "internal/carrier/manual.go"
+	routerFile    = "internal/httpapi/router.go"
 )
 
 // allPkgs is what a mutation is tested against.
@@ -817,6 +820,82 @@ func main() {
 			label: "M50: an illegal derived status was forced through",
 			file:  shipSvcFile,
 			old:   "\tif !domain.CanTransition(current, derived) {",
+			new:   "\tif false {",
+		},
+		{
+			// A registry that answers an unknown carrier with a made-up one is the
+			// defect this package exists to avoid: a seller asking for "jnE" gets a
+			// self-minted tracking number, believes a courier is involved, and spends
+			// three days waiting on one. This is why it is a map and not a switch with
+			// a default branch.
+			label: "M51: an unconfigured carrier was answered with a made-up one",
+			file:  carrierFile,
+			old:   "\tkey = ManualCarrierName",
+			new:   "\tkey = \"jne\"",
+		},
+		{
+			// `attempted` is a MISSED delivery, which usually re-delivers. A terminal
+			// mapping leaves the parcel stuck for ever, because MarkShipmentDelivered
+			// correctly refuses a terminal status.
+			label: "M52: a missed delivery was mapped to a terminal shipment state",
+			file:  carrierFile,
+			old:   "\t\treturn \"exception\", true",
+			new:   "\t\treturn \"cancelled\", true",
+		},
+		{
+			// An unknown carrier state must leave the parcel alone. Guessing from a
+			// provider's renamed field is how a parcel gets marked cancelled.
+			label: "M53: an unrecognised carrier state was translated into a guess",
+			file:  carrierFile,
+			old:   "\t\treturn \"\", false",
+			new:   "\t\treturn \"in_transit\", true",
+		},
+		{
+			// Buying a label spends real money. A second label for one box leaves the
+			// seller with two paid labels and no way to tell which is live.
+			label: "M54: a label retry bought a second label for the same parcel",
+			file:  manualFile,
+			old:   "\tif existing, ok := m.handed[in.ParcelID]; ok {",
+			new:   "\tif existing, ok := m.handed[in.ParcelID]; ok && false {",
+		},
+		{
+			// The manual carrier must not invent movement. A reconciled in_transit for
+			// a parcel nobody is watching is a lie stored as fact.
+			label: "M55: the manual carrier claimed movement it cannot know about",
+			file:  manualFile,
+			old:   "\t\tStatus:   TrackingPending,",
+			new:   "\t\tStatus:   TrackingInTransit,",
+		},
+		{
+			// This refusal happens before any money is spent, which is what makes it
+			// cheap. A label addressed nowhere is money gone and a parcel nobody
+			// receives.
+			label: "M56: a label was bought for a parcel with no destination",
+			file:  manualFile,
+			old:   "\tif in.Destination.IsZero() {",
+			new:   "\tif false {",
+		},
+		{
+			// Most orders are one box. Losing the shortcut forces a seller to name
+			// the contents of an order going in a single parcel, for no information.
+			label: "M57: the single-parcel transition route was dropped",
+			file:  routerFile,
+			old:   `r.Post("/orders/{id}/transition", seller.FulfillOrder)`,
+			new:   `r.Post("/orders/{id}/legacy-transition", seller.FulfillOrder)`,
+		},
+		{
+			// The idempotency key must be the parcel, not the attempt.
+			label: "M58: a label retry was given a fresh idempotency key",
+			file:  shipSvcFile,
+			old:   "\t\tIdempotency: shipment.ID,",
+			new:   "\t\tIdempotency: shipment.ID + \"-retry\",",
+		},
+		{
+			// A delivered parcel must not get a new label: money spent on a box that
+			// is not going anywhere.
+			label: "M59: money was spent on a label for an already-delivered parcel",
+			file:  shipSvcFile,
+			old:   "\tif shipment.DeliveredAt != nil {",
 			new:   "\tif false {",
 		},
 	}

@@ -726,6 +726,53 @@ eturned lines,
    emailBuyer discards every error it can return — so a buyer whose shipped mail
    fails to send is not told, and neither is the platform.*
 
+   **[closed] There was no carrier integration, and `manual` is a real one.**
+   `internal/carrier` is the boundary between a parcel and whatever physically moves
+   it, shaped like the payment `Gateway` interface that already existed: one required
+   interface, and optional capability interfaces for the paths that need them
+   (`TrackingCarrier`, exactly as `RefundStatusProvider` is separate from `Gateway`).
+
+   **`manual` is implemented, not stubbed.** It mints a tracking number, issues a
+   printable label and answers tracking queries -- it just does none of that by
+   talking to anybody. That is the correct adapter for COD and local delivery, which
+   routinely have no AWB, and it means the parcel path is fully exercised today with no
+   credentials at all. A stub would have been the obvious first step and would have
+   been useless; refusing to record a parcel until a real carrier exists would have
+   left every COD order unrepresentable, which is the exact defect `00050` removed.
+
+   Two decisions worth naming:
+
+   - Tracking numbers are `MNL`-prefixed and derived from the parcel id, not random.
+     A random number is undiagnosable when a buyer reads it out over the phone, and
+     one that looks like a courier's makes someone wait on a courier for a parcel
+     that was never handed to one.
+   - The manual carrier reports `pending`, never `in_transit` or `delivered`. It
+     knows nothing, and a reconciliation path that stored a guessed state would be
+     storing a lie as fact. A parcel moved by hand is delivered by someone TELLING
+     the platform.
+
+   **An unconfigured carrier is NAMED, never answered with the manual one.** The
+   registry is a map, not a switch with a default branch, precisely so that a seller
+   asking for `jnE` is told it is not configured rather than handed a self-minted
+   number and left waiting on a courier (M51).
+
+   **Buying a label and dispatching a parcel are separate endpoints.** A label costs
+   money and is often irreversible at the carrier; handing the box over is free and
+   happens later. Collapsing them means a seller who buys a label and then cannot get
+   a colleague to the depot has spent money he cannot get back. The label is
+   idempotent on the PARCEL, so a retry after a timeout returns the label already
+   paid for (M54, M58).
+
+   A label is refused before any money is spent if the parcel has no destination, no
+   weight, or no format -- checked in one place at the boundary rather than in each
+   adapter, because three carriers re-implementing "a label needs a destination" is
+   three chances to forget one and the failure at the far end is a paid label
+   addressed to nowhere (M56).
+
+   **Still open: there is no real carrier adapter.** `manual` covers COD and local
+   delivery, and nothing polls a carrier, so a parcel moved by a courier is marked
+   delivered by hand. F4 (return labels) and F5 (carrier webhooks) are not started.
+
    **[closed] The release job had no handler.** `TaskReleasePayoutReservations` was
    a string constant with a comment describing the fraud control it represented, no
    handler on the mux and no entry in the schedule — so the worker started, reported
