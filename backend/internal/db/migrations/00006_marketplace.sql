@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE stores (
+CREATE TABLE IF NOT EXISTS stores (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id      UUID NOT NULL UNIQUE REFERENCES users (id) ON DELETE CASCADE,
     name          VARCHAR(120) NOT NULL,
@@ -17,9 +17,9 @@ CREATE TABLE stores (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_stores_status ON stores (status);
+CREATE INDEX IF NOT EXISTS idx_stores_status ON stores (status);
 
-CREATE TABLE seller_kyc (
+CREATE TABLE IF NOT EXISTS seller_kyc (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     store_id       UUID NOT NULL REFERENCES stores (id) ON DELETE CASCADE,
     owner_name     VARCHAR(120) NOT NULL,
@@ -35,9 +35,9 @@ CREATE TABLE seller_kyc (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_kyc_store ON seller_kyc (store_id);
+CREATE INDEX IF NOT EXISTS idx_kyc_store ON seller_kyc (store_id);
 
-CREATE TABLE return_requests (
+CREATE TABLE IF NOT EXISTS return_requests (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id      UUID NOT NULL REFERENCES orders (id),
     order_item_id UUID NOT NULL REFERENCES order_items (id),
@@ -58,9 +58,9 @@ CREATE TABLE return_requests (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_returns_buyer ON return_requests (buyer_id, requested_at DESC);
-CREATE INDEX idx_returns_seller ON return_requests (seller_id, requested_at DESC);
-CREATE INDEX idx_returns_status ON return_requests (status);
+CREATE INDEX IF NOT EXISTS idx_returns_buyer ON return_requests (buyer_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_returns_seller ON return_requests (seller_id, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_returns_status ON return_requests (status);
 
 -- +goose Down
 DROP TABLE IF EXISTS return_requests;

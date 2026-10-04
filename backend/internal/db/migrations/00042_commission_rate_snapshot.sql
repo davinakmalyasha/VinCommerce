@@ -18,7 +18,7 @@
 --    recomputed a fee at TODAY's rate and then DEBITED it from the platform
 --    wallet. Two consequences, both bad:
 --      * it took money the platform never earned on that order, out of commission
---        pooled from every other seller;
+--        pooled from every other seller.
 --      * if the pooled balance was short the entire refund failed with
 --        INSUFFICIENT_BALANCE, so the buyer's approved return was stuck with no
 --        retry path and no way to resolve it except a manual wallet adjustment.

@@ -64,7 +64,7 @@
 --
 --   * reuse `orders.shipping_address` -- that is the BUYER's address, so a return
 --     label addressed from it posts the returned goods straight back to the buyer at
---     the seller's expense, which is a second parcel of the same items;
+--     the seller's expense, which is a second parcel of the same items.
 --   * invent a default from the store's city -- an address nobody chose is an address
 --     the parcel does not arrive at, and the refund stays blocked forever.
 --
@@ -79,11 +79,11 @@
 -- +goose Up
 
 ALTER TABLE stores
-    ADD COLUMN return_address JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ADD COLUMN IF NOT EXISTS return_address JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 ALTER TABLE return_requests
-    ADD COLUMN return_shipment_id UUID REFERENCES shipments (id) ON DELETE SET NULL,
-    ADD COLUMN return_label_url TEXT;
+    ADD COLUMN IF NOT EXISTS return_shipment_id UUID REFERENCES shipments (id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS return_label_url TEXT;
 
 -- One parcel per return request, and the reverse lookup from a parcel back to the
 -- return it belongs to.
@@ -92,14 +92,14 @@ ALTER TABLE return_requests
 -- means two boxes of returned goods arriving against one approved refund, and the
 -- seller matching them by eye. The index is a plain one because UNIQUE already gives
 -- lookup by value.
-CREATE UNIQUE INDEX idx_returns_return_shipment
+CREATE UNIQUE INDEX IF NOT EXISTS idx_returns_return_shipment
     ON return_requests (return_shipment_id)
     WHERE return_shipment_id IS NOT NULL;
 
 -- The reverse direction: given a return parcel, which return does it satisfy? Every
 -- carrier webhook resolves a parcel first and then needs this, and without the index
 -- that is a sequential scan of every return on every delivery event.
-CREATE INDEX idx_shipments_return_request
+CREATE INDEX IF NOT EXISTS idx_shipments_return_request
     ON return_requests (order_id, status)
     WHERE return_shipment_id IS NOT NULL;
 

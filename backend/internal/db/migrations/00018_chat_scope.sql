@@ -1,9 +1,9 @@
 -- +goose Up
 ALTER TABLE chat_sessions
-    ADD COLUMN order_id UUID REFERENCES orders (id) ON DELETE SET NULL,
-    ADD COLUMN type VARCHAR(12) NOT NULL DEFAULT 'support' CHECK (type IN ('support', 'seller'));
+    ADD COLUMN IF NOT EXISTS order_id UUID REFERENCES orders (id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS type VARCHAR(12) NOT NULL DEFAULT 'support' CHECK (type IN ('support', 'seller'));
 
-CREATE INDEX idx_chat_sessions_order ON chat_sessions (order_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_order ON chat_sessions (order_id);
 
 -- +goose Down
 ALTER TABLE chat_sessions

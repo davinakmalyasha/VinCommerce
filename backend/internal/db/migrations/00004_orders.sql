@@ -1,7 +1,7 @@
 -- +goose Up
 CREATE SEQUENCE order_number_seq START 1000;
 
-CREATE TABLE addresses (
+CREATE TABLE IF NOT EXISTS addresses (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     label         VARCHAR(40) NOT NULL DEFAULT 'Home',
@@ -18,9 +18,9 @@ CREATE TABLE addresses (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_addresses_user ON addresses (user_id);
+CREATE INDEX IF NOT EXISTS idx_addresses_user ON addresses (user_id);
 
-CREATE TABLE carts (
+CREATE TABLE IF NOT EXISTS carts (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID REFERENCES users (id) ON DELETE CASCADE,
     session_key VARCHAR(64),
@@ -32,7 +32,7 @@ CREATE TABLE carts (
     UNIQUE (session_key)
 );
 
-CREATE TABLE cart_items (
+CREATE TABLE IF NOT EXISTS cart_items (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cart_id    UUID NOT NULL REFERENCES carts (id) ON DELETE CASCADE,
     variant_id UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
@@ -41,9 +41,9 @@ CREATE TABLE cart_items (
     UNIQUE (cart_id, variant_id)
 );
 
-CREATE INDEX idx_cart_items_cart ON cart_items (cart_id);
+CREATE INDEX IF NOT EXISTS idx_cart_items_cart ON cart_items (cart_id);
 
-CREATE TABLE shipping_methods (
+CREATE TABLE IF NOT EXISTS shipping_methods (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code        VARCHAR(32) NOT NULL UNIQUE,
     name        VARCHAR(80) NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE shipping_methods (
     is_active   BOOLEAN NOT NULL DEFAULT TRUE
 );
 
-CREATE TABLE coupons (
+CREATE TABLE IF NOT EXISTS coupons (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code           VARCHAR(40) NOT NULL UNIQUE,
     type           VARCHAR(10) NOT NULL CHECK (type IN ('percent', 'fixed')),
@@ -70,7 +70,7 @@ CREATE TABLE coupons (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE coupon_usages (
+CREATE TABLE IF NOT EXISTS coupon_usages (
     coupon_id UUID NOT NULL REFERENCES coupons (id) ON DELETE CASCADE,
     user_id   UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     order_id  UUID NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE coupon_usages (
     PRIMARY KEY (coupon_id, user_id, order_id)
 );
 
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_number    VARCHAR(32) NOT NULL UNIQUE,
     buyer_id        UUID NOT NULL REFERENCES users (id),
@@ -107,12 +107,12 @@ CREATE TABLE orders (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_orders_buyer ON orders (buyer_id, created_at DESC);
-CREATE INDEX idx_orders_seller ON orders (seller_id, created_at DESC);
-CREATE INDEX idx_orders_status ON orders (status);
-CREATE INDEX idx_orders_placed ON orders (placed_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_orders_buyer ON orders (buyer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_seller ON orders (seller_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_placed ON orders (placed_at) WHERE status = 'pending';
 
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id        UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
     product_id      UUID NOT NULL,
@@ -132,10 +132,10 @@ CREATE TABLE order_items (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_order_items_order ON order_items (order_id);
-CREATE INDEX idx_order_items_product ON order_items (product_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items (order_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items (product_id);
 
-CREATE TABLE order_events (
+CREATE TABLE IF NOT EXISTS order_events (
     id          BIGSERIAL PRIMARY KEY,
     order_id    UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
     from_status VARCHAR(24),
@@ -145,9 +145,9 @@ CREATE TABLE order_events (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_order_events_order ON order_events (order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events (order_id, created_at);
 
-CREATE TABLE inventory_reservations (
+CREATE TABLE IF NOT EXISTS inventory_reservations (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     variant_id UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
     order_id   UUID NOT NULL REFERENCES orders (id) ON DELETE CASCADE,
@@ -158,10 +158,10 @@ CREATE TABLE inventory_reservations (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_reservations_variant ON inventory_reservations (variant_id, status);
-CREATE INDEX idx_reservations_expiry ON inventory_reservations (status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_reservations_variant ON inventory_reservations (variant_id, status);
+CREATE INDEX IF NOT EXISTS idx_reservations_expiry ON inventory_reservations (status, expires_at);
 
-CREATE TABLE stock_ledger (
+CREATE TABLE IF NOT EXISTS stock_ledger (
     id         BIGSERIAL PRIMARY KEY,
     variant_id UUID NOT NULL REFERENCES product_variants (id),
     order_id   UUID,
@@ -170,7 +170,7 @@ CREATE TABLE stock_ledger (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_stock_ledger_variant ON stock_ledger (variant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_ledger_variant ON stock_ledger (variant_id, created_at DESC);
 
 -- +goose Down
 DROP SEQUENCE IF EXISTS order_number_seq;

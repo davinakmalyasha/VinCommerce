@@ -24,6 +24,7 @@
 -- Resolve() was an unguarded UPDATE that discarded RowsAffected, so resolving
 -- the same dispute repeatedly re-ran the money side of the decision.
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -47,6 +48,7 @@ BEGIN
         RAISE NOTICE '00040: closed % duplicate live dispute(s)', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_disputes_one_open_per_order
     ON disputes (order_id) WHERE status IN ('open', 'under_review');
@@ -58,6 +60,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_disputes_one_open_per_order
 -- auto-approved for each (RETURN_AUTO_APPROVE_MAX makes items <= Rp 50.000
 -- automatic), then collect N refunds.
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -80,6 +83,7 @@ BEGIN
         RAISE NOTICE '00040: rejected % duplicate live return claim(s)', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_return_open_per_item
     ON return_requests (order_item_id)
@@ -93,6 +97,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_return_open_per_item
 -- at a non-deterministic rate. Extra rows are deactivated, not deleted: the
 -- fee history is a pricing audit trail.
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -107,6 +112,7 @@ BEGIN
         RAISE NOTICE '00040: deactivated % duplicate active platform fee row(s)', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_fees_one_active
     ON platform_fees ((is_active)) WHERE is_active;
@@ -115,6 +121,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_fees_one_active
 -- endpoint accepted `fixed` straight from the request body with no validation,
 -- so a negative fee was reachable and ReleaseEscrow would pay it out of the
 -- platform's pooled commission.
+-- +goose StatementBegin
 DO $$
 BEGIN
     UPDATE platform_fees SET pct = 50   WHERE pct > 50;
@@ -130,6 +137,7 @@ BEGIN
             CHECK (fixed >= 0);
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 4 — one ledger row per business event.
@@ -139,6 +147,7 @@ END $$;
 -- existing data already satisfies it: violating rows are financial records and
 -- must never be deleted to make a DDL statement succeed.
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -158,6 +167,7 @@ BEGIN
             dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 5 — misc uniqueness that application code assumed but never enforced
@@ -172,6 +182,7 @@ END $$;
 -- A referral bonus is granted at most once per user. POST /referral/redeem
 -- had no rate limit and no one-referral check, and Add() is a plain INSERT,
 -- so calling it in a loop granted unlimited points worth unlimited discount.
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -189,10 +200,12 @@ BEGIN
             '00040: skipped uq_referral_bonus_once — % user(s) hold more than one referral_bonus row. Deduplicate loyalty_ledger and re-run.', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- The repository's ON CONFLICT DO NOTHING was a no-op because there was no
 -- conflict target other than the random PK, so duplicate watches accumulated
 -- and each duplicate notified the user again.
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -209,7 +222,9 @@ BEGIN
             '00040: skipped uq_backinstock_user_variant — % duplicate watch(es). Deduplicate back_in_stock_alerts and re-run.', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -234,8 +249,10 @@ BEGIN
             ON addresses (user_id) WHERE is_default;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- The floating chat widget created a new seller session on every click.
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -253,10 +270,12 @@ BEGIN
             '00040: skipped uq_chat_sessions_open_seller — % order(s) have more than one open seller chat. Close the extras and re-run.', dupes;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 6 — order arithmetic tripwires
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     repaired BIGINT;
@@ -281,6 +300,7 @@ BEGIN
             CHECK (discount_amount >= 0 AND discount_amount <= subtotal);
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 6b — the commission split must reconcile.
@@ -289,6 +309,7 @@ END $$;
 -- otherwise fail the ADD CONSTRAINT instead of being repaired. (The first
 -- version had these two the wrong way round.)
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     repaired BIGINT;
@@ -307,6 +328,7 @@ BEGIN
             CHECK (fee_amount >= 0 AND seller_amount >= 0);
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 7 — widen the payment_intent status CHECK for the new
@@ -314,6 +336,7 @@ END $$;
 -- definition rather than by name, because Postgres' auto-generated name is
 -- not guaranteed to be payment_intents_status_check.
 -- ===========================================================================
+-- +goose StatementBegin
 DO $$
 DECLARE
     cname TEXT;
@@ -336,6 +359,7 @@ BEGIN
             'failed', 'expired'
         ));
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 8 — unindexed foreign keys.
@@ -445,6 +469,7 @@ CREATE INDEX IF NOT EXISTS idx_returns_seller_status_req
 -- `lower(code) = lower($1)` cannot use a plain UNIQUE btree on code, and this
 -- is hit on EVERY checkout with a coupon and EVERY registration with a
 -- referral code. Codes differing only in case collide here, so repair first.
+-- +goose StatementBegin
 DO $$
 DECLARE
     dupes BIGINT;
@@ -460,6 +485,7 @@ BEGIN
     END IF;
     CREATE UNIQUE INDEX IF NOT EXISTS uq_coupons_code_upper ON coupons (upper(code));
 END $$;
+-- +goose StatementEnd
 
 CREATE INDEX IF NOT EXISTS idx_orders_seller_status_recent
     ON orders (seller_id, status, created_at DESC);

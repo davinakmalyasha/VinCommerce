@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE feature_flags (
+CREATE TABLE IF NOT EXISTS feature_flags (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     key         VARCHAR(64) NOT NULL UNIQUE,
     description VARCHAR(200) NOT NULL DEFAULT '',

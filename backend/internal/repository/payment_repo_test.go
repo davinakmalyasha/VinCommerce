@@ -326,8 +326,20 @@ func TestTheConflictTargetMatchesTheIndexItInfers(t *testing.T) {
 	sql := string(mig)
 
 	const wantPredicate = "WHERE gateway_ref IS NOT NULL"
-	if !strings.Contains(sql, "CREATE UNIQUE INDEX idx_refunds_gateway_ref_unique") {
+	// Matched on the INDEX NAME, not on the whole CREATE prefix.
+	//
+	// `CREATE UNIQUE INDEX idx_...` stopped matching when 00045 gained
+	// `IF NOT EXISTS` as part of making the chain re-runnable, and the failure mode is
+	// the dangerous one: a test that pins an incidental prefix of a DDL statement
+	// breaks on an improvement, and the obvious "fix" is to weaken the assertion until
+	// it passes again. The property under test is that this index EXISTS and is the
+	// one the ON CONFLICT target infers -- the name is what identifies it.
+	if !strings.Contains(sql, "idx_refunds_gateway_ref_unique") {
 		t.Fatalf("00045 does not create the unique index:\n%s", sql)
+	}
+	if !strings.Contains(sql, "CREATE UNIQUE INDEX IF NOT EXISTS idx_refunds_gateway_ref_unique") &&
+		!strings.Contains(sql, "CREATE UNIQUE INDEX idx_refunds_gateway_ref_unique") {
+		t.Errorf("idx_refunds_gateway_ref_unique exists but is not a UNIQUE INDEX:\n%s", sql)
 	}
 	if !strings.Contains(sql, wantPredicate) {
 		t.Errorf("00045's unique index is not partial on a present reference:\n%s\n"+

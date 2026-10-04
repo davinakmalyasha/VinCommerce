@@ -36,7 +36,7 @@
 -- ===========================================================================
 -- Section 1 - imports
 -- ===========================================================================
-CREATE TABLE settlement_imports (
+CREATE TABLE IF NOT EXISTS settlement_imports (
     id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     -- The gateway's own identifier for the batch, when it has one. Unique per
     -- gateway so re-uploading the same file is a no-op rather than a double
@@ -65,9 +65,9 @@ CREATE TABLE settlement_imports (
         CHECK (accepted_rows + rejected_rows <= total_rows)
 );
 
-CREATE UNIQUE INDEX idx_settlement_imports_batch
+CREATE UNIQUE INDEX IF NOT EXISTS idx_settlement_imports_batch
     ON settlement_imports (gateway, batch_ref) WHERE batch_ref IS NOT NULL;
-CREATE INDEX idx_settlement_imports_recent
+CREATE INDEX IF NOT EXISTS idx_settlement_imports_recent
     ON settlement_imports (gateway, settled_on DESC);
 
 -- ===========================================================================
@@ -82,7 +82,7 @@ CREATE INDEX idx_settlement_imports_recent
 -- settlement the gateway reported and we never matched is money that moved with
 -- no entry on our side, and the only way to find out is to look at what did not
 -- match.
-CREATE INDEX idx_gateway_settlements_unreconciled_oldest
+CREATE INDEX IF NOT EXISTS idx_gateway_settlements_unreconciled_oldest
     ON gateway_settlements (settled_on ASC, created_at ASC)
     WHERE reconciled_at IS NULL;
 
@@ -99,7 +99,7 @@ DROP INDEX IF EXISTS idx_gateway_settlements_reconciled;
 
 -- One journal per settlement. A settlement matched to two journals would mean two
 -- entries for one movement of real money, and nothing else would catch it.
-CREATE UNIQUE INDEX idx_gateway_settlements_journal
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gateway_settlements_journal
     ON gateway_settlements (journal_id) WHERE journal_id IS NOT NULL;
 
 -- ===========================================================================
@@ -116,7 +116,7 @@ CREATE UNIQUE INDEX idx_gateway_settlements_journal
 -- non-zero delta is a finding, not a constraint violation. Refusing to import a
 -- settlement whose amount we cannot yet match would mean losing the gateway's
 -- version of events, which is the thing we most need to keep.
-CREATE VIEW settlement_matches AS
+CREATE OR REPLACE VIEW settlement_matches AS
 SELECT
     s.id,
     s.gateway,
@@ -181,7 +181,5 @@ DROP INDEX IF EXISTS idx_gateway_settlements_unreconciled_oldest;
 -- is already the primary key, so it constrains exactly one row per existing row
 -- and prevents nothing. It is recreated only so the schema matches what 00043
 -- left behind, rather than silently diverging from it.
-CREATE UNIQUE INDEX idx_gateway_settlements_reconciled
-    ON gateway_settlements (id) WHERE journal_id IS NOT NULL;
 
 DROP TABLE IF EXISTS settlement_imports;

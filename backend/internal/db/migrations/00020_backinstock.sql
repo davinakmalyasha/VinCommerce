@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE back_in_stock_alerts (
+CREATE TABLE IF NOT EXISTS back_in_stock_alerts (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     variant_id   UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
@@ -8,7 +8,7 @@ CREATE TABLE back_in_stock_alerts (
     triggered_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_back_in_stock_user ON back_in_stock_alerts (user_id);
+CREATE INDEX IF NOT EXISTS idx_back_in_stock_user ON back_in_stock_alerts (user_id);
 
 -- +goose Down
 DROP TABLE IF EXISTS back_in_stock_alerts;

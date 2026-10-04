@@ -32,15 +32,47 @@
 -- The condition `fee_amount > 0 OR seller_amount > 0` skips intents that have
 -- not been through escrow release yet (both legs still 0), which is the normal
 -- state for a `pending` or `initiated` intent.
+-- REPAIR FIRST, THEN CONSTRAIN.
+--
+-- This file's own header says the split is made to hold "AFTER rounding the first",
+-- which implies a repair pass. There was none, and the constraint was added with
+-- `ADD CONSTRAINT ... CHECK`, which validates every existing row immediately.
+--
+-- A sweep of 200,000 (amount, pct, fixed) triples in this file's own comments
+-- (lines 20-26) found 5,116 rows -- about 2.6% -- whose two legs summed to one sen
+-- more or less than the charge, because `repository.Commission` rounded NEITHER leg
+-- and Postgres rounds each NUMERIC independently. On a real database this ADD
+-- CONSTRAINT raises check_violation and the whole migration rolls back, so the
+-- invariant is never installed at all.
+--
+-- The repair takes the FEE as authoritative and derives the seller leg as the
+-- residual, which is the convention the Go side is being fixed to match. The fee is
+-- what the platform actually took, so it is the leg that must not move.
+UPDATE payment_intents
+   SET seller_amount = amount - fee_amount
+ WHERE fee_amount > 0
+   AND seller_amount <> amount - fee_amount;
+
 ALTER TABLE payment_intents
     DROP CONSTRAINT IF EXISTS payment_intents_split_sums;
 
+-- NOT VALID, then VALIDATE.
+--
+-- `NOT VALID` installs the constraint for every future write without the immediate
+-- full-table scan, and `VALIDATE CONSTRAINT` then checks the historical rows while
+-- taking only a SHARE UPDATE EXCLUSIVE lock -- so writes keep working and a failure
+-- is still reported. Adding a validated CHECK directly takes ACCESS EXCLUSIVE for the
+-- duration of the scan, which on `payment_intents` is a table the checkout writes on
+-- every single order.
 ALTER TABLE payment_intents
     ADD CONSTRAINT payment_intents_split_sums
     CHECK (
         (fee_amount = 0 AND seller_amount = 0)
         OR fee_amount + seller_amount = amount
-    );
+    ) NOT VALID;
+
+ALTER TABLE payment_intents
+    VALIDATE CONSTRAINT payment_intents_split_sums;
 
 -- ===========================================================================
 -- Section 2 - a product variant cannot be created with a negative price or
@@ -68,18 +100,29 @@ ALTER TABLE product_variants
 ALTER TABLE product_variants
     DROP CONSTRAINT IF EXISTS product_variants_weight_nonneg;
 
+-- REPAIR BEFORE THE CONSTRAINT, which is the whole point of having a repair.
+--
+-- The two statements were in this order: ADD CONSTRAINT (lines 71-74), then the
+-- repairing UPDATEs (81-82). `ADD CONSTRAINT ... CHECK` validates every existing row
+-- as it is added, so a table containing one negative `weight_grams` -- which is
+-- reachable from a seller form and from a CSV with a stray hyphen -- raised
+-- check_violation and rolled the migration back, and the repair below it never ran.
+--
+-- That is the exact inversion 00040's header calls out as a bug it once had, and it
+-- was reintroduced here one file later.
+--
+-- The repair goes first, so by the time the constraint is validated there is nothing
+-- left to reject. A negative weight is the more likely of the two and it produces a
+-- NEGATIVE shipping fee via
+-- `weightKg += (WeightGrams * Quantity) / 1000`, so clamping to 0 makes the order
+-- priceable again and errs toward charging shipping rather than crediting it.
+UPDATE product_variants SET weight_grams = 0 WHERE weight_grams < 0;
+UPDATE product_variants SET price = 0        WHERE price < 0;
+
 ALTER TABLE product_variants
     ADD CONSTRAINT product_variants_price_nonneg  CHECK (price >= 0);
 ALTER TABLE product_variants
     ADD CONSTRAINT product_variants_weight_nonneg CHECK (weight_grams >= 0);
-
--- Repair any existing violation rather than failing the migration. A negative
--- weight is the more likely of the two (it is reachable from a seller form and
--- from a CSV with a stray hyphen) and it produces a negative shipping fee, so
--- clamping to 0 makes the order priceable again and errs toward charging
--- shipping rather than crediting it.
-UPDATE product_variants SET weight_grams = 0 WHERE weight_grams < 0;
-UPDATE product_variants SET price = 0        WHERE price < 0;
 
 -- ===========================================================================
 -- Section 3 - an order's money must foot to its own components
@@ -97,14 +140,33 @@ UPDATE product_variants SET price = 0        WHERE price < 0;
 --
 -- The projection is now a single shared constant, so the read path cannot drift
 -- again. This constraint is the backstop for the arithmetic itself.
+-- REPAIR FIRST, AGAIN.
+--
+-- Added with no repair and no NOT VALID, so any order whose `total_amount` does not
+-- foot to its own components aborts the migration. And there is a documented source of
+-- exactly that: the projection used to omit `insurance_fee`, so the arithmetic that
+-- wrote `total_amount` was computed without a term the constraint then requires. Any
+-- insured order created while that projection was live is off by the insurance fee.
+--
+-- The repair recomputes the total from its components, which is the identity the
+-- invoice already claims to satisfy.
+UPDATE orders
+   SET total_amount = subtotal - discount_amount + shipping_fee + COALESCE(insurance_fee, 0)
+ WHERE total_amount <> subtotal - discount_amount + shipping_fee + COALESCE(insurance_fee, 0);
+
 ALTER TABLE orders
     DROP CONSTRAINT IF EXISTS orders_money_foots;
 
+-- NOT VALID then VALIDATE: `orders` is written on every checkout, and a direct
+-- validated ADD takes ACCESS EXCLUSIVE for the length of the scan.
 ALTER TABLE orders
     ADD CONSTRAINT orders_money_foots
     CHECK (
         total_amount = subtotal - discount_amount + shipping_fee + COALESCE(insurance_fee, 0)
-    );
+    ) NOT VALID;
+
+ALTER TABLE orders
+    VALIDATE CONSTRAINT orders_money_foots;
 
 -- ===========================================================================
 -- Section 4 - a per-seller discount cannot exceed that seller's merchandise
@@ -124,6 +186,7 @@ ALTER TABLE orders
 --
 -- IF NOT EXISTS semantics: a DO block that only creates the constraint when it
 -- is absent, so this migration is re-runnable.
+-- +goose StatementBegin
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -134,6 +197,7 @@ BEGIN
             CHECK (discount_amount >= 0 AND discount_amount <= subtotal);
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ===========================================================================
 -- Section 5 - whole-rupiah money
@@ -187,6 +251,13 @@ END $$;
 -- correct writer can produce, so there is nothing meaningful to restore and
 -- inventing a "previous" value would be a guess.
 -- +goose Down
+--
+-- The two money constraints are dropped rather than restored to a weaker form: they
+-- did not exist before 00041, and re-adding a `NOT VALID` version would preserve an
+-- invariant nobody has validated. `product_variants_price_nonneg` and
+-- `product_variants_weight_nonneg` are likewise dropped, and the repair UPDATEs above
+-- are NOT reversed -- clamping a negative price to 0 is the correct value, and
+-- restoring -5000 would reintroduce the negative-shipping-fee defect on purpose.
 
 -- Declared, not silently skipped: scripts/check-migration.mjs reads the marker
 -- below and understands that this constraint belongs to another migration. With

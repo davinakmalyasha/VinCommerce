@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id  UUID REFERENCES categories (id) ON DELETE SET NULL,
     name       VARCHAR(120) NOT NULL,
@@ -12,10 +12,10 @@ CREATE TABLE categories (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_categories_parent ON categories (parent_id);
-CREATE INDEX idx_categories_path ON categories (path);
+CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories (parent_id);
+CREATE INDEX IF NOT EXISTS idx_categories_path ON categories (path);
 
-CREATE TABLE brands (
+CREATE TABLE IF NOT EXISTS brands (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name       VARCHAR(120) NOT NULL UNIQUE,
     slug       VARCHAR(140) NOT NULL UNIQUE,
@@ -24,7 +24,7 @@ CREATE TABLE brands (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE attributes (
+CREATE TABLE IF NOT EXISTS attributes (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name          VARCHAR(80) NOT NULL UNIQUE,
     slug          VARCHAR(90) NOT NULL UNIQUE,
@@ -34,7 +34,7 @@ CREATE TABLE attributes (
     is_active     BOOLEAN NOT NULL DEFAULT TRUE
 );
 
-CREATE TABLE attribute_values (
+CREATE TABLE IF NOT EXISTS attribute_values (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attribute_id UUID NOT NULL REFERENCES attributes (id) ON DELETE CASCADE,
     value        VARCHAR(120) NOT NULL,
@@ -43,9 +43,9 @@ CREATE TABLE attribute_values (
     UNIQUE (attribute_id, slug)
 );
 
-CREATE INDEX idx_attr_values_attr ON attribute_values (attribute_id);
+CREATE INDEX IF NOT EXISTS idx_attr_values_attr ON attribute_values (attribute_id);
 
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     seller_id        UUID NOT NULL REFERENCES users (id),
     category_id      UUID REFERENCES categories (id),
@@ -71,13 +71,13 @@ CREATE TABLE products (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_products_seller ON products (seller_id);
-CREATE INDEX idx_products_category ON products (category_id);
-CREATE INDEX idx_products_status ON products (status) WHERE status = 'active';
-CREATE INDEX idx_products_search ON products USING GIN (search_vector);
-CREATE INDEX idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_products_seller ON products (seller_id);
+CREATE INDEX IF NOT EXISTS idx_products_category ON products (category_id);
+CREATE INDEX IF NOT EXISTS idx_products_status ON products (status) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_products_search ON products USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
 
-CREATE TABLE product_variants (
+CREATE TABLE IF NOT EXISTS product_variants (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_id      UUID NOT NULL REFERENCES products (id) ON DELETE CASCADE,
     sku             VARCHAR(80) NOT NULL UNIQUE,
@@ -93,9 +93,9 @@ CREATE TABLE product_variants (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_variants_product ON product_variants (product_id);
+CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants (product_id);
 
-CREATE TABLE product_images (
+CREATE TABLE IF NOT EXISTS product_images (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_id UUID NOT NULL REFERENCES products (id) ON DELETE CASCADE,
     url        TEXT NOT NULL,
@@ -104,7 +104,7 @@ CREATE TABLE product_images (
     UNIQUE (product_id, position)
 );
 
-CREATE TABLE product_reviews (
+CREATE TABLE IF NOT EXISTS product_reviews (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_id   UUID NOT NULL REFERENCES products (id) ON DELETE CASCADE,
     user_id      UUID NOT NULL REFERENCES users (id),
@@ -122,10 +122,10 @@ CREATE TABLE product_reviews (
     UNIQUE (user_id, order_item_id)
 );
 
-CREATE INDEX idx_reviews_product ON product_reviews (product_id, status);
-CREATE INDEX idx_reviews_user ON product_reviews (user_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_product ON product_reviews (product_id, status);
+CREATE INDEX IF NOT EXISTS idx_reviews_user ON product_reviews (user_id);
 
-CREATE TABLE review_helpful (
+CREATE TABLE IF NOT EXISTS review_helpful (
     review_id UUID NOT NULL REFERENCES product_reviews (id) ON DELETE CASCADE,
     user_id   UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     helpful   BOOLEAN NOT NULL,

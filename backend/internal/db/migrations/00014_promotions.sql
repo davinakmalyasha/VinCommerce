@@ -1,8 +1,8 @@
 -- +goose Up
 ALTER TABLE coupons ADD COLUMN seller_id UUID REFERENCES users (id) ON DELETE CASCADE;
-CREATE INDEX idx_coupons_seller ON coupons (seller_id) WHERE seller_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_coupons_seller ON coupons (seller_id) WHERE seller_id IS NOT NULL;
 
-CREATE TABLE price_alerts (
+CREATE TABLE IF NOT EXISTS price_alerts (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     variant_id   UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
@@ -11,9 +11,9 @@ CREATE TABLE price_alerts (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_price_alerts_user ON price_alerts (user_id);
+CREATE INDEX IF NOT EXISTS idx_price_alerts_user ON price_alerts (user_id);
 
-CREATE TABLE bundles (
+CREATE TABLE IF NOT EXISTS bundles (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     seller_id  UUID NOT NULL REFERENCES users (id),
     name       VARCHAR(160) NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE bundles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE bundle_items (
+CREATE TABLE IF NOT EXISTS bundle_items (
     bundle_id  UUID NOT NULL REFERENCES bundles (id) ON DELETE CASCADE,
     variant_id UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
     quantity   INT NOT NULL DEFAULT 1 CHECK (quantity > 0),

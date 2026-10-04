@@ -44,11 +44,11 @@
 -- ===========================================================================
 -- Section 1 - chart of accounts
 -- ===========================================================================
-CREATE TABLE ledger_accounts (
+CREATE TABLE IF NOT EXISTS ledger_accounts (
     code        VARCHAR(48)  PRIMARY KEY,
     name        VARCHAR(120) NOT NULL,
     class       VARCHAR(12)  NOT NULL CHECK (class IN ('asset','liability','equity','revenue','expense')),
-    -- Which side increases the account. Assets and expenses increase on debit;
+    -- Which side increases the account. Assets and expenses increase on debit.
     -- liabilities, equity and revenue increase on credit. A posting to the
     -- wrong side is a sign error, and this is what makes the trial balance
     -- readable.
@@ -67,13 +67,13 @@ CREATE TABLE ledger_accounts (
     )
 );
 
-CREATE UNIQUE INDEX idx_ledger_accounts_user ON ledger_accounts (user_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_accounts_user ON ledger_accounts (user_id)
     WHERE NOT is_system;
 
 -- ===========================================================================
 -- Section 2 - journals and entries
 -- ===========================================================================
-CREATE TABLE ledger_journals (
+CREATE TABLE IF NOT EXISTS ledger_journals (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     -- The business key. Makes every posting idempotent by construction: a retry
     -- of the same business event reuses the same journal rather than creating a
@@ -93,11 +93,11 @@ CREATE TABLE ledger_journals (
     CONSTRAINT ledger_journals_not_self_referential CHECK (reversal_of IS NULL OR reversal_of <> id)
 );
 
-CREATE UNIQUE INDEX idx_ledger_journals_idem ON ledger_journals (idempotency_key);
-CREATE INDEX idx_ledger_journals_ref  ON ledger_journals (ref_type, ref_id);
-CREATE INDEX idx_ledger_journals_time ON ledger_journals (effective_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_journals_idem ON ledger_journals (idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_ledger_journals_ref  ON ledger_journals (ref_type, ref_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_journals_time ON ledger_journals (effective_at DESC);
 
-CREATE TABLE ledger_entries (
+CREATE TABLE IF NOT EXISTS ledger_entries (
     id           BIGSERIAL   PRIMARY KEY,
     journal_id   UUID        NOT NULL REFERENCES ledger_journals (id) ON DELETE CASCADE,
     account_code VARCHAR(48) NOT NULL REFERENCES ledger_accounts (code),
@@ -108,8 +108,8 @@ CREATE TABLE ledger_entries (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_ledger_entries_journal ON ledger_entries (journal_id);
-CREATE INDEX idx_ledger_entries_account ON ledger_entries (account_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_journal ON ledger_entries (journal_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_account ON ledger_entries (account_code, created_at DESC);
 
 -- ===========================================================================
 -- Section 3 - the invariant
@@ -125,6 +125,7 @@ CREATE INDEX idx_ledger_entries_account ON ledger_entries (account_code, created
 -- The imbalance is reported with the actual difference, because a constraint
 -- violation with no detail is the hardest kind of bug to diagnose from a log.
 CREATE OR REPLACE FUNCTION assert_journal_balanced() RETURNS trigger
+-- +goose StatementBegin
 LANGUAGE plpgsql AS $$
 DECLARE
     -- NEW only. An earlier version wrote COALESCE(NEW.journal_id, OLD.journal_id)
@@ -152,6 +153,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END $$;
+-- +goose StatementEnd
 
 CREATE CONSTRAINT TRIGGER ledger_journal_balanced
     AFTER INSERT ON ledger_entries
@@ -161,6 +163,7 @@ CREATE CONSTRAINT TRIGGER ledger_journal_balanced
 -- Currency must be uniform within a journal. Mixing IDR and USD in one posting
 -- would make the zero-sum check meaningless.
 CREATE OR REPLACE FUNCTION assert_journal_single_currency() RETURNS trigger
+-- +goose StatementBegin
 LANGUAGE plpgsql AS $$
 DECLARE
     jid   UUID := NEW.journal_id;
@@ -176,6 +179,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END $$;
+-- +goose StatementEnd
 
 CREATE CONSTRAINT TRIGGER ledger_journal_currency
     AFTER INSERT ON ledger_entries
@@ -193,6 +197,7 @@ CREATE CONSTRAINT TRIGGER ledger_journal_currency
 -- the entry-level trigger never fires when there are no entries. Deferrable, like
 -- the others, because the journal is always inserted before its entries.
 CREATE OR REPLACE FUNCTION assert_journal_has_entries() RETURNS trigger
+-- +goose StatementBegin
 LANGUAGE plpgsql AS $$
 DECLARE
     n INT;
@@ -207,6 +212,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END $$;
+-- +goose StatementEnd
 
 CREATE CONSTRAINT TRIGGER ledger_journal_has_entries
     AFTER INSERT ON ledger_journals
@@ -225,7 +231,7 @@ CREATE CONSTRAINT TRIGGER ledger_journal_has_entries
 --
 -- `version` is bumped on every write so a reader can tell a cached row from a
 -- stale one without recomputing anything.
-CREATE TABLE account_balances (
+CREATE TABLE IF NOT EXISTS account_balances (
     account_code VARCHAR(48) NOT NULL REFERENCES ledger_accounts (code),
     currency     CHAR(3)     NOT NULL,
     balance      NUMERIC(18,2) NOT NULL DEFAULT 0,
@@ -253,7 +259,7 @@ CREATE TABLE account_balances (
 --             money out of band. This is a real, expected state, not an error
 --             case to be hidden -- a refund that silently failed is worse than
 --             one that is visibly stuck.
-CREATE TABLE refunds (
+CREATE TABLE IF NOT EXISTS refunds (
     id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     payment_intent_id  UUID        NOT NULL REFERENCES payment_intents (id) ON DELETE RESTRICT,
     order_id           UUID        NOT NULL REFERENCES orders (id) ON DELETE RESTRICT,
@@ -275,9 +281,9 @@ CREATE TABLE refunds (
     CONSTRAINT refunds_amount_whole_rupiah CHECK (amount = round(amount))
 );
 
-CREATE INDEX idx_refunds_intent  ON refunds (payment_intent_id, created_at DESC);
-CREATE INDEX idx_refunds_order   ON refunds (order_id);
-CREATE INDEX idx_refunds_pending ON refunds (status, created_at)
+CREATE INDEX IF NOT EXISTS idx_refunds_intent  ON refunds (payment_intent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_refunds_order   ON refunds (order_id);
+CREATE INDEX IF NOT EXISTS idx_refunds_pending ON refunds (status, created_at)
     WHERE status IN ('pending', 'submitted');
 
 -- ===========================================================================
@@ -288,7 +294,7 @@ CREATE INDEX idx_refunds_pending ON refunds (status, created_at)
 -- with a reserve for COD and a disputes window, which is also the single largest
 -- fraud control in the industry: a seller cannot withdraw a balance that is
 -- about to be clawed back by a return, because the money has not left yet.
-CREATE TABLE payout_batches (
+CREATE TABLE IF NOT EXISTS payout_batches (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     cutoff_at     TIMESTAMPTZ NOT NULL,
     status        VARCHAR(12) NOT NULL DEFAULT 'draft'
@@ -305,9 +311,9 @@ CREATE TABLE payout_batches (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_payout_batches_status ON payout_batches (status, cutoff_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payout_batches_status ON payout_batches (status, cutoff_at DESC);
 
-CREATE TABLE payout_batch_items (
+CREATE TABLE IF NOT EXISTS payout_batch_items (
     batch_id     UUID        NOT NULL REFERENCES payout_batches (id) ON DELETE CASCADE,
     payout_id    UUID        NOT NULL REFERENCES payouts (id) ON DELETE RESTRICT,
     seller_id    UUID        NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
@@ -318,13 +324,13 @@ CREATE TABLE payout_batch_items (
     PRIMARY KEY (batch_id, payout_id)
 );
 
-CREATE INDEX idx_payout_batch_items_seller ON payout_batch_items (seller_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payout_batch_items_seller ON payout_batch_items (seller_id, created_at DESC);
 
 -- A holdback against a balance that is not yet releasable. `releases_at` is a
 -- CALCULATION, not a timer: delivered, no open return, no open dispute, and
 -- past the lag. A timer would pay out a balance that a return is about to
 -- reverse.
-CREATE TABLE seller_reservations (
+CREATE TABLE IF NOT EXISTS seller_reservations (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     seller_id   UUID        NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
     order_id    UUID        REFERENCES orders (id) ON DELETE RESTRICT,
@@ -344,9 +350,9 @@ CREATE TABLE seller_reservations (
         CHECK (num_nonnulls(order_id, payout_id) = 1)
 );
 
-CREATE UNIQUE INDEX idx_seller_reservations_payout
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seller_reservations_payout
     ON seller_reservations (payout_id) WHERE payout_id IS NOT NULL;
-CREATE INDEX idx_seller_reservations_seller
+CREATE INDEX IF NOT EXISTS idx_seller_reservations_seller
     ON seller_reservations (seller_id, released_at) WHERE released_at IS NULL;
 
 -- ===========================================================================
@@ -361,7 +367,7 @@ CREATE INDEX idx_seller_reservations_seller
 -- settlement date, which is not the capture date: Midtrans settles T+1 to T+7
 -- depending on the method, and a balance sheet that conflates the two overstates
 -- cash in flight.
-CREATE TABLE gateway_settlements (
+CREATE TABLE IF NOT EXISTS gateway_settlements (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     gateway       VARCHAR(32) NOT NULL,
     settlement_ref VARCHAR(80),
@@ -387,10 +393,10 @@ CREATE TABLE gateway_settlements (
 -- A gateway reference is unique per kind: Midtrans can legitimately issue the
 -- same reference string for a capture and a later refund, and treating that as
 -- a duplicate would reject a real refund.
-CREATE UNIQUE INDEX idx_gateway_settlements_ref
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gateway_settlements_ref
     ON gateway_settlements (gateway, kind, settlement_ref)
     WHERE settlement_ref IS NOT NULL;
-CREATE INDEX idx_gateway_settlements_unreconciled
+CREATE INDEX IF NOT EXISTS idx_gateway_settlements_unreconciled
     ON gateway_settlements (settled_on) WHERE reconciled_at IS NULL;
 
 -- ===========================================================================
@@ -494,8 +500,8 @@ COMMENT ON TABLE wallets IS
 -- appears to work is the same failure as a check that cannot fail, one level up.
 --
 -- To actually remove the ledger, an operator must first archive:
---   CREATE TABLE ledger_journals_archive AS TABLE ledger_journals;
---   CREATE TABLE ledger_entries_archive AS TABLE ledger_entries;
+--   CREATE TABLE ledger_journals_archive AS TABLE ledger_journals.
+--   CREATE TABLE ledger_entries_archive AS TABLE ledger_entries.
 -- then DROP. That is an operator decision about data retention, not a migration
 -- step, and it should never be reachable by a `goose down`.
 SELECT 1;

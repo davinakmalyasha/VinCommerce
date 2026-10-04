@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE help_categories (
+CREATE TABLE IF NOT EXISTS help_categories (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name       VARCHAR(80) NOT NULL,
     slug       VARCHAR(100) NOT NULL UNIQUE,
@@ -7,7 +7,7 @@ CREATE TABLE help_categories (
     is_active  BOOLEAN NOT NULL DEFAULT TRUE
 );
 
-CREATE TABLE help_articles (
+CREATE TABLE IF NOT EXISTS help_articles (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category_id  UUID REFERENCES help_categories (id) ON DELETE SET NULL,
     title        VARCHAR(200) NOT NULL,
@@ -23,12 +23,12 @@ CREATE TABLE help_articles (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_help_articles_section ON help_articles (section, is_published);
-CREATE INDEX idx_help_articles_search ON help_articles USING GIN (to_tsvector('english', title || ' ' || excerpt || ' ' || content));
+CREATE INDEX IF NOT EXISTS idx_help_articles_section ON help_articles (section, is_published);
+CREATE INDEX IF NOT EXISTS idx_help_articles_search ON help_articles USING GIN (to_tsvector('english', title || ' ' || excerpt || ' ' || content));
 
 CREATE SEQUENCE ticket_number_seq START 1000;
 
-CREATE TABLE support_tickets (
+CREATE TABLE IF NOT EXISTS support_tickets (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ticket_number VARCHAR(24) NOT NULL UNIQUE,
     user_id       UUID NOT NULL REFERENCES users (id),
@@ -45,11 +45,11 @@ CREATE TABLE support_tickets (
     resolved_at   TIMESTAMPTZ
 );
 
-CREATE INDEX idx_tickets_user ON support_tickets (user_id, created_at DESC);
-CREATE INDEX idx_tickets_status ON support_tickets (status);
-CREATE INDEX idx_tickets_assignee ON support_tickets (assigned_to) WHERE assigned_to IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tickets_user ON support_tickets (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets (status);
+CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON support_tickets (assigned_to) WHERE assigned_to IS NOT NULL;
 
-CREATE TABLE ticket_messages (
+CREATE TABLE IF NOT EXISTS ticket_messages (
     id          BIGSERIAL PRIMARY KEY,
     ticket_id   UUID NOT NULL REFERENCES support_tickets (id) ON DELETE CASCADE,
     author_id   UUID NOT NULL REFERENCES users (id),
@@ -59,9 +59,9 @@ CREATE TABLE ticket_messages (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_ticket_messages_ticket ON ticket_messages (ticket_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages (ticket_id, created_at);
 
-CREATE TABLE notifications (
+CREATE TABLE IF NOT EXISTS notifications (
     id         BIGSERIAL PRIMARY KEY,
     user_id    UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     type       VARCHAR(32) NOT NULL,
@@ -72,7 +72,7 @@ CREATE TABLE notifications (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_notifications_user ON notifications (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_id, created_at DESC);
 
 -- +goose Down
 DROP TABLE IF EXISTS notifications;

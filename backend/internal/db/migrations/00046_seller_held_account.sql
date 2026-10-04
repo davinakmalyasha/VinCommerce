@@ -31,7 +31,7 @@
 -- 2. A SELLER COULD NOT HAVE BOTH ACCOUNTS.
 --
 --    CREATE UNIQUE INDEX idx_ledger_accounts_user ON ledger_accounts (user_id)
---        WHERE NOT is_system;
+--        WHERE NOT is_system.
 --
 --    At most ONE non-system account per user. `seller_available:<id>` already
 --    claims that slot, so `seller_held:<id>` could not be created -- even though
@@ -57,7 +57,7 @@ ALTER TABLE account_balances     ALTER COLUMN account_code       TYPE VARCHAR(64
 -- The held account needs a row, so the "one personal account" rule has to become
 -- "one personal account per purpose".
 ALTER TABLE ledger_accounts
-    ADD COLUMN purpose VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS purpose VARCHAR(16),
     ADD CONSTRAINT ledger_accounts_purpose
         CHECK (purpose IS NULL OR purpose IN ('available', 'held')),
     -- Replaces the intent of `ledger_accounts_user_side` from 00043, which said a
@@ -78,6 +78,7 @@ ALTER TABLE ledger_accounts
 UPDATE ledger_accounts SET purpose = 'available'
  WHERE NOT is_system AND purpose IS NULL AND code LIKE 'seller_available:%';
 
+-- +goose StatementBegin
 DO $$
 DECLARE
     unclassified TEXT;
@@ -92,15 +93,16 @@ BEGIN
             unclassified;
     END IF;
 END $$;
+-- +goose StatementEnd
 
-DROP INDEX idx_ledger_accounts_user;
-CREATE UNIQUE INDEX idx_ledger_accounts_user
+DROP INDEX IF EXISTS idx_ledger_accounts_user;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_accounts_user
     ON ledger_accounts (user_id, purpose)
     WHERE NOT is_system;
 
 -- The lookup the trial balance and the reconciliation do: a user's held balance,
 -- which nothing could previously answer.
-CREATE INDEX idx_ledger_accounts_purpose
+CREATE INDEX IF NOT EXISTS idx_ledger_accounts_purpose
     ON ledger_accounts (purpose)
     WHERE purpose IS NOT NULL;
 

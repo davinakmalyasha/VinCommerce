@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE platform_fees (
+CREATE TABLE IF NOT EXISTS platform_fees (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     pct        NUMERIC(5,2) NOT NULL DEFAULT 2.00,
     fixed      NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -10,8 +10,8 @@ CREATE TABLE platform_fees (
 INSERT INTO platform_fees (id, pct, fixed, is_active) VALUES (gen_random_uuid(), 2.00, 0, TRUE);
 
 ALTER TABLE payment_intents
-    ADD COLUMN fee_amount   NUMERIC(14,2) NOT NULL DEFAULT 0,
-    ADD COLUMN seller_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS fee_amount   NUMERIC(14,2) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS seller_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
 -- internal platform account that accumulates commission income
 INSERT INTO users (id, email, phone, full_name, password_hash, roles, status, email_verified_at)

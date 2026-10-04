@@ -41,12 +41,12 @@
 -- +goose Up
 
 ALTER TABLE payout_batches
-    ADD COLUMN batch_ref VARCHAR(80);
+    ADD COLUMN IF NOT EXISTS batch_ref VARCHAR(80);
 
 -- One batch per ref. The partial predicate is what lets a NULL ref coexist with any
 -- number of rows, so a hand-created batch that has not been given a ref is not
 -- fighting the scheduler for the same identity.
-CREATE UNIQUE INDEX idx_payout_batches_ref
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_batches_ref
     ON payout_batches (batch_ref)
     WHERE batch_ref IS NOT NULL;
 
@@ -54,7 +54,7 @@ CREATE UNIQUE INDEX idx_payout_batches_ref
 -- already grouped. Mirrors idx_payouts_status_requested (00040) but adds
 -- requested_at as a leading column because the cutoff is always a range on it and
 -- the existing index would still have to filter.
-CREATE INDEX idx_payout_batch_items_payout
+CREATE INDEX IF NOT EXISTS idx_payout_batch_items_payout
     ON payout_batch_items (payout_id);
 
 -- Finding a seller's batches, for the remittance file's audit trail.

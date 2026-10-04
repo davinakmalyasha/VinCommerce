@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE live_sessions (
+CREATE TABLE IF NOT EXISTS live_sessions (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     seller_id        UUID NOT NULL REFERENCES users (id),
     title            VARCHAR(160) NOT NULL,
@@ -13,9 +13,9 @@ CREATE TABLE live_sessions (
     ended_at         TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_live_sessions_status ON live_sessions (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_status ON live_sessions (status, created_at DESC);
 
-CREATE TABLE live_products (
+CREATE TABLE IF NOT EXISTS live_products (
     session_id    UUID NOT NULL REFERENCES live_sessions (id) ON DELETE CASCADE,
     variant_id    UUID NOT NULL REFERENCES product_variants (id) ON DELETE CASCADE,
     price_override NUMERIC(14,2) CHECK (price_override IS NULL OR price_override > 0),

@@ -60,5 +60,14 @@ DROP INDEX IF EXISTS idx_price_alerts_active;
 DROP INDEX IF EXISTS idx_backinstock_active;
 DROP INDEX IF EXISTS idx_refresh_sessions_expires;
 DROP INDEX IF EXISTS uq_reviews_user_item_nnd;
+-- Drop before add. The Up dropped this constraint and replaced it with the
+-- partial index above, so a rollback has to drop it again first: a later
+-- migration's Down may already have restored it, and
+--
+--     ALTER TABLE ... ADD CONSTRAINT ...
+--
+-- then raises `relation "..." already exists` and the rollback stops. Found by
+-- rolling the whole chain back newest-first against a scratch database.
+ALTER TABLE product_reviews DROP CONSTRAINT IF EXISTS product_reviews_user_id_order_item_id_key;
 ALTER TABLE product_reviews ADD CONSTRAINT product_reviews_user_id_order_item_id_key UNIQUE (user_id, order_item_id);
 ALTER TABLE live_sessions DROP COLUMN IF EXISTS viewer_count;

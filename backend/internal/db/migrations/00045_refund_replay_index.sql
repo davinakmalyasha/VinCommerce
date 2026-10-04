@@ -32,6 +32,7 @@
 -- In practice this should find nothing: `CreateRefund` bound a literal empty
 -- string to gateway_ref until it was fixed, so every provider refund was recorded
 -- with NULL, and NULLs do not collide in a unique index.
+-- +goose StatementBegin
 DO $$
 DECLARE
     dup_count INT;
@@ -59,6 +60,7 @@ BEGIN
             dup_count, example;
     END IF;
 END $$;
+-- +goose StatementEnd
 
 -- The uniqueness the replay guard depends on.
 --
@@ -72,14 +74,14 @@ END $$;
 -- (gateway, gateway_ref) rather than gateway_ref alone: two gateways may
 -- legitimately issue the same refund id, and `providerRefundKey` is already scoped
 -- per gateway for that reason.
-CREATE UNIQUE INDEX idx_refunds_gateway_ref_unique
+CREATE UNIQUE INDEX IF NOT EXISTS idx_refunds_gateway_ref_unique
     ON refunds (gateway, gateway_ref)
     WHERE gateway_ref IS NOT NULL;
 
 -- Lookups by provider reference now have an index to use. Before this, the
 -- replay guard scanned every refund on the intent and compared the composed key in
 -- Go -- which is why the guard was correct in principle and unusable in practice.
-CREATE INDEX idx_refunds_replay_lookup
+CREATE INDEX IF NOT EXISTS idx_refunds_replay_lookup
     ON refunds (payment_intent_id, gateway, gateway_ref)
     WHERE gateway_ref IS NOT NULL;
 

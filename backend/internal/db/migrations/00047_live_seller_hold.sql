@@ -26,7 +26,7 @@
 
 -- +goose Up
 
-CREATE UNIQUE INDEX idx_seller_reservations_live_order_kind
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seller_reservations_live_order_kind
     ON seller_reservations (order_id, kind)
     WHERE order_id IS NOT NULL AND released_at IS NULL;
 

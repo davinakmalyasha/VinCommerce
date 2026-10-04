@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE product_qa (
+CREATE TABLE IF NOT EXISTS product_qa (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     product_id   UUID NOT NULL REFERENCES products (id) ON DELETE CASCADE,
     user_id      UUID NOT NULL REFERENCES users (id),
@@ -10,9 +10,9 @@ CREATE TABLE product_qa (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_qa_product ON product_qa (product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_qa_product ON product_qa (product_id, created_at DESC);
 
-CREATE TABLE review_replies (
+CREATE TABLE IF NOT EXISTS review_replies (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     review_id  UUID NOT NULL REFERENCES product_reviews (id) ON DELETE CASCADE,
     user_id    UUID NOT NULL REFERENCES users (id),

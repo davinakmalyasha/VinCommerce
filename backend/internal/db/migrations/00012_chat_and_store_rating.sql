@@ -30,7 +30,7 @@ END;
 $func$ LANGUAGE plpgsql;
 -- +goose StatementEnd
 
-CREATE TABLE chat_sessions (
+CREATE TABLE IF NOT EXISTS chat_sessions (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID NOT NULL REFERENCES users (id),
     agent_id    UUID REFERENCES users (id) ON DELETE SET NULL,
@@ -42,10 +42,10 @@ CREATE TABLE chat_sessions (
     closed_at   TIMESTAMPTZ
 );
 
-CREATE INDEX idx_chat_sessions_user ON chat_sessions (user_id, created_at DESC);
-CREATE INDEX idx_chat_sessions_queue ON chat_sessions (status, created_at) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_queue ON chat_sessions (status, created_at) WHERE status = 'open';
 
-CREATE TABLE chat_messages (
+CREATE TABLE IF NOT EXISTS chat_messages (
     id          BIGSERIAL PRIMARY KEY,
     session_id  UUID NOT NULL REFERENCES chat_sessions (id) ON DELETE CASCADE,
     sender_role VARCHAR(12) NOT NULL CHECK (sender_role IN ('customer', 'agent', 'system')),
@@ -54,7 +54,7 @@ CREATE TABLE chat_messages (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_chat_messages_session ON chat_messages (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id, created_at);
 
 -- +goose Down
 DROP TABLE IF EXISTS chat_messages;

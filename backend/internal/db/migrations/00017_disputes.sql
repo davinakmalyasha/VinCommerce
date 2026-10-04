@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE disputes (
+CREATE TABLE IF NOT EXISTS disputes (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id     UUID NOT NULL REFERENCES orders (id),
     return_id    UUID REFERENCES return_requests (id) ON DELETE SET NULL,
@@ -15,10 +15,10 @@ CREATE TABLE disputes (
     resolved_at  TIMESTAMPTZ
 );
 
-CREATE INDEX idx_disputes_status ON disputes (status);
-CREATE INDEX idx_disputes_user ON disputes (user_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_status ON disputes (status);
+CREATE INDEX IF NOT EXISTS idx_disputes_user ON disputes (user_id);
 
-CREATE TABLE dispute_messages (
+CREATE TABLE IF NOT EXISTS dispute_messages (
     id         BIGSERIAL PRIMARY KEY,
     dispute_id UUID NOT NULL REFERENCES disputes (id) ON DELETE CASCADE,
     author_id  UUID NOT NULL REFERENCES users (id),
@@ -26,7 +26,7 @@ CREATE TABLE dispute_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_dispute_messages ON dispute_messages (dispute_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispute_messages ON dispute_messages (dispute_id, created_at);
 
 -- +goose Down
 DROP TABLE IF EXISTS dispute_messages;

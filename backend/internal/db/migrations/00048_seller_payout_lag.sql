@@ -27,7 +27,7 @@
 -- +goose Up
 
 ALTER TABLE stores
-    ADD COLUMN payout_lag_days INT,
+    ADD COLUMN IF NOT EXISTS payout_lag_days INT,
     ADD CONSTRAINT stores_payout_lag_days_bounded
         CHECK (payout_lag_days IS NULL
                OR payout_lag_days BETWEEN 1 AND 90);
