@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
@@ -32,6 +33,15 @@ func Migrate(ctx context.Context, cfg config.DatabaseConfig) error {
 	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("set dialect: %w", err)
 	}
+
+	// The project tracked applied versions in its own `schema_migrations` table before
+	// moving to goose. Without this, goose starts at version 0, replays 00001, and the
+	// boot dies with `relation "users" already exists`. See adopt_legacy.go for why this
+	// is guarded by an evidence check rather than trusted.
+	if err := adoptLegacyMigrationHistory(ctx, sqlDB, slog.Default()); err != nil {
+		return fmt.Errorf("adopt legacy migration history: %w", err)
+	}
+
 	if err := goose.UpContext(ctx, sqlDB, "migrations"); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
