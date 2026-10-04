@@ -1490,12 +1490,35 @@ func (s *OrderService) CreateReturnParcel(
 }
 
 // ReturnParcelFor returns the parcel this buyer's return travels in.
-func (s *OrderService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+//
+// CORRECTION TO AN EARLIER CLAIM IN THIS COMMENT: the handler already calls
+// `AssertReturnOwner` before reaching here, so this was NOT an exploitable IDOR. The
+// service-level check below is defence in depth, not a closed hole.
+//
+// It is here because `CreateReturnParcel`, twenty lines above, checks in the service,
+// and the two entry points to the same underlying read should not differ in whether they
+// verify. A future caller that reaches this method without going through the handler
+// would otherwise inherit an unguarded read of another buyer's parcel: the carrier, the
+// tracking number, and the address it is travelling to.
+//
+// It returns ErrNotFound rather than Forbidden for a wrong owner, matching
+// `assertReturnBuyer`. A buyer who can distinguish "not yours" from "does not exist"
+// can enumerate return ids belonging to other people.
+func (s *OrderService) ReturnParcelFor(
+	ctx context.Context, buyerID, returnID string,
+) (*repository.ReturnParcel, error) {
 	if s.shipments == nil {
 		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so return parcels cannot be read")
 	}
-	return s.shipments.ReturnParcelFor(ctx, returnID)
+	if err := s.assertReturnBuyer(ctx, returnID, buyerID); err != nil {
+		return nil, err
+	}
+	// The empty actor is deliberate. `ShipmentService.ReturnParcelFor` enforces SELLER
+	// ownership, and this is the BUYER's view -- the caller is the return's buyer, who
+	// is verified immediately above and is deliberately not the seller. Passing the
+	// buyer id here would make the seller check fail for every legitimate buyer.
+	return s.shipments.ReturnParcelFor(ctx, "", returnID)
 }
 
 // AssertReturnOwner refuses a return that is not the caller's.

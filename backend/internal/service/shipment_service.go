@@ -435,8 +435,18 @@ func (s *ShipmentService) CreateReturnParcel(
 // The label is idempotent on the PARCEL, exactly as the outbound path is, because it
 // spends the same kind of money.
 func (s *ShipmentService) BuyReturnLabel(
-	ctx context.Context, returnID, format string,
+	ctx context.Context, actorID, returnID, format string,
 ) (ParcelView, string, error) {
+	// Ownership FIRST, before the parcel is read and long before a carrier is called.
+	//
+	// This endpoint spends money: it buys a real label at a real carrier. Without the
+	// check, any seller could POST a return id belonging to a competitor and have a
+	// label bought on their return -- addressed to the competitor's store, at their
+	// expense, and revealing that store's address.
+	if err := s.assertReturnSeller(ctx, actorID, returnID); err != nil {
+		return ParcelView{}, "", err
+	}
+
 	parcel, err := s.shipments.ReturnParcelFor(ctx, s.shipments.Pool(), returnID)
 	if err != nil {
 		return ParcelView{}, "", err
@@ -512,7 +522,21 @@ func (s *ShipmentService) BuyReturnLabel(
 // It moves `return_requests` to 'returned' and NOTHING ELSE. The refund is
 // `RefundReturn`, the seller hold is released by the existing reservation job, and no
 // ledger posting happens on this path.
-func (s *ShipmentService) NoteReturnArrived(ctx context.Context, returnID string) (bool, error) {
+// NoteReturnArrived records that a return parcel has been delivered, which unblocks
+// the refund a human still has to perform.
+//
+// Seller-scoped, and this is the highest-value ownership check in the file. The row it
+// moves is the gate on `RefundReturn`: once the return reads as arrived, the seller can
+// refund the buyer. Without the check, any seller could POST another seller's return id
+// and unblock that refund -- not stealing it directly, but unlocking a state change
+// that makes it refundable against someone else's escrow. That is a money bug wearing
+// an authorisation bug's clothes.
+func (s *ShipmentService) NoteReturnArrived(
+	ctx context.Context, actorID, returnID string,
+) (bool, error) {
+	if err := s.assertReturnSeller(ctx, actorID, returnID); err != nil {
+		return false, err
+	}
 	return s.shipments.MarkReturnArrived(ctx, s.shipments.Pool(), returnID)
 }
 
@@ -606,15 +630,69 @@ func (s *ShipmentService) destinationFor(ctx context.Context, orderID string) ca
 }
 
 // ReturnParcelFor returns the parcel a return travels in, or nil.
-func (s *ShipmentService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+//
+// Seller-scoped: `actorID` is checked against the return's seller before the parcel is
+// loaded. Without it any seller could read the return parcel of any other seller by
+// guessing a return id, which discloses the carrier, the tracking number and the
+// seller's own pickup address -- the last of these because a return parcel is addressed
+// back to the store.
+func (s *ShipmentService) ReturnParcelFor(
+	ctx context.Context, actorID, returnID string,
+) (*repository.ReturnParcel, error) {
+	if err := s.assertReturnSeller(ctx, actorID, returnID); err != nil {
+		return nil, err
+	}
 	return s.shipments.ReturnParcelFor(ctx, s.shipments.Pool(), returnID)
 }
 
+// assertReturnSeller refuses any actor who does not own the return.
+//
+// Empty `actorID` means "no seller context", which is how internal callers reach these
+// paths; it is deliberately permissive, and matching `BuyLabel`'s existing convention.
+// Every HTTP entry point passes a real authenticated id, so the permissive branch is
+// not reachable from a request.
+func (s *ShipmentService) assertReturnSeller(ctx context.Context, actorID, returnID string) error {
+	if actorID == "" {
+		return nil
+	}
+	_, _, _, sellerID, _, err := s.returnFacts(ctx, returnID)
+	if err != nil {
+		return err
+	}
+	if sellerID != actorID {
+		return domain.E(domain.KindForbidden, "NOT_OWNED",
+			"this return does not belong to your store")
+	}
+	return nil
+}
+
 // OrderParcels lists an order's parcels for the seller and buyer views.
-func (s *ShipmentService) OrderParcels(ctx context.Context, orderID string) ([]ParcelView, error) {
+//
+// Seller-scoped. This service is multi-vendor -- one checkout can produce SEVERAL orders
+// -- so an order id is not a seller id, and "is this actor the seller" cannot be answered
+// by comparing the order to the actor.
+//
+// The check is that EVERY parcel belongs to the actor, not that one does. A checkout
+// that splits across two stores produces one order id, and the parcels of the other
+// store are a different seller's stock, addresses and tracking numbers. Allowing the
+// request because the actor owns one of them would disclose the rest, so a mixed order
+// returns 403 to both stores and they see only their own parcels through the buyer and
+// order views they are entitled to.
+func (s *ShipmentService) OrderParcels(
+	ctx context.Context, actorID, orderID string,
+) ([]ParcelView, error) {
 	parcels, err := s.shipments.ShipmentsForOrder(ctx, s.shipments.Pool(), orderID)
 	if err != nil {
 		return nil, err
+	}
+	if actorID != "" {
+		for _, p := range parcels {
+			if p.SellerID != actorID {
+				return nil, domain.E(domain.KindForbidden, "NOT_OWNED",
+					"this order contains parcels from more than one store, so it cannot "+
+						"be viewed as a single seller; fetch your own orders instead")
+			}
+		}
 	}
 	out := make([]ParcelView, 0, len(parcels))
 	for _, p := range parcels {

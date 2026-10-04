@@ -592,12 +592,14 @@ func (s *SellerService) SetShipmentService(ship *ShipmentService) {
 }
 
 // OrderParcels lists an order's parcels for the seller packing view.
-func (s *SellerService) OrderParcels(ctx context.Context, orderID string) ([]ParcelView, error) {
+func (s *SellerService) OrderParcels(
+	ctx context.Context, sellerID, orderID string,
+) ([]ParcelView, error) {
 	if s.shipSvc == nil {
 		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so parcels cannot be listed")
 	}
-	return s.shipSvc.OrderParcels(ctx, orderID)
+	return s.shipSvc.OrderParcels(ctx, sellerID, orderID)
 }
 
 // BuyLabel buys a printable label for one of the seller's parcels.
@@ -632,22 +634,26 @@ var _ = 0
 // DESTINATION IS THE SELLER'S `stores.return_address`, never the order's
 // `shipping_address`. See `ShipmentService.returnDestinationFor`; sending a return to
 // the buyer is the single most damaging mistake available in this area.
-func (s *SellerService) BuyReturnLabel(ctx context.Context, returnID, format string) (ParcelView, string, error) {
+func (s *SellerService) BuyReturnLabel(
+	ctx context.Context, sellerID, returnID, format string,
+) (ParcelView, string, error) {
 	if s.shipSvc == nil {
 		return ParcelView{}, "", domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so return labels cannot be bought")
 	}
-	return s.shipSvc.BuyReturnLabel(ctx, returnID, format)
+	return s.shipSvc.BuyReturnLabel(ctx, sellerID, returnID, format)
 }
 
 // NoteReturnArrived records that a return parcel has been delivered, which unblocks
 // the refund a human still has to perform. It moves the return row and NOTHING else.
-func (s *SellerService) NoteReturnArrived(ctx context.Context, returnID string) (bool, error) {
+func (s *SellerService) NoteReturnArrived(
+	ctx context.Context, sellerID, returnID string,
+) (bool, error) {
 	if s.shipSvc == nil {
 		return false, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so arrivals cannot be recorded")
 	}
-	return s.shipSvc.NoteReturnArrived(ctx, returnID)
+	return s.shipSvc.NoteReturnArrived(ctx, sellerID, returnID)
 }
 
 // SetReturnAddress records where this seller's returns go.
@@ -676,12 +682,14 @@ func (s *SellerService) ReturnAddress(ctx context.Context, ownerID string) (map[
 //
 // Nil is a legitimate answer, not an error: a return that has been approved but not
 // yet sent back has no parcel, and the seller queue has to render that.
-func (s *SellerService) ReturnParcelFor(ctx context.Context, returnID string) (*repository.ReturnParcel, error) {
+func (s *SellerService) ReturnParcelFor(
+	ctx context.Context, sellerID, returnID string,
+) (*repository.ReturnParcel, error) {
 	if s.shipSvc == nil {
 		return nil, domain.E(domain.KindInternal, "SHIPMENTS_NOT_WIRED",
 			"the shipment service is not available, so return parcels cannot be read")
 	}
-	return s.shipSvc.ReturnParcelFor(ctx, returnID)
+	return s.shipSvc.ReturnParcelFor(ctx, sellerID, returnID)
 }
 
 // CreateParcel records a parcel for a seller order.

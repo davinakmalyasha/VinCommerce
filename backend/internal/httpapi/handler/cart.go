@@ -530,7 +530,7 @@ func (h *Orders) ReturnParcel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	parcel, err := h.svc.ReturnParcelFor(r.Context(), returnID)
+	parcel, err := h.svc.ReturnParcelFor(r.Context(), user.ID, returnID)
 	if err != nil {
 		writeErr(w, r, err)
 		return

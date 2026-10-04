@@ -379,7 +379,8 @@ func (h *Seller) CreateParcel(w http.ResponseWriter, r *http.Request) {
 // trail, and hiding parcel 2 because it was cancelled leaves a parcel 3 with no
 // explanation of where parcel 2 went.
 func (h *Seller) OrderParcels(w http.ResponseWriter, r *http.Request) {
-	parcels, err := h.svc.OrderParcels(r.Context(), chi.URLParam(r, "id"))
+	user := middleware.UserFrom(r.Context())
+	parcels, err := h.svc.OrderParcels(r.Context(), user.ID, chi.URLParam(r, "id"))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -489,7 +490,8 @@ func (h *Seller) BuyReturnLabel(w http.ResponseWriter, r *http.Request) {
 	if req.Format == "" {
 		req.Format = "pdf"
 	}
-	parcel, labelURL, err := h.svc.BuyReturnLabel(r.Context(), chi.URLParam(r, "id"), req.Format)
+	user := middleware.UserFrom(r.Context())
+	parcel, labelURL, err := h.svc.BuyReturnLabel(r.Context(), user.ID, chi.URLParam(r, "id"), req.Format)
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -499,7 +501,8 @@ func (h *Seller) BuyReturnLabel(w http.ResponseWriter, r *http.Request) {
 
 // ReturnParcels handles GET /seller/returns/{id}/parcel.
 func (h *Seller) ReturnParcels(w http.ResponseWriter, r *http.Request) {
-	parcels, err := h.svc.ReturnParcelFor(r.Context(), chi.URLParam(r, "id"))
+	user := middleware.UserFrom(r.Context())
+	parcels, err := h.svc.ReturnParcelFor(r.Context(), user.ID, chi.URLParam(r, "id"))
 	if err != nil {
 		writeErr(w, r, err)
 		return
@@ -517,8 +520,9 @@ func (h *Seller) ReturnParcels(w http.ResponseWriter, r *http.Request) {
 // The alternative -- releasing escrow from here -- would pay a seller on the say-so of
 // a carrier webhook.
 func (h *Seller) NoteReturnArrived(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
 	returnID := chi.URLParam(r, "id")
-	arrived, err := h.svc.NoteReturnArrived(r.Context(), returnID)
+	arrived, err := h.svc.NoteReturnArrived(r.Context(), user.ID, returnID)
 	if err != nil {
 		writeErr(w, r, err)
 		return
