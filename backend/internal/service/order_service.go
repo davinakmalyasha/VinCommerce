@@ -880,35 +880,38 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	// Debit redeemed points after the order commits.
+	// Debit redeemed points INSIDE the order transaction.
 	//
-	// The order is already durable at this point, so a failed debit cannot be
-	// rolled back — but it MUST NOT be silent. The previous code used
-	// fmt.Println, which on a structured-logging service means the failure
-	// appears on stdout as plain text, is invisible to every log index and
-	// alert rule, and leaves the buyer holding a discount they never paid for
-	// in points. Escalate loudly so it becomes an alertable event.
-	if quote.PointsRedeemed > 0 && s.loyalty != nil {
+	// This used to happen after tx.Commit, on the loyalty repository's own connection,
+	// with the failure only logged. That arrangement granted a 15x double-spend: fifteen
+	// concurrent checkouts each read the same balance while quoting, each applied the
+	// discount, and each committed an order; the fifteen debits then serialised against
+	// each other and fourteen returned INSUFFICIENT_POINTS against orders that were
+	// already durable.
+	//
+	// Inside the transaction, the balance check and the ledger insert are the same
+	// atomic unit as the order rows. A buyer who cannot afford the redemption now fails
+	// the checkout and no order is created.
+	//
+	// refID is the order's own generated id. It is assigned in Go before the INSERT, so
+	// it is available here without reading anything back, and the ledger row links to
+	// the order for reconciliation.
+	if quote.PointsRedeemed > 0 {
+		if s.loyalty == nil {
+			return nil, domain.E(domain.KindInternal, "LOYALTY_UNAVAILABLE",
+				"loyalty redemption was requested but the loyalty service is not configured")
+		}
 		refID := ""
 		if len(placed.Orders) > 0 {
 			refID = placed.Orders[0].ID
 		}
-		if err := s.loyalty.Spend(ctx, in.UserID, quote.PointsRedeemed, "redemption", refID); err != nil {
-			if s.logger != nil {
-				s.logger.Error("loyalty redemption debit failed after order commit; "+
-					"buyer holds an uncharged discount and needs manual reconciliation",
-					"user_id", in.UserID, "order_id", refID,
-					"points", quote.PointsRedeemed, "error", err.Error())
-			}
-			// Still emit the order-confirmation email: the order exists and the
-			// buyer is waiting. Swallowing the error here (rather than
-			// returning it) is deliberate — returning would tell the buyer the
-			// order failed when it was in fact placed.
+		if err := s.loyalty.SpendTx(ctx, tx.Querier(), in.UserID, quote.PointsRedeemed, "redemption", refID); err != nil {
+			return nil, err
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 
 	for _, o := range placed.Orders {

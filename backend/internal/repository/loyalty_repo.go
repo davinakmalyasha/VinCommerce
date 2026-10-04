@@ -100,6 +100,64 @@ func (r *LoyaltyRepository) Spend(ctx context.Context, userID string, points int
 	return tx.Commit(ctx)
 }
 
+// SpendTx is Spend, but inside the CALLER's transaction.
+//
+// # WHY THIS EXISTS, AND WHY Spend IS NOT ENOUGH FOR CHECKOUT
+//
+// `Spend` opens its own transaction on the pool. That makes it correct in isolation --
+// two concurrent spends for one user are serialised by the advisory lock and the second
+// fails on the balance check -- but it gives checkout NOTHING, because by the time
+// `PlaceOrder` called it, the order transaction had already committed:
+//
+//	tx.Commit(ctx)                     <- order is durable, discount already applied
+//	s.loyalty.Spend(ctx, ...)         <- separate transaction, separate pool connection
+//
+// So the per-call guarantee and the thing that needed protecting are in different
+// transactions. Fifteen concurrent checkouts could each read the same 1,000-point
+// balance during quoting, each apply the Rp 100,000 discount, and each commit its own
+// order. The fifteen `Spend` calls then serialised against each other -- exactly as
+// designed -- and fourteen of them returned INSUFFICIENT_POINTS. Fourteen discounts
+// were already committed. The old code swallowed that error, so the buyer received
+// fifteen discounted orders for the price of one.
+//
+// The lock was never the problem. The lock is in the right place; the ORDER is not.
+//
+// # WHAT THIS CHANGES
+//
+// Called before the order transaction commits, with the order transaction as `q`:
+// the balance check and the ledger insert join the same atomic unit as the order rows
+// and the stock reservations. Either the order and the debit both happen, or neither
+// does. A redemption the buyer no longer has affordable now fails the CHECKOUT, which
+// is the correct outcome -- the alternative is a committed order nobody will ever
+// charge for.
+//
+// The advisory lock is retained and is now load-bearing across the whole checkout:
+// it serialises concurrent checkouts for one user so the balance read inside the
+// transaction cannot be overtaken by another checkout's debit.
+func (r *LoyaltyRepository) SpendTx(ctx context.Context, q Querier, userID string, points int, reason, refID string) error {
+	if points <= 0 {
+		return domain.E(domain.KindInvalid, "BAD_POINTS", "points must be positive")
+	}
+
+	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return err
+	}
+
+	var balance int
+	if err := q.QueryRow(ctx,
+		`SELECT COALESCE(SUM(change), 0)::int FROM loyalty_ledger WHERE user_id = $1`, userID).Scan(&balance); err != nil {
+		return err
+	}
+	if balance < points {
+		return domain.E(domain.KindConflict, "INSUFFICIENT_POINTS", "not enough loyalty points")
+	}
+
+	_, err := q.Exec(ctx, `
+		INSERT INTO loyalty_ledger (user_id, change, reason, ref_id) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+		userID, -points, reason, refID)
+	return err
+}
+
 // Ledger lists the user's point history.
 func (r *LoyaltyRepository) Ledger(ctx context.Context, userID string, limit int) ([]*domain.LoyaltyEntry, error) {
 	if limit < 1 || limit > 100 {
