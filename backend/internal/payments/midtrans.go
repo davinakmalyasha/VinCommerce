@@ -443,6 +443,22 @@ type snapNotification struct {
 	TransactionStatus string `json:"transaction_status"`
 	FraudStatus       string `json:"fraud_status"`
 	PaymentType       string `json:"payment_type"`
+
+	// Refund fields.
+	//
+	// These are ABSENT from the struct this file used to have, and that omission is
+	// what made provider refunds unidentifiable. Midtrans sends them alongside the
+	// original charge fields on a refund notification; we were dropping them on the
+	// floor.
+	//
+	// `refund_id` is the provider's id for THIS refund and is the only thing that can
+	// distinguish one refund from the next on the same payment. Without it the replay
+	// guard cannot be keyed, so Midtrans' 24-hour retry of a notification we already
+	// applied was indistinguishable from a new refund.
+	RefundID     string `json:"refund_id"`
+	RefundAmount string `json:"refund_amount"`
+	RefundStatus string `json:"refund_status"`
+	RefundTime   string `json:"refund_time"`
 }
 
 // VerifyWebhook validates the notification's signature_key:
@@ -498,6 +514,47 @@ func (g *MidtransGateway) ParseWebhook(payload []byte) (*GatewayEvent, error) {
 			"fraud_status":       n.FraudStatus,
 		},
 	}
+
+	// Refund notifications carry the REFUNDED amount in `refund_amount`, while
+	// `gross_amount` remains the ORIGINAL charge and never changes. `ev.Amount` above
+	// is gross_amount, which is why a partial refund has to overwrite it here.
+	//
+	// Without this, a Rp 30.000 partial refund on a Rp 100.000 charge arrived carrying
+	// Amount = 100.000 and the service's `amount > intent.Amount` guard could not fire,
+	// because 100.000 is not greater than 100.000. The buyer was paid the whole order
+	// back for a partial refund -- the exact bug the `EventPartiallyRefunded` branch in
+	// payment_service.go is commented about having fixed. That fix worked only for a
+	// hand-written event; this adapter never supplied the field it depended on.
+	//
+	// Scoped to refund events on purpose: for `settlement` and `capture`, gross_amount
+	// IS the payable amount, and `onPaid` compares it against the intent to reject a
+	// tampered notification. Substituting here would break that check.
+	if ev.Type == EventRefunded || ev.Type == EventPartiallyRefunded {
+		// Present in `Raw` unconditionally so the service can key its replay guard on
+		// it. It must be a STRING either way: the service does a type assertion, and a
+		// missing key and a nil value must not be two different failures.
+		ev.Raw["refund_id"] = n.RefundID
+
+		if n.RefundAmount != "" {
+			refunded, err := strconv.ParseFloat(n.RefundAmount, 64)
+			if err != nil {
+				// Surfaced rather than defaulted. Defaulting to 0 would take the
+				// `REFUND_AMOUNT_REQUIRED` path in the service, which is safe but
+				// reports a missing amount for what is actually an unparseable one.
+				return nil, fmt.Errorf("webhook refund_amount %q: %w", n.RefundAmount, err)
+			}
+			ev.Amount = refunded
+		} else if ev.Type == EventPartiallyRefunded {
+			// Fail closed. Falling back to gross_amount here would refund the entire
+			// charge for a partial refund, which is the whole defect.
+			return nil, fmt.Errorf(
+				"webhook partial_refund carried no refund_amount; gross_amount is the " +
+					"original charge and refunding it would pay out the whole order")
+		}
+		// EventRefunded with no refund_amount is fine: the service uses the intent
+		// amount for a full refund, which is the right figure and needs no field.
+	}
+
 	return ev, nil
 }
 

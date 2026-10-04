@@ -95,6 +95,12 @@ func TestParseWebhookStatusMatrix(t *testing.T) {
 			TransactionStatus: tc.status, FraudStatus: tc.fraud,
 			TransactionID: "tx-1", PaymentType: "gopay",
 		}
+		// A partial_refund is only meaningful with the amount it refunded. Midtrans
+		// always sends it; gross_amount stays at the original charge.
+		if tc.want == EventPartiallyRefunded {
+			n.RefundAmount = "25000.00"
+			n.RefundID = "rf-1"
+		}
 		ev, err := g.ParseWebhook(notificationJSON(t, n))
 		if err != nil {
 			t.Fatalf("%s/%s: %v", tc.status, tc.fraud, err)
@@ -117,16 +123,28 @@ func TestParseWebhookStatusMatrix(t *testing.T) {
 // Rp-10-refunds-Rp-100.000 bug impossible: a partial_refund notification
 // produces a distinct event type, and the amount on the event is the REFUNDED
 // amount so the caller can credit exactly that and no more.
+//
+// CORRECTION: this test previously set `GrossAmount: "10.00"` on the partial refund
+// and asserted `ev.Amount == 10`. That passed, and it was wrong. Midtrans does NOT
+// rewrite `gross_amount` for a refund notification -- it keeps the ORIGINAL charge
+// there forever and reports the refunded figure separately as `refund_amount`. So the
+// test was asserting a payload Midtrans never sends, which is how the bug survived a
+// test that appeared to cover it exactly.
+//
+// The realistic payload below has gross_amount at the full 100000 and refund_amount at
+// 10. If someone "simplifies" the parser back to reading gross_amount, this fails.
 func TestPartialRefundCarriesItsOwnAmount(t *testing.T) {
 	g := NewMidtransGateway("k", "sandbox", nil)
 
 	full := snapNotification{
 		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
 		TransactionStatus: "refund", TransactionID: "tx-1", PaymentType: "qris",
+		RefundID: "rf-1", RefundAmount: "100000.00", RefundStatus: "success",
 	}
 	partial := snapNotification{
-		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "10.00",
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
 		TransactionStatus: "partial_refund", TransactionID: "tx-1", PaymentType: "qris",
+		RefundID: "rf-2", RefundAmount: "10.00", RefundStatus: "success",
 	}
 
 	evFull, err := g.ParseWebhook(notificationJSON(t, full))
@@ -149,12 +167,99 @@ func TestPartialRefundCarriesItsOwnAmount(t *testing.T) {
 			evPartial.Type, EventPartiallyRefunded)
 	}
 	// The whole point: the handler must be able to tell these apart and must
-	// see 10, not 100000.
+	// see 10, not 100000. Note gross_amount is ALSO 100000 on this payload, so
+	// this assertion fails the moment anyone reads the wrong field.
 	if evPartial.Amount != 10 {
 		t.Fatalf("partial refund amount = %v, want 10", evPartial.Amount)
 	}
 	if evPartial.Type == evFull.Type {
 		t.Fatal("partial and full refunds must not produce the same event type")
+	}
+
+	// refund_id must survive into Raw, because the replay guard keys on it. Midtrans
+	// retries notifications for up to 24 hours, so a duplicate is the most common
+	// event in the system and the most expensive to mis-handle.
+	if got, _ := evPartial.Raw["refund_id"].(string); got != "rf-2" {
+		t.Fatalf("Raw[refund_id] = %q, want rf-2; without it a retried notification "+
+			"cannot be recognised as a replay", got)
+	}
+}
+
+// A partial_refund with no refund_amount must be rejected, not defaulted to
+// gross_amount. Defaulting is the exact money bug: gross_amount is the full charge, so
+// the fallback pays out the entire order for a partial refund.
+func TestPartialRefundWithoutRefundAmountIsRejected(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+
+	n := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
+		TransactionStatus: "partial_refund", TransactionID: "tx-1", PaymentType: "qris",
+		RefundID: "rf-3",
+	}
+	ev, err := g.ParseWebhook(notificationJSON(t, n))
+	if err == nil {
+		t.Fatalf("a partial_refund with no refund_amount was accepted as %+v; "+
+			"its Amount would be gross_amount, which refunds the whole charge", ev)
+	}
+	if !strings.Contains(err.Error(), "refund_amount") {
+		t.Errorf("error should name the missing field, got: %v", err)
+	}
+}
+
+// A malformed refund_amount is an error, not a silent 0 -- for the same reason
+// gross_amount is.
+func TestPartialRefundRejectsMalformedRefundAmount(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+	n := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
+		TransactionStatus: "partial_refund", RefundAmount: "not-a-number",
+	}
+	if ev, err := g.ParseWebhook(notificationJSON(t, n)); err == nil {
+		t.Fatalf("accepted refund_amount %q as %+v", n.RefundAmount, ev)
+	}
+}
+
+// A full refund with no refund_amount is legitimate: the service uses the intent amount
+// for a full refund, so the field is redundant there. It must not become an error.
+func TestFullRefundWithoutRefundAmountStillParses(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+	n := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "100000.00",
+		TransactionStatus: "refund", TransactionID: "tx-1",
+	}
+	ev, err := g.ParseWebhook(notificationJSON(t, n))
+	if err != nil {
+		t.Fatalf("full refund with no refund_amount was rejected: %v", err)
+	}
+	if ev.Amount != 100000 {
+		t.Fatalf("full refund amount = %v, want gross_amount 100000", ev.Amount)
+	}
+	if _, ok := ev.Raw["refund_id"]; !ok {
+		t.Error("refund_id key should be present (empty) so the type assertion in the " +
+			"service does not depend on the field being sent")
+	}
+}
+
+// A settled payment must still be parsed with gross_amount as its payable amount.
+// Substituting refund_amount unconditionally would break onPaid's mismatch check.
+func TestPaidEventKeepsGrossAmountAsThePayable(t *testing.T) {
+	g := NewMidtransGateway("k", "sandbox", nil)
+	n := snapNotification{
+		OrderID: "VC-20260101-0002", StatusCode: "200", GrossAmount: "25000.00",
+		TransactionStatus: "settlement", FraudStatus: "accept",
+		// A field the parser must IGNORE for a non-refund event.
+		RefundAmount: "999.00",
+	}
+	ev, err := g.ParseWebhook(notificationJSON(t, n))
+	if err != nil {
+		t.Fatalf("settlement: %v", err)
+	}
+	if ev.Type != EventPaid {
+		t.Fatalf("type = %q, want %q", ev.Type, EventPaid)
+	}
+	if ev.Amount != 25000 {
+		t.Fatalf("paid Amount = %v, want gross_amount 25000; refund_amount must not "+
+			"be substituted for a payment notification", ev.Amount)
 	}
 }
 
