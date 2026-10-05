@@ -58,6 +58,14 @@ type mutation struct {
 	old    string
 	new    string
 	expect string // substring expected in the failing output, "" for any failure
+
+	// extra is appended immediately after `new` in the same file.
+	//
+	// It exists for the mutants that need a SECOND statement to express their defect
+	// honestly. M60 is the reason: its previous form smuggled a whole extra UPDATE
+	// into a trailing SQL comment, which changed no behaviour and so could not fail.
+	// Text appended after a comment is not code.
+	extra string
 }
 
 const (
@@ -68,7 +76,10 @@ const (
 	// distinction between the swallowing `postLedger` and the strict
 	// `postLedgerStrict` IS the guard, and a mutation that swaps a call site cannot
 	// express it without failing to compile.
-	svcPostFile    = "internal/service/ledger_postings.go"
+	svcPostFile = "internal/service/ledger_postings.go"
+	// orderSvcFile holds CancelOrder. M46 lives here rather than in shipment_service:
+	// CreateParcel's cancellation guard is redundant with the packable-status guard
+	// beside it, so mutating it alone is neutralised.
 	repoFile       = "internal/repository/payment_repo.go"
 	capFile        = "internal/service/refund_cap.go"
 	domainFile     = "internal/domain/order.go"
@@ -244,6 +255,21 @@ var inFlight struct {
 //
 // A harness that breaks on the platform's line endings is not portable, and the fix
 // is not "normalise the file": the file is fine, the comparison was wrong.
+// anchorFor returns the anchor in the file's own line endings, and whether it was
+// found AT ALL.
+//
+// It deliberately does NOT require uniqueness, and that is a known gap rather than an
+// oversight to be tidied later. M19's anchor
+//
+//	rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,
+//
+// is a fragment of a longer line rather than a whole one. `strings.Replace(body, pat,
+// repl, 1)` rewrites whichever of several identical sites comes FIRST, so the mutant
+// reports as caught while having attacked a statement the label never described. A
+// uniqueOccurrences check that PRINTS rather than fails is the honest middle: it names
+// the ambiguous mutants in the run output so they can be tightened, without breaking a
+// mutant that is merely broad. Turning it into a hard failure is the follow-up, and it
+// needs each flagged anchor reviewed by hand first.
 func anchorFor(body, old string) (string, bool) {
 	if strings.Contains(body, old) {
 		return old, true
@@ -256,6 +282,23 @@ func anchorFor(body, old string) (string, bool) {
 		return crlf, true
 	}
 	return old, false
+}
+
+// uniqueOccurrences counts non-overlapping appearances of a needle.
+func uniqueOccurrences(haystack, needle string) int {
+	if needle == "" {
+		return 0
+	}
+	return strings.Count(haystack, needle)
+}
+
+// firstLine is the first line of s, or all of s if it has no newline. Used to confirm a
+// replacement actually landed.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // lineEndings describes a file's line endings for a diagnostic.
@@ -519,9 +562,24 @@ func main() {
 		},
 		{
 			// Postgres requires a partial index's predicate in the conflict target.
-			// Omit it and the INSERT does not deduplicate at all -- the statement
-			// still succeeds, still returns a row, and every replay writes another
-			// one. It looks exactly like a working guard and is no guard at all.
+			//
+			// CORRECTION TO WHAT THIS USED TO CLAIM. It said the INSERT "does not
+			// deduplicate at all -- the statement still succeeds, still returns a
+			// row, and every replay writes another one. It looks exactly like a
+			// working guard and is no guard at all."
+			//
+			// That is not what happens. With a partial unique index and a conflict
+			// target whose predicate does not match, arbiter index inference fails and
+			// Postgres raises
+			//
+			//	there is no unique or exclusion constraint matching the ON CONFLICT
+			//	specification
+			//
+			// so the write fails LOUDLY rather than duplicating silently. The mutant is
+			// still worth keeping -- it is caught, and it pins that the predicate must
+			// be repeated in the target -- but the silent-duplication failure mode it
+			// described does not exist, and a reader relying on that comment would
+			// wrongly conclude the statement is merely ineffective rather than fatal.
 			label: "M22: the claim does not target the partial unique index",
 			file:  repoFile,
 			old:   "\t\tON CONFLICT (gateway, gateway_ref) WHERE gateway_ref IS NOT NULL\n",
@@ -688,7 +746,20 @@ func main() {
 			label: "M37: the batch run was not idempotent, so a retry paid twice",
 			file:  repoFile,
 			old:   "ON CONFLICT (batch_ref) WHERE batch_ref IS NOT NULL DO NOTHING",
-			new:   "ON CONFLICT DO NOTHING",
+			// NOT `ON CONFLICT DO NOTHING`, which is what this said before.
+			//
+			// A conflict target of `DO NOTHING` with no columns is BROADER, not weaker:
+			// it deduplicates against EVERY unique index on the table, including
+			// batch_ref. So the previous mutation left the exact idempotency it claimed
+			// to remove intact, and this mutant was reported as caught while testing
+			// nothing. A harness mutant that cannot fail is worse than an absent one,
+			// because it is counted as evidence.
+			//
+			// Dropping the clause entirely is what actually removes the guard: the
+			// INSERT then succeeds twice, the same withdrawals are grouped into two
+			// batches, and a retried daily run produces two remittance files and pays
+			// the sellers twice.
+			new: "",
 		},
 		{
 			// An empty batch is not approvable: the record would claim an operator
@@ -770,9 +841,25 @@ func main() {
 			// parcels are physically gone and paid for. (M43 covers the state machine;
 			// this is the seller endpoint that reaches it.)
 			label: "M46: a seller could cancel an order that is already in a box",
-			file:  shipSvcFile,
-			old:   "order.Status == domain.OrderCancelled || order.Status == domain.OrderReturned",
-			new:   "false",
+			//
+			// This used to mutate CreateParcel's
+			//	order.Status == OrderCancelled || order.Status == OrderReturned
+			// to `false`, and could never fail for the reason stated: CreateParcel has
+			// a SECOND guard two lines later that only permits paid, packed and
+			// partially_shipped, so a cancelled order was refused by that one instead.
+			// A mutant neutralised by a neighbouring guard is a false witness -- it
+			// reads as coverage of the cancellation check and tests nothing.
+			//
+			// The seller-facing cancellation path is CancelOrder, whose allow-list is
+			// the only thing standing between a parcelled order and `cancelled`, and
+			// which is reachable from the seller endpoint.
+			file: orderSvcFile,
+			old: "\tif o.Status != domain.OrderPending && o.Status != domain.OrderPaid {\n" +
+				"\t\treturn domain.E(domain.KindConflict, \"INVALID_TRANSITION\", " +
+				"\"only pending or paid orders can be cancelled\")\n\t}",
+			new: "\tif false {\n" +
+				"\t\treturn domain.E(domain.KindConflict, \"INVALID_TRANSITION\", " +
+				"\"only pending or paid orders can be cancelled\")\n\t}",
 		},
 		{
 			// The parcel exists but the order still says packed. Every reader of the
@@ -922,8 +1009,30 @@ func main() {
 			label: "M60: a return parcel reserved shipped units, as if it were a new outbound shipment",
 			file:  returnRepoFile,
 			old:   "INSERT INTO shipment_items (shipment_id, order_item_id, quantity)",
-			new: "INSERT INTO shipment_items (shipment_id, order_item_id, quantity) " +
-				"-- and UPDATE order_items SET shipped_quantity = quantity",
+			// This previously APPENDED a SQL COMMENT:
+			//
+			//	"INSERT INTO shipment_items (...) -- and UPDATE order_items SET
+			//	 shipped_quantity = quantity"
+			//
+			// A comment is not a mutation. It changes no behaviour, so nothing could
+			// fail because of it, and the mutant was tallied as caught. It "worked"
+			// only by accident -- commenting out the rest of the line also commented
+			// out the VALUES clause, which is a different defect than the one it
+			// described and only manifests where a database executes the statement.
+			//
+			// Now it does what the label says: the return path writes the shipped
+			// counter, counting each returned unit as though it had gone out
+			// again, so DeriveShippingStatus re-asserts `shipped` on a delivered
+			// order and the unit is counted twice -- once out, once back.
+			new: "INSERT INTO shipment_items (shipment_id, order_item_id, quantity)" +
+				"\n\t\t-- return units also count as shipped, exactly as an outbound parcel would",
+			//
+			// The counter write is applied by the companion statement below rather
+			// than smuggled into the INSERT, because a second statement is what the
+			// real defect looked like and it keeps the mutation honest about being a
+			// behavioural change rather than a text edit.
+			extra: "\t\tUPDATE order_items SET shipped_quantity = quantity " +
+				"WHERE order_item_id = $2\n",
 		},
 		{
 			// A `requested` return is one the seller has not agreed to. A parcel for it is
@@ -1027,7 +1136,7 @@ func main() {
 	}
 
 	mutationCount := 0
-	caught, missed, skipped := 0, 0, 0
+	caught, missed, skipped, ambiguous := 0, 0, 0, 0
 	for _, m := range muts {
 		orig, err := os.ReadFile(m.file)
 		if err != nil {
@@ -1037,6 +1146,16 @@ func main() {
 		}
 		body := string(orig)
 		pat, anchored := anchorFor(body, m.old)
+		// NAMED, NOT FAILED. See anchorFor: an anchor matching more than one site is
+		// rewritten at whichever comes first, so the mutant may be attacking a
+		// statement its label never mentioned. Surfacing it is the difference between
+		// "this mutant is ambiguous" and "this mutant silently tests the wrong thing".
+		if anchored && uniqueOccurrences(body, pat) > 1 {
+			ambiguous++
+			fmt.Printf("WARN %s\n       AMBIGUOUS ANCHOR -- appears %d times in %s; the "+
+				"replacement is applied to the FIRST match, so this may not be the "+
+				"statement the label names.\n", m.label, uniqueOccurrences(body, pat), m.file)
+		}
 		if !anchored {
 			skipped++
 			fmt.Printf("FAIL %s\n       NOT CHECKED -- the anchor does not appear in %s, so "+
@@ -1070,11 +1189,22 @@ func main() {
 		// `pat` is `m.old` in the FILE's line endings, and `repl` is `m.new` in the
 		// same. Applying an LF anchor to a CRLF file would write LF lines into a CRLF
 		// file, which gofmt then rewrites and which makes the diff unreadable.
-		repl := m.new
+		repl := m.new + m.extra
 		if pat != m.old {
-			repl = strings.ReplaceAll(m.new, "\n", "\r\n")
+			repl = strings.ReplaceAll(repl, "\n", "\r\n")
 		}
 		mutated := strings.Replace(body, pat, repl, 1)
+
+		// The replacement text has to have LANDED. `strings.Replace` with a count of
+		// 1 is silent when nothing matched, and a mutant whose replacement never
+		// appears is a no-op that the tally then reports as caught.
+		if !strings.Contains(mutated, firstLine(repl)) {
+			skipped++
+			fmt.Printf("FAIL %s\n       NOT CHECKED -- the replacement did not appear in the "+
+				"mutated file, so the defect was never introduced and this mutant tests "+
+				"nothing.\n", m.label)
+			continue
+		}
 		// Back the original up to DISK before mutating. The defer below restores on
 		// a normal return; this survives being killed.
 		if err := stage(m.file, orig); err != nil {
