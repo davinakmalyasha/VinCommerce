@@ -695,7 +695,55 @@ func (s *OrderService) ResolveAddress(ctx context.Context, in PlaceOrderInput) (
 	if in.Address == nil {
 		return nil, domain.E(domain.KindInvalid, "ADDRESS_REQUIRED", "shipping address is required")
 	}
+	if err := validateDeliverableAddress(in.Address); err != nil {
+		return nil, err
+	}
 	return in.Address, nil
+}
+
+// validateDeliverableAddress refuses an address a courier cannot act on.
+//
+// THIS CHECK DID NOT EXIST. `ResolveAddress` returned an inline address with no field
+// validation at all, so a POST with an empty body for the address produced an order with
+// an empty recipient, an empty street and an empty phone -- accepted, committed, and
+// dispatched to a fulfilment queue with nothing in it.
+//
+// This is worse than an ordinary validation gap because the order is NOT rejected
+// anywhere later. `shipping_address` is JSONB on `orders`, so there is no column CHECK to
+// catch it, and the seller UI renders whatever is there. The failure surfaces days later,
+// as a parcel that cannot be delivered and a buyer who cannot be called about it -- by
+// which point the money has been paid out and the seller has spent the shipping.
+//
+// The five fields below are the minimum for a delivery attempt in Indonesia: who,
+// where, a district, a postal code, and a number that answers.
+//
+// `Country` is deliberately NOT required. The frontend does not send it on the inline
+// path, so requiring it here would reject every checkout that currently works, and an
+// absent country on an otherwise complete Indonesian address is not what makes an
+// address undeliverable. It is defaulted in `addressMap` instead.
+func validateDeliverableAddress(a *domain.Address) error {
+	missing := make([]string, 0, 5)
+	if strings.TrimSpace(a.Recipient) == "" {
+		missing = append(missing, "recipient")
+	}
+	if strings.TrimSpace(a.Phone) == "" {
+		missing = append(missing, "phone")
+	}
+	if strings.TrimSpace(a.AddressLine1) == "" {
+		missing = append(missing, "address_line1")
+	}
+	if strings.TrimSpace(a.City) == "" {
+		missing = append(missing, "city")
+	}
+	if strings.TrimSpace(a.PostalCode) == "" {
+		missing = append(missing, "postal_code")
+	}
+	if len(missing) > 0 {
+		return domain.E(domain.KindInvalid, "ADDRESS_INCOMPLETE",
+			"the shipping address is missing "+strings.Join(missing, ", ")+
+				"; a courier cannot deliver to it and cannot call you about it")
+	}
+	return nil
 }
 
 // PlacedOrder is the checkout result: one order per seller.
