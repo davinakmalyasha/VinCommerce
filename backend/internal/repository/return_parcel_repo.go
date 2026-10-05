@@ -72,9 +72,29 @@ func (r *ShipmentRepository) CreateReturnParcel(
 			"a return parcel must carry at least one unit")
 	}
 
-	// Refuse a second parcel. Read BEFORE creating one, and the UNIQUE index from
-	// 00051 is the backstop for two concurrent requests -- exactly the pair that would
-	// otherwise both read "no parcel yet" and both create one.
+	// One parcel per return. The check is taken UNDER a lock, which is the whole
+	// point, and the ordering is the part that was wrong.
+	//
+	// This read used to happen before CreateShipment took its advisory lock, so it was
+	// a check performed outside the critical section: two concurrent requests both read
+	// "no parcel yet", then serialised on the lock inside CreateShipment, and the
+	// second one never re-read. Both then wrote a parcel, and because the write is an
+	// UPDATE of `return_requests.return_shipment_id`, the second OVERWROTE the first
+	// rather than conflicting with it. The result was a real return parcel row that no
+	// return pointed at -- goods in motion that nothing tracked, and a return that read
+	// as never sent back.
+	//
+	// The UNIQUE index is not the backstop for this. It is on
+	// `return_requests.return_shipment_id`, which stops two RETURNS sharing one parcel;
+	// it cannot stop two parcels for one return.
+	//
+	// Locking on the return id rather than (order, kind) is deliberate: the invariant
+	// here is per-RETURN, whereas CreateShipment's is per-(order, kind). Using the same
+	// key would have serialised unrelated returns on the same order for no benefit.
+	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, returnID); err != nil {
+		return nil, err
+	}
+
 	var existing string
 	err := q.QueryRow(ctx,
 		`SELECT return_shipment_id::text FROM return_requests

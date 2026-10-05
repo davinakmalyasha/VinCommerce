@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/vincommerce/backend/internal/db"
 	"github.com/vincommerce/backend/internal/domain"
 )
@@ -124,6 +125,16 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 	return &s, nil
 }
 
+// isUniqueViolation reports whether err is a Postgres unique-constraint violation.
+//
+// 23505 is SQLSTATE unique_violation. The codebase inlines `pgErr.Code == "23505"` in
+// several places; this is a local helper rather than a shared one so the change stays
+// scoped to the parcel allocation.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // CreateShipment opens a new parcel for an order.
 //
 // `sequence` is derived from the order's existing parcels rather than accepted from
@@ -131,6 +142,34 @@ func scanShipment(row pgx.Row) (*Shipment, error) {
 // UNIQUE (order_id, kind, sequence) -- which is safe but is a confusing error for
 // a seller who just double-tapped -- or, worse, be renumbered by a retry and leave
 // a hole in the audit trail. The number is a fact about the order, not a request.
+//
+// THE ALLOCATION IS LOCKED, BECAUSE READ-THEN-INSERT IS A LOST UPDATE
+//
+//	SELECT MAX(sequence) + 1 ...   -- both transactions read 0
+//	INSERT ... VALUES (1)           -- both write 1
+//
+// Under READ COMMITTED neither transaction sees the other's uncommitted row, so both
+// compute sequence = 1. The UNIQUE index then makes the second one fail -- after it has
+// already blocked on the first. Nothing is corrupted, but the seller who double-tapped
+// gets a raw database error naming an index, not a domain error he can act on, and the
+// block duration is however long the first parcel's transaction runs.
+//
+// A transaction-scoped advisory lock on (order_id, kind) serialises just this
+// allocation: two sellers parcelling DIFFERENT orders never contend, and the row that
+// the sequence is derived from is protected for exactly as long as the parcel insert.
+//
+// The lock is keyed on TWO values rather than one hash of the pair, so an order whose
+// outbound and return parcels are created concurrently take two different locks. A
+// single `hashtext(orderID || kind)` would serialise them against each other, which is
+// merely wasteful, while a single `hashtext(orderID)` alone would be sufficient for
+// safety. Two keys is chosen because it documents the intent: the sequence space is
+// per (order, kind).
+//
+// REQUIRES A TRANSACTION. `pg_advisory_xact_lock` outside an explicit transaction
+// block is released immediately, so passing a pool here would silently restore the old
+// race. Every caller passes a transaction -- CreateParcel and CreateReturnParcel both
+// wrap this in the order transaction -- and `TestCreateShipmentRequiresATransaction`
+// pins that.
 func (r *ShipmentRepository) CreateShipment(
 	ctx context.Context, q Querier, orderID, sellerID, kind, carrier string,
 ) (*Shipment, error) {
@@ -142,6 +181,12 @@ func (r *ShipmentRepository) CreateShipment(
 		// routinely have no AWB, and those parcels must still be recordable.
 		carrier = "manual"
 	}
+
+	if _, err := q.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, orderID, kind); err != nil {
+		return nil, err
+	}
+
 	var nextSeq int
 	if err := q.QueryRow(ctx, `
 		SELECT COALESCE(MAX(sequence), 0) + 1
@@ -154,6 +199,16 @@ func (r *ShipmentRepository) CreateShipment(
 		INSERT INTO shipments (order_id, seller_id, sequence, kind, carrier)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5)
 		RETURNING id::text`, orderID, sellerID, nextSeq, kind, carrier).Scan(&id); err != nil {
+		// With the lock held a UNIQUE violation here means something outside this
+		// function wrote a parcel for the order while we waited -- a migration, a
+		// manual fix, or a second code path. Surface it as a conflict the caller can
+		// retry rather than as a raw constraint name, because the seller-facing
+		// message for "double-tapped" is the whole reason this lock exists.
+		if isUniqueViolation(err) {
+			return nil, domain.E(domain.KindConflict, "PARCEL_SEQUENCE_TAKEN",
+				"another parcel for this order was created at the same moment; "+
+					"reload the order and try again")
+		}
 		return nil, err
 	}
 	return r.ShipmentByID(ctx, q, id)
