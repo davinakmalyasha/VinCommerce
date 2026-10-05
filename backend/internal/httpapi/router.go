@@ -158,7 +158,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(metricsReg.Middleware)
 	// chi's RealIP is replaced by middleware.ClientIP. RealIP is documented as
 	// vulnerable to spoofing and unconditionally takes the leftmost
-	// X-Forwarded-For entry Ã¢â‚¬â€ i.e. whatever the client sent first. That value
+	// X-Forwarded-For entry — i.e. whatever the client sent first. That value
 	// keyed every per-IP rate limiter, so a fresh forged header per request
 	// gave unlimited login attempts, unlimited registration, and unmetered LLM
 	// spend. See middleware/requestid.go.
@@ -306,7 +306,7 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.With(mw.RequireRoles(domain.RoleAdmin, domain.RoleSupport), auditMw).
 					Post("/orders/{orderId}/refund", paymentsH.Refund)
 			})
-			// dev-only sandbox drivers (order owner or staff) Ã¢â‚¬â€ never in production.
+			// dev-only sandbox drivers (order owner or staff) — never in production.
 			if cfg.IsDev() {
 				r.Group(func(r chi.Router) {
 					r.Use(authMw)
@@ -325,8 +325,8 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/seller", func(r chi.Router) {
 			r.Use(authMw)
-			// Store open/view stay auth-only: that's the buyerÃ¢â€ â€™seller
-			// onboarding funnel. Everything else requires the seller role Ã¢â‚¬â€
+			// Store open/view stay auth-only: that's the buyerâ†’seller
+			// onboarding funnel. Everything else requires the seller role —
 			// ownership checks remain as defense-in-depth beneath this gate.
 			r.Get("/store", seller.MyStore)
 			r.Post("/store", seller.OpenStore)
@@ -571,7 +571,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Use(authMw)
 			r.With(flagMw("ai_assistant"), rateLimiter.Limit(20, time.Minute, userKey)).Post("/ask", aiH.Ask)
 			// review-summary renders on the public product page, so any
-			// authenticated user may call it Ã¢â‚¬â€ the per-user limiter keeps
+			// authenticated user may call it — the per-user limiter keeps
 			// LLM cost bounded.
 			r.With(rateLimiter.Limit(30, time.Minute, userKey)).Post("/review-summary", aiH.ReviewSummary)
 			r.With(mw.RequireRoles(domain.RoleSeller, domain.RoleAdmin), rateLimiter.Limit(20, time.Minute, userKey)).
@@ -636,7 +636,7 @@ func NewRouter(deps Dependencies) http.Handler {
 //
 // It uses the resolved client IP WITHOUT the port. The previous version used
 // r.RemoteAddr directly, which is "ip:port" whenever no proxy header is
-// present Ã¢â‚¬â€ and the source port is ephemeral, so every new connection landed
+// present — and the source port is ephemeral, so every new connection landed
 // in a fresh bucket. A trivial client that opens one socket per request
 // defeated /auth/login, /auth/register and the webhook limiter completely.
 //
@@ -704,7 +704,7 @@ func (p *peekedBody) Close() error {
 // only, so both failure paths truncated the request: a body over 4 KiB reached
 // the handler as its first 4097 bytes, and a mid-body read error delivered a
 // partial payload. Either way auth.Login failed with a JSON parse error rather
-// than the real 413/400 Ã¢â‚¬â€ and the doc comment claimed the opposite.
+// than the real 413/400 — and the doc comment claimed the opposite.
 //
 // Here the prefix is re-joined to the untouched remainder, so the handler
 // always sees the complete original body.

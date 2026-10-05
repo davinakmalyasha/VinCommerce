@@ -215,7 +215,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			return nil, nil, err
 		}
 		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
-		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima â€” VinCommerce",
+		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima — VinCommerce",
 			map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 		return intent, &payments.GatewayPayment{Reference: "wallet", Status: "paid"}, nil
 	}
@@ -247,14 +247,14 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		}
 		if err := tx.AddEvent(ctx, &domain.OrderEvent{
 			OrderID: order.ID, FromStatus: domain.OrderPending, ToStatus: domain.OrderPaid,
-			ActorID: &in.BuyerID, Note: "COD â€” bayar tunai saat barang diterima",
+			ActorID: &in.BuyerID, Note: "COD — bayar tunai saat barang diterima",
 		}); err != nil {
 			return nil, nil, err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, nil, err
 		}
-		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "COD â€” menunggu pelunasan saat diterima")
+		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "COD — menunggu pelunasan saat diterima")
 		return intent, &payments.GatewayPayment{Reference: "cod", Status: "pending"}, nil
 	}
 
@@ -316,7 +316,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 }
 
 // CaptureCOD finalizes payment when the buyer confirms delivery on a COD order.
-// COD capture must NOT touch order status â€” the order is already delivered;
+// COD capture must NOT touch order status — the order is already delivered;
 // only the money state (intent â†’ captured, payment_status â†’ paid) moves.
 func (s *PaymentService) CaptureCOD(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
@@ -390,7 +390,7 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 		return err
 	}
 	s.publish(ctx, intent.OrderID, "", "", "pembayaran COD tercatat")
-	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima â€” VinCommerce",
+	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 	return nil
 }
@@ -430,7 +430,7 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 	switch ev.Type {
 	case payments.EventPaid:
 		// Never capture when the provider amount is missing or disagrees with
-		// the intent â€” a webhook without an amount must not move money.
+		// the intent — a webhook without an amount must not move money.
 		if ev.Amount <= 0 {
 			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
 				"webhook did not include a payable amount")
@@ -719,7 +719,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	}
 	// pendingâ†’paid ONLY. If the order moved on meanwhile (cancelled by the
 	// payment-timeout sweeper, or already paid via another path), the whole
-	// capture rolls back â€” a late webhook can never resurrect it.
+	// capture rolls back — a late webhook can never resurrect it.
 	if err := tx.SetStatusGuarded(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || domain.Is(err, domain.KindConflict, "") || domain.Is(err, domain.KindNotFound, "") {
 			return domain.E(domain.KindConflict, "ORDER_NOT_PENDING",
@@ -765,7 +765,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 		return err
 	}
 	s.publish(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
-	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima â€” VinCommerce",
+	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
 	return nil
 }
@@ -820,7 +820,7 @@ func (s *PaymentService) publish(ctx context.Context, orderID, from, to, message
 
 // ReleaseEscrow transfers funds to the seller wallet (on delivery completion),
 // deducting the platform commission. The status flip, fee split and both
-// wallet credits happen in ONE transaction â€” a crash can never release escrow
+// wallet credits happen in ONE transaction — a crash can never release escrow
 // without crediting the seller.
 func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
@@ -952,7 +952,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 
 	s.publish(ctx, orderID, order.Status, order.Status, "escrow released to seller")
-	s.emailFor(ctx, orderID, "order_completed", "Pesanan selesai â€” dana escrow dilepas",
+	s.emailFor(ctx, orderID, "order_completed", "Pesanan selesai — dana escrow dilepas",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", sellerAmount)})
 	return nil
 }
@@ -966,7 +966,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 //
 //  1. It ignored order.Status entirely. On a CANCELLED order whose intent was
 //     still captured, an admin could release the escrow (+seller) and then
-//     refund it (-seller, +buyer) â€” the seller's net was zero but their wallet
+//     refund it (-seller, +buyer) — the seller's net was zero but their wallet
 //     balance and payout eligibility had both grown, and a withdrawal in
 //     between turned the mint into real bank cash.
 //
@@ -1317,7 +1317,7 @@ func (s *PaymentService) IntentByOrder(ctx context.Context, orderID string) (*do
 //  2. Bound the payout by what the platform actually earned on this order.
 //     The old formula paid intent.Amount/2, which on a Rp 500.000 order with a
 //     2% fee meant paying Rp 250.000 out of a commission that was only ever
-//     going to be Rp 10.000 â€” a ~25x amplification of a single dispute.
+//     going to be Rp 10.000 — a ~25x amplification of a single dispute.
 //
 //  3. Run the wallet movements and the settlement record in ONE transaction, so
 //     a crash cannot leave money moved with no marker (or a marker with no
