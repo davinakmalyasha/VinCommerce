@@ -2142,11 +2142,30 @@ func (s *PaymentService) PayoutRemittanceCSV(ctx context.Context, batchID string
 		return nil, err
 	}
 	for _, p := range rows {
-		if err := w.Write([]string{
+		// EVERY seller-controlled field goes through domain.CSVCell.
+		//
+		// `bank_name` and `bank_account` are whatever the seller typed into their store
+		// profile. Unescaped, a seller could set bank_name to
+		//
+		//	=HYPERLINK("http://evil.example","approve this batch")
+		//
+		// and the formula would execute on the machine of whoever opened the file. That
+		// reader is a finance operator or a bank, not another seller, which makes this
+		// the highest-value injection point in the product: the target is a person
+		// approving a payment instruction.
+		//
+		// The numeric amount and the RFC3339 timestamp are left alone -- neither can
+		// begin with a formula character, and running them through the text escaper
+		// would obscure a formatting bug rather than prevent one.
+		row, err := domain.CSVRowMixed([]string{
 			batch.BatchRef, p.ID, p.WalletID, p.BankName, p.BankAccount,
 			strconv.FormatFloat(p.Amount, 'f', 0, 64),
 			p.RequestedAt.UTC().Format(time.RFC3339),
-		}); err != nil {
+		}, 0, 1, 2, 3, 4)
+		if err != nil {
+			return nil, err
+		}
+		if err := w.Write(row); err != nil {
 			return nil, err
 		}
 	}

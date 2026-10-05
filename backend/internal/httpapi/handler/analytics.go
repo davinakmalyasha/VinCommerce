@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/httpapi/middleware"
 	"github.com/vincommerce/backend/internal/service"
 )
@@ -132,18 +133,14 @@ func (h *Analytics) SellerOrdersCSV(w http.ResponseWriter, r *http.Request) {
 
 // escapeCSVCell neutralizes spreadsheet formula injection: a cell beginning
 // with = + - @ TAB or CR would execute as a formula (e.g. =HYPERLINK/=cmd)
-// when the export is opened in Excel. Prefixing an apostrophe forces
-// text interpretation.
-func escapeCSVCell(s string) string {
-	if s == "" {
-		return s
-	}
-	switch s[0] {
-	case '=', '+', '-', '@', '\t', '\r':
-		return "'" + s
-	}
-	return s
-}
+// when the export is opened in Excel.
+//
+// The implementation is now `domain.CSVCell`, shared with the payout remittance writer
+// in the service package. It used to live here only, which meant the export with the
+// most dangerous recipient -- a finance operator or a bank opening the remittance file
+// -- was the one CSV writer in the codebase with NO escaping at all. This delegating
+// wrapper stays so the existing call sites and tests keep their shape.
+func escapeCSVCell(s string) string { return domain.CSVCell(s) }
 
 func (h *Analytics) writeCSV(w http.ResponseWriter, report *service.Report) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
