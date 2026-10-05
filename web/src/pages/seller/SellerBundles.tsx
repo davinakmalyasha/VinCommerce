@@ -32,7 +32,20 @@ export function SellerBundles() {
   const [picked, setPicked] = useState<Record<string, { price: number }>>({})
 
   const { data } = useQuery({
-    queryKey: ['seller-products', 1],
+    // NOT ['seller-products', 1].
+    //
+    // SellerProducts.tsx uses ['seller-products', page] for the paginated product list,
+    // and page 1 is 1. This is a DIFFERENT request with a different page_size (50 rather
+    // than the list page size) and, on a seller with a short product list, a different
+    // shape -- no `total`, no page envelope.
+    //
+    // A TanStack Query key must identify a request uniquely, not a topic. Sharing this
+    // key meant whichever of the two components mounted first populated the cache and
+    // the other was served the wrong response: a seller who opened Products then
+    // navigated to Bundles got the paginated page in the variant picker, and a seller
+    // who opened Bundles first got a 50-item response with no pagination metadata in
+    // their product list. Neither is a crash, so it surfaces as quietly wrong data.
+    queryKey: ['seller-products', 'bundle-picker', 1],
     queryFn: async () =>
       (await api.get<{ products: Product[] }>('/seller/products?page_size=50')).data,
   })
