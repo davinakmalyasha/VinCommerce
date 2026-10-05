@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"sort"
 	"testing"
+
+	"github.com/vincommerce/backend/internal/repository"
 )
 
 // Property tests for the checkout money arithmetic.
@@ -365,10 +367,24 @@ func TestMoneyRoundNeverProducesFractionalRupiah(t *testing.T) {
 
 // ─── 4. Commission and refund legs ──────────────────────────────────────────
 
-// TestCommissionLegsSumToGross is the invariant the whole escrow settlement
-// rests on. The two legs are rounded INDEPENDENTLY by Postgres when written to
-// NUMERIC(14,2) columns, so a ±1 sen drift on ~2.6% of orders was invisible to
-// every check: 00040 only asserts both legs are non-negative, not that they sum.
+// TestCommissionLegsSumToGross is the invariant the whole escrow settlement rests on.
+// The two legs are rounded INDEPENDENTLY by Postgres when written to NUMERIC(14,2)
+// columns, so a one-sen drift on ~2.6% of orders was invisible to every check: 00040
+// only asserts both legs are non-negative, not that they sum.
+//
+// THIS TEST USED TO RE-IMPLEMENT THE RULE INSTEAD OF CALLING IT.
+//
+// It computed the intended answer inline --
+//
+//	fee := moneyRound(amount*pct/100 + fixed)
+//	if fee > amount { fee = amount }
+//	seller := amount - fee
+//
+// -- and so verified the ALGORITHM while production implemented a DIFFERENT ONE. It
+// passed 100,000 iterations against repository.Commission returning unrounded
+// fractional rupiah on every call, and it STILL passed after the fix landed, for the
+// same reason. A property test that restates the rule instead of executing it is an
+// assertion about the test file.
 func TestCommissionLegsSumToGross(t *testing.T) {
 	rng := rand.New(rand.NewPCG(23, 29))
 	for iter := 0; iter < 100_000; iter++ {
@@ -376,19 +392,91 @@ func TestCommissionLegsSumToGross(t *testing.T) {
 		pct := rng.Float64() * 60      // includes out-of-range; must still be safe
 		fixed := rng.Float64() * 25000 // includes a fee far above the amount
 
-		fee := moneyRound(amount*pct/100 + fixed)
-		if fee > amount {
-			fee = amount
-		}
-		seller := amount - fee // the residual, derived AFTER rounding
+		// The production function, not a restatement of it.
+		fee, seller := repository.Commission(pct, fixed, amount)
 
 		if seller < 0 {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: seller leg is negative", amount, pct, fixed)
+			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: seller leg is negative",
+				amount, pct, fixed)
+		}
+		if fee < 0 {
+			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee leg is negative",
+				amount, pct, fixed)
 		}
 		if fee+seller != amount {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee Rp%.0f + seller Rp%.0f = Rp%.0f, "+
-				"want Rp%.0f -- money is created or destroyed at escrow release",
+			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee Rp%.2f + seller Rp%.2f = "+
+				"Rp%.2f, want Rp%.2f -- money is created or destroyed at escrow release, and "+
+				"payment_intents_split_sums rejects the write so the SELLER IS NOT PAID",
 				amount, pct, fixed, fee, seller, fee+seller, amount)
+		}
+		// IDR has no sen. A fractional leg cannot be charged to a gateway at all.
+		if !IsWholeIDR(fee) || !IsWholeIDR(seller) {
+			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: produced fractional rupiah "+
+				"fee=%v seller=%v", amount, pct, fixed, fee, seller)
+		}
+	}
+}
+
+// The random sweep above has a measure-zero blind spot, and it is exactly where the
+// alternative implementation hides.
+//
+// Rounding BOTH legs independently -- moneyRound(raw) and moneyRound(amount-raw) --
+// agrees with rounding once and taking the residual for every input EXCEPT when raw
+// lands exactly on a half rupiah. Then both legs round up and the pair sums to
+// amount+1: money created.
+//
+// With pct and fixed drawn from a float distribution, landing on exactly .5 has
+// probability zero, so 100,000 random iterations pass against that implementation. It
+// did pass when tried. These cases pin it.
+func TestCommissionLegsSumOnTheHalfRupiahBoundary(t *testing.T) {
+	cases := []struct {
+		pct, fixed, amount float64
+		why                string
+	}{
+		{0.5, 0, 100, "raw is exactly 0.5; both legs round up if rounded separately"},
+		{0.5, 0, 1000, "same, larger order"},
+		{2.5, 0, 200, "raw is exactly 5"},
+		{0, 0.5, 100, "the FIXED fee is the half-rupiah, not the percentage"},
+		{0, 49.5, 100, "fixed just under a half"},
+		{0, 50.5, 100, "fixed just over a half"},
+		{1.5, 0, 100, "raw is exactly 1.5"},
+		{99.5, 0, 100, "nearly the whole order"},
+		{33.333, 0.5, 999, "both components fractional at once"},
+	}
+	for _, c := range cases {
+		fee, seller := repository.Commission(c.pct, c.fixed, c.amount)
+		if fee+seller != c.amount {
+			t.Errorf("Commission(%v,%v,%v) = (%v,%v), sum %v != %v: %s",
+				c.pct, c.fixed, c.amount, fee, seller, fee+seller, c.amount, c.why)
+		}
+		if !IsWholeIDR(fee) || !IsWholeIDR(seller) {
+			t.Errorf("Commission(%v,%v,%v) produced fractional rupiah fee=%v seller=%v",
+				c.pct, c.fixed, c.amount, fee, seller)
+		}
+	}
+}
+
+// Commission must round the same way as every other money path in the system. A second
+// rounding rule means two orderings of the same purchase disagree by a sen, which is
+// exactly the class of defect 00040 exists to prevent.
+func TestCommissionUsesTheSharedRoundingRule(t *testing.T) {
+	rng := rand.New(rand.NewPCG(101, 7))
+	for iter := 0; iter < 50_000; iter++ {
+		amount := float64(rng.IntN(5_000_000))
+		pct := rng.Float64() * 30
+		fixed := rng.Float64() * 5000
+
+		fee, _ := repository.Commission(pct, fixed, amount)
+
+		want := amount*pct/100 + fixed
+		if want > amount {
+			want = amount
+		}
+		want = moneyRound(want)
+
+		if fee != want {
+			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee=%v but the shared rounding "+
+				"rule gives %v", amount, pct, fixed, fee, want)
 		}
 	}
 }

@@ -1444,10 +1444,48 @@ func (r *PaymentRepository) SetFee(ctx context.Context, pct, fixed float64) erro
 }
 
 // Commission splits an amount into platform fee and seller proceeds.
+//
+// The fee is rounded to whole rupiah FIRST, and the seller leg is derived as the
+// residual `amount - fee`. The order matters, and getting it backwards is the bug this
+// function had:
+//
+//	return fee, amount - fee    with fee UNROUNDED
+//
+// returned fractional rupiah, e.g. fee = 211.98000000000002. Postgres then rounds each
+// leg independently on the way into `NUMERIC(14,2)`, so the two stored legs stopped
+// summing to the charge on roughly 2.6% of orders. `payment_intents_split_sums` -- the
+// constraint that exists precisely to catch money being created or destroyed at escrow
+// release -- rejected them, so the order could not be settled and the SELLER WAS NOT
+// PAID. A rounding bug that withholds a seller's earnings.
+//
+// Rounding the fee and deriving the seller as the residual makes the sum exact by
+// construction, for every input, with no epsilon and no reliance on how the database
+// rounds.
+//
+// # WHY THE PLATFORM ABSORBS THE SUB-RUPIAH REMAINDER
+//
+// `moneyRound` is half-away-from-zero, so the platform takes at most half a rupiah more
+// than the exact percentage. Flooring instead would be marginally kinder to the seller
+// and would cost the platform a rupiah per transaction, on every transaction, forever.
+// Half-away-from-zero is the conventional rounding for settlement and is what the rest
+// of this codebase already uses (see money.go).
+//
+// Bounds are enforced on the ROUNDED value, so an amount smaller than the fixed fee
+// cannot produce a negative fee or a seller leg larger than the order.
 func Commission(pct, fixed, amount float64) (fee, seller float64) {
-	fee = amount * pct / 100
-	fee += fixed
+	raw := amount*pct/100 + fixed
+	if raw > amount {
+		raw = amount
+	}
+	if raw < 0 {
+		// A negative pct or fixed must not become a credit to the platform against the
+		// seller. Config is admin-editable, so this is reachable by a typo.
+		raw = 0
+	}
+	fee = moneyRound(raw)
 	if fee > amount {
+		// Only reachable if amount itself is fractional and rounds down below a fee that
+		// was just under it. Clamping keeps fee + seller == amount exact.
 		fee = amount
 	}
 	return fee, amount - fee
