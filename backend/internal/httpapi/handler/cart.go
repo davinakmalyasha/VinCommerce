@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -335,12 +336,62 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotency is CLAIMED with SETNX before the order is placed, not read and then
+	// acted on.
+	//
+	// The previous shape was GET-then-SET:
+	//
+	//	GET  idem:<user>:<key>   -> miss
+	//	<place the order>
+	//	SET  idem:<user>:<key>
+	//
+	// which is not a lock. Every concurrent retry that arrives before the SET sees the
+	// same miss and places its own order, so N simultaneous retries produced N orders,
+	// N stock reservations and N charges. A checkout is exactly where a buyer
+	// double-taps, and mobile clients retry aggressively on a slow response -- the
+	// failure this guard claims to prevent is the one it invited.
+	//
+	// Redis SETNX is atomic, so exactly one request can claim a given key. The claim is
+	// written BEFORE the order exists, which means the window that mattered is closed.
 	idemKey := r.Header.Get("X-Idempotency-Key")
+	idemStore := "idem:" + user.ID + ":" + idemKey
 	if idemKey != "" {
-		// Replay guard: a processed key returns the stored order ids without re-charging.
-		existing, err := h.rdb.Get(r.Context(), "idem:"+user.ID+":"+idemKey).Result()
+		// Already claimed by a request that finished. `orders` is stored as JSON so the
+		// replay response has the SAME shape as the first one.
+		//
+		// It used to be a comma-joined string, so a replay returned
+		// {"orders":"a,b,c"} while the original returned {"orders":[{...},{...}]}. A
+		// client reading `orders[0].id` got the character "a" rather than an object --
+		// and only on the retry, which is the path nobody tests by hand.
+		existing, err := h.rdb.Get(r.Context(), idemStore).Result()
 		if err == nil && existing != "" {
-			writeJSON(w, http.StatusOK, map[string]any{"replayed": true, "orders": existing, "grand_total": 0})
+			var ids []string
+			if json.Unmarshal([]byte(existing), &ids) == nil && len(ids) > 0 {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"replayed": true, "orders": ids, "grand_total": 0,
+				})
+				return
+			}
+			// Claimed by a request that is STILL IN FLIGHT. The key exists but holds no
+			// result yet. Report it as a conflict rather than placing a second order:
+			// 425 Too Early is the honest answer, since retrying later is the right move.
+			writeJSON(w, http.StatusTooEarly, map[string]any{
+				"error": "REQUEST_IN_PROGRESS",
+				"message": "a request with this X-Idempotency-Key is still being processed; " +
+					"retry with the same key shortly",
+			})
+			return
+		}
+
+		// Claim it. A false return means another request won the race between our GET
+		// and this SETNX, so it has the lock and we must not place an order.
+		claimed, err := h.rdb.SetNX(r.Context(), idemStore, "in-flight", time.Hour).Result()
+		if err != nil || !claimed {
+			writeJSON(w, http.StatusTooEarly, map[string]any{
+				"error": "REQUEST_IN_PROGRESS",
+				"message": "another request with this X-Idempotency-Key won the race; " +
+					"retry with the same key shortly",
+			})
 			return
 		}
 	}
@@ -397,18 +448,34 @@ func (h *Checkout) Place(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey:     idemKey,
 	})
 	if err != nil {
+		// Release the claim so the buyer can RETRY with the same key.
+		//
+		// Leaving the claim in place would convert every transient failure -- a timeout,
+		// a dropped connection, a declined payment -- into a permanent 425 for that key,
+		// for a full hour. The buyer would have no way to place the order at all, and
+		// the failure mode would look like a server bug rather than a stuck key.
+		//
+		// This is safe because the claim is only released when PlaceOrder returned an
+		// error, which means it did not commit. If PlaceOrder committed and then failed
+		// to report, the claim stays and the retry returns the stored orders -- which is
+		// the correct outcome, and the reason the release is tied to the error and not
+		// to a timer.
+		if idemKey != "" {
+			_ = h.rdb.Del(r.Context(), idemStore).Err()
+		}
 		writeErr(w, r, err)
 		return
 	}
 	if idemKey != "" {
-		orderIDs := ""
-		for i, o := range placed.Orders {
-			if i > 0 {
-				orderIDs += ","
-			}
-			orderIDs += o.ID
+		// Overwrite the claim with the result, as JSON, so a retry gets the order ids in
+		// the same shape the original response used.
+		ids := make([]string, 0, len(placed.Orders))
+		for _, o := range placed.Orders {
+			ids = append(ids, o.ID)
 		}
-		_ = h.rdb.Set(r.Context(), "idem:"+user.ID+":"+idemKey, orderIDs, time.Hour).Err()
+		if b, mErr := json.Marshal(ids); mErr == nil {
+			_ = h.rdb.Set(r.Context(), idemStore, b, time.Hour).Err()
+		}
 	}
 	writeJSON(w, http.StatusCreated, placed)
 }
