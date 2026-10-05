@@ -46,7 +46,25 @@ jobs:
   backend:
     name: Backend lint, vet, test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The budget is the MUTATION RUN, not the unit tests.
+    #
+    # This job runs two very different things: `go test -race` over every package,
+    # and `cmd/mutation-check`, which mutates each source file, re-runs the suite, and
+    # restores it. Measured at roughly 24 minutes for the mutation step alone on a
+    # developer machine, with the race suite and govulncheck on top.
+    #
+    # At the previous 15-minute cap this job could not pass. `timeout-minutes` KILLS a
+    # job that exceeds it, so the mutation step was being terminated and the run
+    # reported failure at a step that looks like it hung -- which reads as an
+    # infrastructure flake and gets retried rather than fixed. A pipeline that is
+    # always red is a pipeline nobody runs.
+    #
+    # 50 is the budget for the whole job, not for any one step. The right fix is to
+    # split the mutation run into its own job so a 24-minute mutation does not hide a
+    # 40-second unit-test failure behind a single timeout. That is deliberately NOT done
+    # here: there is no way to execute this workflow locally, and restructuring a
+    # pipeline that cannot be run is a worse trade than a correct, slower one.
+    timeout-minutes: 50
     services:
       postgres:
         image: ${{ env.POSTGRES_IMAGE }}
