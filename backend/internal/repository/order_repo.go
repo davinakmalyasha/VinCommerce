@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -227,28 +228,94 @@ func (t *OrderTx) MarkExternalPaid(ctx context.Context, orderID, ref string, pai
 }
 
 // ReleaseReservation restocks and marks reservations released (cancel/timeout).
+//
+// THE LEDGER INSERT USED TO RE-LOG PRIOR RELEASES.
+//
+//	INSERT INTO stock_ledger (variant_id, order_id, change, reason)
+//	SELECT variant_id, order_id, quantity, 'release'
+//	  FROM inventory_reservations WHERE order_id = $1 AND status = 'released'
+//
+// `status = 'released'` selects EVERY release for the order, not the ones this call just
+// transitioned. The `tag.RowsAffected() > 0` guard does not help: it only proves that
+// SOMETHING was released, and then the INSERT reaches back and picks up rows an earlier
+// release already wrote.
+//
+// So the moment an order has one reservation released by some other path -- a partial
+// cancellation, a line-level timeout, a retry of a release that partially applied -- and
+// then another path releases what is left, that first reservation gets a SECOND ledger
+// row. `stock_ledger` is the audit trail for stock movements, so the order now accounts
+// for more stock returned than was ever held, and a reconciliation over it has no
+// principled way to tell a duplicate from a real second movement.
+//
+// The fix is to use the rows this statement actually transitioned, which means the
+// UPDATE has to RETURN them. Both the restock and the ledger write are driven from that
+// set, so they cannot disagree with each other or with the status change.
+//
+// This is deliberately three round trips rather than one CTE. Chaining data-modifying
+// CTEs looks tidier and is wrong: PostgreSQL executes sibling data-modifying CTEs
+// concurrently with unpredictable order, so the restock would not reliably observe the
+// rows the release produced.
 func (t *OrderTx) ReleaseReservation(ctx context.Context, orderID string) error {
-	_, err := t.tx.Exec(ctx, `
-		UPDATE product_variants v
-		SET stock = v.stock + r.quantity, updated_at = now()
-		FROM inventory_reservations r
-		WHERE r.variant_id = v.id AND r.order_id = $1 AND r.status = 'held'`, orderID)
-	if err != nil {
-		return err
-	}
-	tag, err := t.tx.Exec(ctx, `
+	// Step 1: transition, and take the transitioned set with us.
+	rows, err := t.tx.Query(ctx, `
 		UPDATE inventory_reservations SET status = 'released'
-		WHERE order_id = $1 AND status = 'held'`, orderID)
+		WHERE order_id = $1 AND status = 'held'
+		RETURNING variant_id::text, quantity`, orderID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() > 0 {
-		_, err = t.tx.Exec(ctx, `
-			INSERT INTO stock_ledger (variant_id, order_id, change, reason)
-			SELECT variant_id, order_id, quantity, 'release'
-			FROM inventory_reservations WHERE order_id = $1 AND status = 'released'`, orderID)
+
+	type released struct {
+		variantID string
+		quantity  int
 	}
-	return err
+	var got []released
+	for rows.Next() {
+		var r released
+		if err := rows.Scan(&r.variantID, &r.quantity); err != nil {
+			rows.Close()
+			return err
+		}
+		got = append(got, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Nothing was held, so there is nothing to restock and nothing to log. Returning
+	// here is also what makes a second call a no-op rather than a duplicate.
+	if len(got) == 0 {
+		return nil
+	}
+
+	// Step 2: restock exactly those variants, in a deterministic order so two concurrent
+	// releases touching overlapping variant sets cannot deadlock on the row locks.
+	ids := make([]string, 0, len(got))
+	byID := make(map[string]int, len(got))
+	for _, r := range got {
+		ids = append(ids, r.variantID)
+		byID[r.variantID] = r.quantity
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if _, err := t.tx.Exec(ctx,
+			`UPDATE product_variants SET stock = stock + $2, updated_at = now()
+			  WHERE id = $1::uuid`, id, byID[id]); err != nil {
+			return err
+		}
+	}
+
+	// Step 3: one ledger row per transitioned reservation, and nothing else.
+	for _, r := range got {
+		if _, err := t.tx.Exec(ctx,
+			`INSERT INTO stock_ledger (variant_id, order_id, change, reason)
+			 VALUES ($1::uuid, $2::uuid, $3, 'release')`,
+			r.variantID, orderID, r.quantity); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IncrementCouponUsage claims a coupon use (locking the row).
