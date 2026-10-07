@@ -886,6 +886,20 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			return nil, err
 		}
 
+		// Lock every variant this order touches, in a fixed order, BEFORE the loop
+		// below starts reserving them one at a time in cart order. Without this the
+		// lock order is the buyer's cart order, and two concurrent checkouts holding
+		// the same variants in different orders deadlock against each other.
+		{
+			ids := make([]string, 0, len(bundle))
+			for _, l := range bundle {
+				ids = append(ids, l.VariantID)
+			}
+			if err := tx.LockVariants(ctx, ids); err != nil {
+				return nil, err
+			}
+		}
+
 		for _, l := range bundle {
 			item := &domain.OrderItem{
 				ID:          uuid.NewString(),

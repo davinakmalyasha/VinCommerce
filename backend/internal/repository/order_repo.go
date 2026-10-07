@@ -168,6 +168,64 @@ func (t *OrderTx) AddEvent(ctx context.Context, e *domain.OrderEvent) error {
 	return err
 }
 
+// LockVariants takes a row lock on every variant in ids, ASCENDING id order.
+//
+// THIS EXISTS BECAUSE ReserveStock LOCKS ONE ROW AT A TIME.
+//
+// PlaceOrder reserves stock by walking the cart line by line, so the lock order is
+// whatever order the buyer happened to have the lines in. Two concurrent checkouts
+// containing the same two variants -- the flash-sale case, where two people buy the
+// last units of two popular items at once -- then take those locks in opposite
+// orders:
+//
+//	TX A locks variant 1, waits for variant 2
+//	TX B locks variant 2, waits for variant 1
+//
+// Postgres does not resolve that. Both connections sit until statement_timeout,
+// and the buyer gets an error on a checkout that should have been trivial. Nothing
+// about it is a logic bug, which is exactly why it is hard to see in testing: each
+// transaction is individually correct.
+//
+// Locking every variant up front in a fixed order removes the possibility rather
+// than narrowing it. The per-line ReserveStock still asks for its lock -- by then
+// the transaction already holds it, so the acquire is a no-op and cannot be the
+// point where two transactions disagree about ordering.
+//
+// Sorted in Go, one statement per id, rather than
+// `WHERE id = ANY($1) ORDER BY id FOR UPDATE`: with a set predicate Postgres is free
+// to satisfy the ORDER BY with a Sort node over whatever order the index produced,
+// and the lock order is then the plan's business, not ours.
+//
+// Duplicates are collapsed first. Reserving the same variant twice in one bundle is
+// a caller bug, but taking the lock twice is not worth failing a checkout over.
+func (t *OrderTx) LockVariants(ctx context.Context, variantIDs []string) error {
+	seen := make(map[string]struct{}, len(variantIDs))
+	ids := make([]string, 0, len(variantIDs))
+	for _, id := range variantIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		// Exec, not QueryRow: a variant id with no row locks nothing and is not an
+		// error here. It stays ReserveStock's error to report, so a genuinely
+		// missing variant still fails with the same ErrNoRows as before this
+		// method existed.
+		if _, err := t.tx.Exec(ctx,
+			`SELECT 1 FROM product_variants WHERE id = $1::uuid FOR UPDATE`, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ReserveStock locks a variant row, decrements stock, writes a reservation and ledger entry.
 func (t *OrderTx) ReserveStock(ctx context.Context, variantID, orderID string, quantity int, holdFor time.Duration) error {
 	var stock int
