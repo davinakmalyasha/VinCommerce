@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, downloadFile, openDocument } from '../../lib/api'
 import type { Order } from '../../types'
 import { formatIDR, formatDate, orderStatusColors, orderStatusLabels } from '../../lib/format'
+import { SellerParcelPanel } from './SellerParcelPanel'
 
 const STATUS_TABS = [
   { value: '', label: 'Semua' },
@@ -19,6 +20,7 @@ export function SellerOrders() {
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
   const [trackingFor, setTrackingFor] = useState<string | null>(null)
+  const [parcelFor, setParcelFor] = useState<string | null>(null)
   const [tracking, setTracking] = useState({ number: '', carrier: 'JNE' })
   const [exporting, setExporting] = useState(false)
 
@@ -131,6 +133,15 @@ export function SellerOrders() {
               <div className="flex gap-2">
                 {(o.status === 'paid' || o.status === 'packed') && (
                   <button type="button"
+                    onClick={() => setParcelFor(parcelFor === o.id ? null : o.id)}
+                    className="text-xs text-emerald-700 hover:underline"
+                    aria-expanded={parcelFor === o.id}
+                  >
+                    📦 Parcel
+                  </button>
+                )}
+                {(o.status === 'paid' || o.status === 'packed') && (
+                  <button type="button"
                     onClick={() => openDocument(`/orders/${o.id}/packing-slip`)}
                     className="text-xs text-indigo-600 hover:underline"
                     title="Cetak slip pengemasan"
@@ -191,6 +202,16 @@ export function SellerOrders() {
                 )}
               </div>
             </div>
+            {parcelFor === o.id && (
+              <SellerParcelPanel
+                orderId={o.id}
+                items={o.items.map((it) => ({
+                  id: it.id,
+                  product_name: it.product_name,
+                  quantity: it.quantity,
+                }))}
+              />
+            )}
           </div>
         ))}
       </div>
