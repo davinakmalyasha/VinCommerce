@@ -6,7 +6,10 @@ backend/tmp/
 coverage.html
 
 # --- Node / web ---
-web/node_modules/
+# Any depth, not just web/: the vitest results cache under node_modules/ got
+# committed once because this said `web/node_modules/` and the cache lives at the
+# repo root. Dependency trees are never reviewed, so they are never committed.
+node_modules/
 web/dist/
 web/test-results/
 web/playwright-report/
