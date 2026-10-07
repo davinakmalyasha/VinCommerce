@@ -56,6 +56,7 @@ const AdminCatalog = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminC
 const AdminFlashSales = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminFlashSales')
 const AdminDisputes = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminDisputes')
 const AdminPayouts = lazyOf(() => import('./pages/admin/AdminPayouts'), 'AdminPayouts')
+const AdminPayoutBatches = lazyOf(() => import('./pages/admin/AdminPayoutBatches'), 'AdminPayoutBatches')
 
 const HelpCenterPage = lazyOf(() => import('./pages/HelpCenterPage'), 'HelpCenterPage')
 const HelpArticlePage = lazyOf(() => import('./pages/HelpArticlePage'), 'HelpArticlePage')
@@ -197,6 +198,10 @@ export const router = createBrowserRouter([
           { path: 'flash-sales', element: route(<AdminFlashSales />, 'Flash sale') },
           { path: 'disputes', element: route(<AdminDisputes />, 'Sengketa') },
           { path: 'payouts', element: route(<AdminPayouts />, 'Pencairan dana') },
+          {
+            path: 'payout-batches',
+            element: route(<AdminPayoutBatches />, 'Batch pencairan'),
+          },
         ],
       },
     ],

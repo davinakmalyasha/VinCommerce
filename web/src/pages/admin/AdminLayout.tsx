@@ -30,6 +30,7 @@ export function AdminLayout() {
     { to: '/admin/articles', label: 'Artikel' },
     { to: '/admin/commission', label: 'Komisi' },
     { to: '/admin/payouts', label: 'Penarikan Dana' },
+    { to: '/admin/payout-batches', label: 'Batch Pencairan' },
     { to: '/admin/audit', label: 'Audit Log' },
     { to: '/admin/flags', label: 'Feature Flags' },
     { to: '/admin/analytics', label: 'Analitik' },
