@@ -3,7 +3,7 @@
 # `alpine:3.21` move as soon as a patch lands, so a rebuild weeks from now
 # silently changes the toolchain or libc a previously-green build used.
 # .github/dependabot.yml tracks the digests and opens the bump PR.
-FROM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
