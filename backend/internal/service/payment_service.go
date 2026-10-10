@@ -208,7 +208,23 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		if err := tx.SetPaymentStatus(ctx, order.ID, domain.PaymentPaid); err != nil {
 			return nil, nil, err
 		}
-		if err := tx.SetStatus(ctx, order.ID, domain.OrderPaid); err != nil {
+		// GUARDED, not SetStatus.
+		//
+		// `SetStatus` is `WHERE id = $1 AND status <> $2` -- it only refuses
+		// already-paid, so it will happily write `paid` OVER `cancelled`. The check
+		// at the top of this function reads the order BEFORE the transaction begins,
+		// so between that read and this commit the sweeper or the buyer can cancel.
+		//
+		// In that window the wallet debit above has already happened, and an
+		// unguarded write would resurrect a cancelled order as paid -- money taken
+		// for goods nobody will ship, which is the worst outcome this file can
+		// produce.
+		//
+		// COD and the gateway capture path both use the guarded form; this was the
+		// one money-taking path that did not. `WHERE status = 'pending'` makes the
+		// database the arbiter: if the order moved, zero rows update, this returns a
+		// conflict, and the whole transaction rolls back -- taking the debit with it.
+		if err := tx.SetStatusGuarded(ctx, order.ID, domain.OrderPending, domain.OrderPaid); err != nil {
 			return nil, nil, err
 		}
 		if err := tx.Commit(ctx); err != nil {
