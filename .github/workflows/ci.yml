@@ -64,6 +64,12 @@ jobs:
     # 40-second unit-test failure behind a single timeout. That is deliberately NOT done
     # here: there is no way to execute this workflow locally, and restructuring a
     # pipeline that cannot be run is a worse trade than a correct, slower one.
+    #
+    # Do NOT re-size this from a serial run. The 24 minutes above is with Go's default
+    # package parallelism. `GOFLAGS=-p=1` is used on a memory-starved machine to stop
+    # it thrashing, and it makes the mutation step roughly 4x slower -- about 100
+    # minutes, which is longer than this job's whole budget. Sizing from that number
+    # would raise the cap to hide a slowdown that only exists locally.
     timeout-minutes: 50
     services:
       postgres:
