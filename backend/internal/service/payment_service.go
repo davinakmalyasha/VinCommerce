@@ -853,8 +853,28 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 		return err
 	}
 
-	fee, sellerAmount := intent.Amount, 0.0
-	if intent.FeeAmount > 0 {
+	// Read the stored split ONLY when the split was actually derived.
+	//
+	// This used `fee_amount > 0`, which is not that test: a 0% rate produces a
+	// legitimate zero fee, and the amount was standing in for a flag. The refund
+	// path 25 lines above was already fixed to use `commission_computed` for
+	// precisely this reason, with a comment saying so -- this is the sibling that
+	// was missed.
+	//
+	// Currently unreachable: `commission_computed` is only ever persisted by
+	// ApplyFeeTx, whose only caller is the recompute branch below, in the same
+	// transaction that moves the intent captured -> released -- and an intent that
+	// is not `captured` is rejected above. So the wrong predicate cannot select
+	// today. It is still wrong, and it is one refactor away from selecting: any
+	// path that computes a fee without releasing escrow would make `fee_amount > 0`
+	// read as "no split" for a 0% order and credit the seller nothing while booking
+	// the whole sale as commission.
+	//
+	// The default is (fee 0, seller the full amount) so that a future reader who
+	// removes the recompute branch fails toward paying the seller, not toward paying
+	// the platform.
+	fee, sellerAmount := 0.0, intent.Amount
+	if intent.CommissionComputed {
 		fee, sellerAmount = intent.FeeAmount, intent.SellerAmount
 	}
 
