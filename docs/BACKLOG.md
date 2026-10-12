@@ -386,6 +386,21 @@ they would cost you in a real deployment.
    the multi-seller discount allocation can no longer produce a negative share.
    The remaining work is `decimal.Decimal` end to end.
 
+   **[open] Zero is doing duty as a sentinel for three different things.** In the
+   same family: `payment_repo.go` substitutes the active rate when a caller passes
+   `(pct 0, fixed 0)`, and `ReleaseEscrow` falls back to the active rate when the
+   stored snapshot is `(0, 0)` — both reading "0" as "not provided". So a 0% rate
+   that is not the platform default **cannot be expressed**, and would be silently
+   replaced by the active rate. Meanwhile the refund path's own comment asserts the
+   opposite ("a promo-period order released at 0% has fee_amount = 0"), so the
+   codebase currently disagrees with itself about whether 0% is representable.
+   `ReleaseEscrow`'s `fee_amount > 0` predicate was the same mistake and is fixed
+   (`0def4bf`). Closing this needs a nullable `commission_rate_pct`/`_fixed` or an
+   explicit `commission_snapshot_present` flag, plus a product decision: is a 0%
+   rate meant to be offerable per-order, or only as the platform-wide default? Do
+   not "fix" it by defaulting a missing snapshot to 0 — that silently stops
+   charging commission on every pre-0042 intent.
+
 ### P1 — needed to be credible at scale
 
 6. **No carrier integration.** Shipping is `base + kg × per_kg_fee`; there is
@@ -691,6 +706,26 @@ eturned lines,
 
 ### P2 — correctness and operability
 
+**`MarkShipmentDelivered` has no production caller.** `ShipmentRepository.MarkShipmentDelivered`
+(`shipment_repo.go`) is reachable only from its own test and is referenced in prose by
+`carrier.go` and the mutation list. Nothing calls it, so a parcel's `status` and
+`delivered_at` are never advanced at the parcel level — they stay at `dispatched`
+however the delivery actually ends.
+
+This is NOT a money bug, and it is worth saying why so nobody "fixes" it in a hurry:
+order-level delivery is handled independently by `ConfirmDelivery`,
+`AdvanceShippedOrders` and `CompleteDelivered`, and `CompleteDelivered` is what calls
+`ReleaseEscrow`. Escrow still releases. What is missing is the parcel-level audit
+trail, which also means `BuyLabel`'s `shipment.DeliveredAt != nil` guard — the one
+that stops money being spent on a label for an already-delivered box — cannot fire.
+
+Two options, and it needs a decision rather than a patch: wire it (carrier
+webhook/tracking poll → parcel delivered) or delete it. Wiring is a feature, and the
+repository deliberately does not trust carrier webhooks for anything money-adjacent,
+so it needs its own design. Deleting removes a coherent guard with tests.
+**Left as-is deliberately**: removing a production method on the strength of a grep is
+not a safe autonomous change.
+
 14. **External payment is self-asserted.** A buyer can mark any pending order
     paid with a free-text reference and an amount checked against the total the
     same API just returned. It is one-shot (the order leaves `pending`, so a
@@ -739,6 +774,13 @@ what was and was not verified -- that is the authoritative record, not this list
 | 150 hardcoded npm mirror URLs | Supply-chain smell in the lockfile |
 | Mojibake in buyer-facing strings | Buyers were emailed subjects containing replacement characters |
 | `web/README.md` was the Vite template | Described a starting point, not the application |
+| Bundle picker shared a query key | `['seller-products', 1]` served the product LIST into the variant picker; the second `queryFn` never ran because a cache hit is a success |
+| Inline shipping address was unvalidated | `shipping_address` is JSONB, so no column CHECK caught a blank recipient/street/phone; it surfaced days later as an undeliverable parcel |
+| Releasing a reservation re-logged earlier releases | The ledger insert selected `status = 'released'`, i.e. EVERY release for the order, not the ones the call transitioned |
+| Checkout locked variants in cart order | Two concurrent checkouts over the same two variants deadlocked; each transaction was individually correct |
+| A wallet payment could mark a CANCELLED order paid | The status write was unguarded and `status <> $2` only refuses already-paid; the pending check runs BEFORE the transaction, so a cancel landing in between is overwritten after the wallet is debited |
+| `ReleaseEscrow` used `fee_amount` as a "has a split" flag | Latent, and verified unreachable today -- but a 0% rate is a legitimate zero fee, so the predicate would credit the seller nothing and book the whole sale as commission |
+| Three high advisories in `web` (axios direct) | axios carries every authenticated request; `npm audit` now reports zero |
 
 **Still unverified, and it is worth being blunt about it:** the three concurrency fixes
 were checked by asserting the ORDER of operations in source, not by running two
