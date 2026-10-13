@@ -343,6 +343,21 @@ func main() {
 	// be COMPLETED across several runs instead of being abandoned part way -- and an
 	// abandoned run says nothing about the mutations it never reached, while still
 	// looking like progress.
+	//
+	// RUN A CHUNK INTO A FILE, NOT THROUGH A FILTER:
+	//
+	//	mutation-check -only 33,34,35 > mchunk.txt 2>&1
+	//
+	// A chunk that is killed has still done the work up to that point, and piping it
+	// through anything that buffers for the whole run discards all of it. That was
+	// learned the expensive way: a 15-mutation chunk was killed at the window and
+	// produced nothing readable, so the 50 minutes it spent were wasted.
+	//
+	// AND CHECK THE TREE AFTER A KILL. A killed run leaves the file under mutation in
+	// its MUTATED state, with no backup directory left behind, so `git diff` is the
+	// only signal. That has now happened twice in practice -- once leaving
+	// postLedgerStrict swallowing a ledger error, once leaving a partially-shipped
+	// order unable to advance. `git status` before committing is not a formality here.
 	only := flag.String("only", "",
 		"comma-separated 1-based indices to run, e.g. -only 31,32,40 (default: all)")
 	list := flag.Bool("list", false, "print each mutation's index and label, then exit")
