@@ -43,11 +43,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -334,6 +336,17 @@ func proveBaseline(pkg string) error {
 
 func main() {
 	nl := "\n"
+
+	// -only and -list exist because a full run does not always fit one session: it
+	// is roughly 100 minutes when the box is thrashing and Go is serialised, which
+	// is longer than a terminal or a CI step will wait. Chunking lets the same gate
+	// be COMPLETED across several runs instead of being abandoned part way -- and an
+	// abandoned run says nothing about the mutations it never reached, while still
+	// looking like progress.
+	only := flag.String("only", "",
+		"comma-separated 1-based indices to run, e.g. -only 31,32,40 (default: all)")
+	list := flag.Bool("list", false, "print each mutation's index and label, then exit")
+	flag.Parse()
 
 	muts := []mutation{
 		{
@@ -1108,6 +1121,20 @@ func main() {
 	// its anchor was off by one tab, and 2814c52 shipped claiming "39/39 mutations
 	// caught". It was 38 of 39. The batch claim -- the NOT EXISTS that stops a
 	// payout being in two remittance files -- had no coverage at all.
+	// -list first: it is the thing that tells you what indices exist, so it must work
+	// without touching any file.
+	if *list {
+		for i, m := range muts {
+			fmt.Printf("%d\t%s\n", i+1, m.label)
+		}
+		return
+	}
+	selected, selErr := parseOnly(*only, len(muts))
+	if selErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", selErr)
+		os.Exit(2)
+	}
+
 	recoverInterrupted(mutatedFiles(muts))
 	installSignalGuard()
 
@@ -1137,7 +1164,10 @@ func main() {
 
 	mutationCount := 0
 	caught, missed, skipped, ambiguous := 0, 0, 0, 0
-	for _, m := range muts {
+	for idx, m := range muts {
+		if selected != nil && !selected[idx+1] {
+			continue
+		}
 		orig, err := os.ReadFile(m.file)
 		if err != nil {
 			skipped++
@@ -1309,6 +1339,16 @@ func main() {
 		}
 	}
 
+	// A chunked run says so, loudly and before the counts, because "40 caught,
+	// 0 missed" from a slice of the list is otherwise indistinguishable from the
+	// full gate -- and mistaking a chunk for the gate is the exact failure this
+	// tool was built to prevent, pointed at itself.
+	if selected != nil {
+		fmt.Printf("\nPARTIAL RUN: -only selected %d of %d mutations. This is a CHUNK, "+
+			"not the gate.\n       The other %d were never applied, so nothing is known "+
+			"about them.\n", len(selected), len(muts), len(muts)-len(selected))
+	}
+
 	// The counts are printed together and the skipped one is spelled out, because
 	// "38 caught, 0 missed, 39 total" invites the reader to do 38+0=39 and conclude
 	// everything passed. It did not: one was never run.
@@ -1357,4 +1397,39 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "...(truncated)"
+}
+
+// parseOnly turns -only into a set of 1-based indices.
+//
+// An empty spec returns nil, which means "everything" -- distinct from an empty
+// set, which would mean "nothing" and report a clean run having tested nothing.
+//
+// An out-of-range index is a hard ERROR rather than a skip. `-only 66` on a
+// 65-mutation list is a typo, and silently running nothing would produce a
+// perfectly clean result for a chunk that does not exist. A duplicate index is
+// likewise an error: it means the chunk list was assembled wrongly, and the count
+// in the PARTIAL RUN line would then disagree with what actually ran.
+func parseOnly(spec string, total int) (map[int]bool, error) {
+	if strings.TrimSpace(spec) == "" {
+		return nil, nil
+	}
+	sel := make(map[int]bool)
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("-only %q: empty index (check for a trailing comma)", spec)
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("-only %q: %q is not an index", spec, part)
+		}
+		if n < 1 || n > total {
+			return nil, fmt.Errorf("-only %q: %d is out of range 1..%d", spec, n, total)
+		}
+		if sel[n] {
+			return nil, fmt.Errorf("-only %q: %d listed twice", spec, n)
+		}
+		sel[n] = true
+	}
+	return sel, nil
 }
