@@ -323,16 +323,28 @@ func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.Payment
 // rate. That is strictly better than failing a checkout over a missing
 // configuration row, and strictly better than the retroactive behaviour.
 func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *domain.PaymentIntent) error {
-	// Caller-supplied snapshot wins (a caller that already knows the rate, or a
-	// repair path), otherwise read the active card.
+	// `commission_snapshot_present` on the INPUT is the caller saying "these rates
+	// are mine, use them as given". That is what makes an explicit 0% expressible:
+	// the two rate columns are NOT NULL DEFAULT 0, so (0, 0) on its own cannot be
+	// told apart from "no rate supplied", and a caller that wanted 0% used to be
+	// silently handed the active card instead.
 	//
-	// `commission_snapshot_present` is set only where a rate is actually written.
-	// It is the difference between "(0, 0) because the rate was 0%" and "(0, 0)
-	// because nothing was ever written", which the two rate columns cannot express
-	// on their own -- they are NOT NULL DEFAULT 0. Getting this wrong in the other
-	// direction (marking present when the lookup failed) would make the release
-	// path honour a (0, 0) that means "unknown" and stop charging commission.
-	if in.CommissionRatePct == 0 && in.CommissionRateFixed == 0 {
+	// The flag is also what gets WRITTEN, and it is set only where a rate really
+	// has been settled. The distinction matters in both directions: marking it on
+	// an intent whose lookup failed would make the release path honour a (0, 0)
+	// that means "unknown" and stop charging commission entirely.
+	//
+	// Note the first case does not read the rate card at all. Existing callers set
+	// no rates and no flag, so they take the third case and behave exactly as
+	// before -- this is what makes the change inert for every current path.
+	switch {
+	case in.CommissionSnapshotPresent:
+		// Caller-supplied, honoured verbatim, including a genuine (0, 0).
+	case in.CommissionRatePct != 0 || in.CommissionRateFixed != 0:
+		// A rate was supplied but not marked; it is still a snapshot.
+		in.CommissionSnapshotPresent = true
+	default:
+		// Nothing supplied: read the active card.
 		if cfg, err := r.ActiveFeeTx(ctx, q); err == nil && cfg != nil {
 			in.CommissionRatePct = cfg.Pct
 			in.CommissionRateFixed = cfg.Fixed
@@ -340,8 +352,6 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *d
 			// real snapshot and must survive an admin change before delivery.
 			in.CommissionSnapshotPresent = true
 		}
-	} else {
-		in.CommissionSnapshotPresent = true
 	}
 	_, err := q.Exec(ctx, `
 		INSERT INTO payment_intents (id, order_id, buyer_id, amount, currency, status, gateway,

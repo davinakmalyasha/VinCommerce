@@ -53,9 +53,11 @@ func TestCreateIntentMarksTheSnapshotPresentOnlyWhenARateWasWritten(t *testing.T
 			"indistinguishable from a missing one, which is the defect 00052 exists "+
 			"to close", body)
 	}
-	// The assignment must be inside the `err == nil && cfg != nil` success branch.
+	// The assignment must be inside the `err == nil && cfg != nil` success branch of
+	// the lookup. Marking it outside would mark it even when the lookup failed, so
+	// an unwritten (0, 0) would be honoured as a real 0% rate and commission would
+	// never be charged on those intents.
 	cfgAt := strings.Index(body, "err == nil && cfg != nil")
-	markAt := strings.Index(body, "in.CommissionSnapshotPresent = true")
 	if cfgAt < 0 {
 		t.Fatal("the rate-card lookup guard is gone; update this test")
 	}
@@ -65,16 +67,58 @@ func TestCreateIntentMarksTheSnapshotPresentOnlyWhenARateWasWritten(t *testing.T
 	}
 	successBranch := body[cfgAt : cfgAt+branchEnd]
 	if !strings.Contains(successBranch, "in.CommissionSnapshotPresent = true") {
-		t.Errorf("the snapshot is not marked present inside the lookup's success branch "+
-			"(mark at %d, guard at %d).\n%s\n"+
+		t.Errorf("the snapshot is not marked present inside the lookup's success branch.\n%s\n"+
 			"Marking it outside the branch would mark it even when the lookup failed, "+
 			"so an unwritten (0, 0) would be honoured as a real 0%% rate and commission "+
-			"would never be charged on those intents", markAt, cfgAt, body)
+			"would never be charged on those intents", body)
 	}
-	// And a caller-supplied rate counts as a snapshot too.
-	if !strings.Contains(body, "} else {\n\t\tin.CommissionSnapshotPresent = true") {
-		t.Errorf("a caller-supplied rate does not mark the snapshot present.\n%s\n"+
-			"The else branch is exactly the 'caller already knows the rate' case", body)
+	// A caller-supplied rate counts as a snapshot too.
+	if !strings.Contains(body, "case in.CommissionRatePct != 0 || in.CommissionRateFixed != 0:") {
+		t.Errorf("a caller-supplied non-zero rate does not mark the snapshot present.\n%s\n"+
+			"That is the case where a caller already knows the rate", body)
+	}
+}
+
+// THE OTHER HALF OF 00052, and the reason the item in docs/BACKLOG.md is now
+// closed rather than "partly".
+//
+// A caller that sets the flag is saying "these rates are mine, use them as given".
+// Without that, an explicit 0% was INEXPRESSIBLE: the rate columns are NOT NULL
+// DEFAULT 0, so a caller passing (0, 0) meaning "0%" was silently handed the active
+// card instead -- the platform's rate applied to a sale somebody meant to price at
+// zero.
+//
+// The ordering matters and is what the test pins: the flag is checked FIRST, so a
+// caller-supplied (0, 0) never reaches the lookup that would overwrite it.
+func TestACallerCanSupplyAnExplicitZeroRate(t *testing.T) {
+	body := createIntentBody(t)
+
+	flagAt := strings.Index(body, "case in.CommissionSnapshotPresent:")
+	if flagAt < 0 {
+		t.Errorf("nothing honours a caller-supplied snapshot flag.\n%s\n"+
+			"A caller cannot request an explicit 0%% rate, because the code reads "+
+			"(0, 0) as 'not supplied'", body)
+		return
+	}
+	lookupAt := strings.Index(body, "ActiveFeeTx(")
+	if lookupAt < 0 {
+		t.Fatal("the active-card lookup is gone; update this test")
+	}
+	if flagAt > lookupAt {
+		t.Errorf("the caller-supplied flag is tested AFTER the active-card lookup "+
+			"(flag at %d, lookup at %d).\n"+
+			"The lookup would overwrite the caller's rates -- including a deliberate "+
+			"(0, 0) -- before anything could honour them", flagAt, lookupAt)
+	}
+	// And the flag case must not fall through into a read that replaces the rates.
+	flagEnd := strings.Index(body[flagAt:], "default:")
+	if flagEnd < 0 {
+		t.Fatal("could not bound the flag case")
+	}
+	flagCase := body[flagAt : flagAt+flagEnd]
+	if strings.Contains(flagCase, "ActiveFeeTx(") {
+		t.Errorf("the caller-supplied case reads the active card, so a deliberate "+
+			"(0, 0) is still overwritten.\n%s", flagCase)
 	}
 }
 
