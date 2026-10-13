@@ -181,19 +181,65 @@ describe('sanitizeHtml', () => {
     expect(out).toContain('Verify your account')
   })
 
-  it('does not throw on deeply nested input', () => {
-    // The original recursion blew the stack at ~4000 nested nodes, which the
-    // error boundary caught — but that still blanked the page. The walk is now
-    // iterative with an explicit depth cap.
-    //
-    // The timeout is generous because parsing thousands of nested elements is
-    // genuinely slow in jsdom; the point of the assertion is that it does not
-    // throw, not that it is fast.
+  // The original recursion blew the stack at ~4000 nested nodes, which the error
+  // boundary caught — but that still blanked the page. The walk is now iterative
+  // with an explicit depth cap.
+  //
+  // The cap protects the WALK, which runs after DOMParser has already built the
+  // tree. Building it is the expensive part: this test used to take 745 seconds at
+  // depths up to 6000, blowing its own 60s timeout, while the walk it was meant to
+  // be exercising had capped out at 512 long before. Asserting "does not throw"
+  // with a generous timeout hid that — the failure mode was never an exception, it
+  // was minutes of blocked main thread.
+  //
+  // So the depth is now rejected BEFORE the parse, and the assertion is about that.
+  it('rejects pathological nesting before it is parsed', () => {
     for (const depth of [1000, 2000, 4000, 6000]) {
       const input = '<div>'.repeat(depth) + 'deep' + '</div>'.repeat(depth)
-      expect(() => sanitizeHtml(input), `depth ${depth}`).not.toThrow()
+      // Empty, not merely non-throwing: the input never reaches DOMParser.
+      expect(sanitizeHtml(input), `depth ${depth}`).toBe('')
     }
-  }, 60_000)
+  })
+
+  // And the cost is bounded, which is the actual property. A test with a generous
+  // timeout cannot express this, so it measures instead.
+  it('does not spend minutes rejecting deep nesting', () => {
+    const input = '<div>'.repeat(20_000) + 'deep' + '</div>'.repeat(20_000)
+    const started = performance.now()
+    expect(sanitizeHtml(input)).toBe('')
+    const elapsed = performance.now() - started
+    // Generous by orders of magnitude — the pre-flight is a linear scan over
+    // ~150KB and should be single-digit milliseconds. This is here to catch a
+    // regression that reinstates the parse, which cost minutes.
+    expect(elapsed, `took ${elapsed.toFixed(0)}ms`).toBeLessThan(2_000)
+  })
+
+  // The refusal must not fire on content that is legitimately deep. 128 is far
+  // above anything a real article uses, and rejecting real content would be a
+  // worse bug than the slow parse.
+  it('still renders content that is deeply but reasonably nested', () => {
+    const depth = 60
+    const input = '<div>'.repeat(depth) + 'Verify your account' + '</div>'.repeat(depth)
+    const out = sanitizeHtml(input)
+    expect(out).toContain('Verify your account')
+    expect(out).toContain('<div>')
+  })
+
+  // Void elements never nest, so a run of them must not be mistaken for depth.
+  it('does not count void elements toward nesting depth', () => {
+    const input = '<br>'.repeat(5_000) + 'Verify your account'
+    const out = sanitizeHtml(input)
+    expect(out).toContain('Verify your account')
+  })
+
+  // A stray close tag must not drive the counter negative and mask real nesting
+  // behind it. Twenty thousand `</div>` followed by a genuinely deep run is still
+  // genuinely deep.
+  it('is not fooled by leading close tags', () => {
+    const input =
+      '</div>'.repeat(5_000) + '<div>'.repeat(1_000) + 'deep' + '</div>'.repeat(1_000)
+    expect(sanitizeHtml(input)).toBe('')
+  })
 
   it('neutralises rawtext-container breakout', () => {
     // Inside <plaintext>/<textarea>/<xmp> the parser switches to raw text, so a

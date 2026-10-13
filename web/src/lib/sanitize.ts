@@ -130,6 +130,56 @@ export function safeUrl(value: string | null | undefined): string | null {
 // help page it lives on.
 const maxDepth = 512
 
+/**
+ * maxParseDepth bounds the INPUT, which maxDepth cannot.
+ *
+ * maxDepth limits the walk — but by the time the walk starts, `DOMParser` has
+ * already built the tree, and building it is the expensive part. A document nested
+ * 6000 deep is under 50KB of tags, yet parsing it costs minutes; `maxDepth` never
+ * gets a say in that, because it runs afterwards.
+ *
+ * This was observed rather than theorised: the suite's "deeply nested input" test
+ * took 745 seconds at depths up to 6000, blowing its own 60s timeout, while the
+ * walk it was supposed to be exercising had already capped out at 512.
+ *
+ * Returning '' rather than truncating, because content nested 128 deep has no
+ * legitimate rendering and a half-tree is worse than nothing.
+ */
+const maxParseDepth = 128
+
+// Elements that never have children, so they must not count toward depth.
+// `<br><br><br>` is not nesting.
+const VOID_ELEMENTS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+])
+
+/**
+ * Cheap O(n) pre-flight for nesting depth.
+ *
+ * Deliberately NOT a parser. It exists to answer "is this so deeply nested that
+ * parsing it would be pathological", and a rough answer is enough for that: the
+ * only cost of miscounting is that a document near the boundary is judged by the
+ * real parser instead, which is exactly what happens today.
+ *
+ * Comments are removed first because a comment can contain arbitrary `<`, which
+ * would otherwise be counted as markup.
+ */
+function nestingDepthExceeded(html: string): boolean {
+  const text = html.replace(/<!--[\s\S]*?-->/g, '')
+  const tag = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?(\/?)>/g
+  let depth = 0
+  let m: RegExpExecArray | null
+  while ((m = tag.exec(text)) !== null) {
+    if (m[1] !== '/' && (VOID_ELEMENTS.has(m[2].toLowerCase()) || m[3] === '/')) continue
+    depth += m[1] === '/' ? -1 : 1
+    if (depth > maxParseDepth) return true
+    // A stray close tag must not drive the count negative and mask real nesting.
+    if (depth < 0) depth = 0
+  }
+  return false
+}
+
 // SURVIVING_ATTRIBUTES is the final allowlist. Everything else must be gone
 // by the time sanitizeHtml returns.
 const ALLOWED_ATTRS = new Set(['href', 'src', 'rel', 'target', 'alt', 'title', 'colspan', 'rowspan', 'scope', 'loading', 'decoding', 'referrerpolicy'])
@@ -170,6 +220,10 @@ export function sanitizeHtml(dirty: string | null | undefined): string {
   const stripped = dirty
     .replace(CONTAINER_WITH_CONTENT, '')
     .replace(UNCLOSED_CONTAINER, '')
+
+  // Before the parse, not after: this is the only place the expensive step can be
+  // avoided. See maxParseDepth.
+  if (nestingDepthExceeded(stripped)) return ''
 
   const doc = new DOMParser().parseFromString(stripped, 'text/html')
 
