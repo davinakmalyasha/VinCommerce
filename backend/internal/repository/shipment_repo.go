@@ -336,6 +336,28 @@ func (r *ShipmentRepository) MarkShipmentShipped(
 // actually still arrive. 'exception' is deliberately INCLUDED: a carrier that
 // reported a problem usually re-delivers, and refusing the later successful
 // delivery would leave a parcel stuck in a failure state forever.
+//
+// NOT WIRED UP, AND DELIBERATELY SO -- do not "fix" this by calling it from the
+// order's delivered transition.
+//
+// This is a primitive for an OBSERVED carrier arrival event. Nothing in this
+// codebase receives one: there are payment webhooks but no shipment webhooks and
+// no tracking poll, so no caller exists. Parcel status therefore stops at
+// `dispatched` and `delivered_at` stays NULL.
+//
+// Delivery of the ORDER is not affected -- it runs through a different path
+// entirely (`ConfirmDelivery` for a buyer's confirmation, and `AdvanceShippedOrders`
+// for the carrier-window sweep), and `CompleteDelivered` is what releases escrow.
+// `DeriveShippingStatus` only ever derives `shipped` or `partially_shipped`, so it
+// cannot reach `delivered` either way.
+//
+// Calling this from the order transition would be the tempting shortcut and it is
+// wrong twice over: it would record an arrival nobody observed as fact, and it
+// would set `delivered_at`, which `BuyLabel` reads to refuse a label -- turning a
+// fabricated record into money not spent.
+//
+// The genuine fix is a feature (a carrier tracking integration), not a call site.
+// See the P2 entry in docs/BACKLOG.md.
 func (r *ShipmentRepository) MarkShipmentDelivered(ctx context.Context, q Querier, shipmentID string) error {
 	tag, err := q.Exec(ctx, `
 		UPDATE shipments
