@@ -386,20 +386,24 @@ they would cost you in a real deployment.
    the multi-seller discount allocation can no longer produce a negative share.
    The remaining work is `decimal.Decimal` end to end.
 
-   **[open] Zero is doing duty as a sentinel for three different things.** In the
-   same family: `payment_repo.go` substitutes the active rate when a caller passes
-   `(pct 0, fixed 0)`, and `ReleaseEscrow` falls back to the active rate when the
-   stored snapshot is `(0, 0)` — both reading "0" as "not provided". So a 0% rate
-   that is not the platform default **cannot be expressed**, and would be silently
-   replaced by the active rate. Meanwhile the refund path's own comment asserts the
-   opposite ("a promo-period order released at 0% has fee_amount = 0"), so the
-   codebase currently disagrees with itself about whether 0% is representable.
-   `ReleaseEscrow`'s `fee_amount > 0` predicate was the same mistake and is fixed
-   (`0def4bf`). Closing this needs a nullable `commission_rate_pct`/`_fixed` or an
-   explicit `commission_snapshot_present` flag, plus a product decision: is a 0%
-   rate meant to be offerable per-order, or only as the platform-wide default? Do
-   not "fix" it by defaulting a missing snapshot to 0 — that silently stops
-   charging commission on every pre-0042 intent.
+   **[partly closed] Zero was doing duty as a sentinel for three different
+   things.** `payment_repo.go` substitutes the active rate when a caller passes
+   `(pct 0, fixed 0)`, and `ReleaseEscrow` fell back to the active rate when the
+   stored snapshot was `(0, 0)` — both reading "0" as "not provided". The columns
+   are `NOT NULL DEFAULT 0`, so a 0% rate and a missing snapshot were the same two
+   values, and an order priced while the active rate was 0% was charged the NEW
+   rate if an admin raised it before delivery.
+   Migration 00052 adds `commission_snapshot_present`, and both the release and
+   refund paths now test it instead of the rate (`09496af`). The backfill marks
+   only rows whose rate is non-zero — a non-zero rate could only have been written
+   on purpose — and deliberately leaves the ambiguous `(0, 0)` rows on the old
+   fallback rather than baking a guess into the schema.
+   *Still open, and smaller: a caller cannot request an explicit 0% PER-ORDER,
+   because `payment_repo.go` still substitutes the active rate for a passed
+   `(0, 0)`. Expressing that needs a nullable rate or a second flag, plus a
+   product decision about whether per-order promo rates are wanted at all. Do not
+   "fix" it by defaulting a missing snapshot to 0 — that silently stops charging
+   commission on every pre-0042 intent.*
 
 ### P1 — needed to be credible at scale
 
