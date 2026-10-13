@@ -726,6 +726,45 @@ so it needs its own design. Deleting removes a coherent guard with tests.
 **Left as-is deliberately**: removing a production method on the strength of a grep is
 not a safe autonomous change.
 
+**Test coverage is very uneven, and the headline number is misleading.** Measured with
+`go test ./internal/... -cover`, per package:
+
+| Package | Coverage | Note |
+| --- | --- | --- |
+| `carrier` | 87.2% | |
+| `payments` | 78.2% | gateway adapters, signature verification |
+| `metrics` | 74.5% | |
+| `config` | 71.6% | |
+| `domain` | 64.9% | state machine + validation |
+| `middleware` | 40.1% | |
+| `service` | **10.4%** | the money package |
+| `worker` | 8.9% | |
+| `app` | 5.8% | |
+| `repository` | **1.1%** | every SQL statement |
+| `httpapi/handler` | **0.7%** | |
+| `ai`, `cache`, `httpapi`, `mail`, `stream` | 0.0% | no test files |
+
+Two things worth being precise about, because a bare percentage misleads in both
+directions:
+
+1. **Much of the `service` suite is structural**, asserting the SHAPE of source rather
+   than executing it — which is why a package with dozens of tests reports 10.4%. Those
+   tests are real and they have caught real defects, but they contribute zero statement
+   coverage, so the number understates how much of this code has ever been reasoned
+   about.
+
+2. **The same fact means most of `service` has never been EXECUTED.** Structural tests
+   constrain what the code says, not what it does. `repository` at 1.1% is the honest
+   version of the same problem: essentially no SQL in this repository has ever run
+   against a database in a test. The concurrency fixes in this series were verified by
+   asserting operation ORDER in source, not by running two transactions — which is
+   recorded, and is the weakest claim in the whole project.
+
+Closing this needs an integration harness (testcontainers or a `docker compose` test
+profile), not more unit tests: the untested surface is overwhelmingly I/O and SQL.
+Until then, treat per-package `-cover` as the useful number and the repo-wide total as
+noise.
+
 14. **External payment is self-asserted.** A buyer can mark any pending order
     paid with a free-text reference and an amount checked against the total the
     same API just returned. It is one-shot (the order leaves `pending`, so a
