@@ -710,25 +710,26 @@ eturned lines,
 
 ### P2 — correctness and operability
 
-**`MarkShipmentDelivered` has no production caller.** `ShipmentRepository.MarkShipmentDelivered`
-(`shipment_repo.go`) is reachable only from its own test and is referenced in prose by
-`carrier.go` and the mutation list. Nothing calls it, so a parcel's `status` and
-`delivered_at` are never advanced at the parcel level — they stay at `dispatched`
-however the delivery actually ends.
+**[resolved: unwired, not dead] `MarkShipmentDelivered` has no production caller.**
+`ShipmentRepository.MarkShipmentDelivered` is reachable only from its own test. It is
+a primitive for an OBSERVED carrier arrival, and nothing here receives one — there are
+payment webhooks but no shipment webhooks and no tracking poll — so no caller can
+exist. Parcel status stops at `dispatched` and `delivered_at` stays NULL.
 
-This is NOT a money bug, and it is worth saying why so nobody "fixes" it in a hurry:
-order-level delivery is handled independently by `ConfirmDelivery`,
-`AdvanceShippedOrders` and `CompleteDelivered`, and `CompleteDelivered` is what calls
-`ReleaseEscrow`. Escrow still releases. What is missing is the parcel-level audit
-trail, which also means `BuyLabel`'s `shipment.DeliveredAt != nil` guard — the one
-that stops money being spent on a label for an already-delivered box — cannot fire.
+It is NOT a money bug: order delivery runs on its own path (`ConfirmDelivery`,
+`AdvanceShippedOrders`) and `CompleteDelivered` is what calls `ReleaseEscrow`.
+`DeriveShippingStatus` only ever derives `shipped`/`partially_shipped`, so it cannot
+reach `delivered` either. Escrow releases regardless; the gap is the parcel-level
+audit trail.
 
-Two options, and it needs a decision rather than a patch: wire it (carrier
-webhook/tracking poll → parcel delivered) or delete it. Wiring is a feature, and the
-repository deliberately does not trust carrier webhooks for anything money-adjacent,
-so it needs its own design. Deleting removes a coherent guard with tests.
-**Left as-is deliberately**: removing a production method on the strength of a grep is
-not a safe autonomous change.
+It was tempting to wire it into the order's delivered transition. That would be wrong
+twice over — it records an arrival nobody observed as fact, and it sets `delivered_at`,
+which `BuyLabel` reads to refuse a label — and unnecessary. The reasoning now lives on
+the function itself, since a reader finding an uncalled method has two wrong moves
+available and neither is obvious from the signature (`ecb8ea5`).
+
+*The genuine fix is a feature* — a carrier tracking integration — and is deliberately
+left as a feature rather than a call site.
 
 **Test coverage is very uneven, and the headline number is misleading.** Measured with
 `go test ./internal/... -cover`, per package:
