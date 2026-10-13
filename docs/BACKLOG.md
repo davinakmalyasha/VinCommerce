@@ -386,24 +386,30 @@ they would cost you in a real deployment.
    the multi-seller discount allocation can no longer produce a negative share.
    The remaining work is `decimal.Decimal` end to end.
 
-   **[partly closed] Zero was doing duty as a sentinel for three different
-   things.** `payment_repo.go` substitutes the active rate when a caller passes
+   **[closed] Zero was doing duty as a sentinel for three different things.**
+   `payment_repo.go` substituted the active rate when a caller passed
    `(pct 0, fixed 0)`, and `ReleaseEscrow` fell back to the active rate when the
    stored snapshot was `(0, 0)` — both reading "0" as "not provided". The columns
    are `NOT NULL DEFAULT 0`, so a 0% rate and a missing snapshot were the same two
    values, and an order priced while the active rate was 0% was charged the NEW
    rate if an admin raised it before delivery.
-   Migration 00052 adds `commission_snapshot_present`, and both the release and
-   refund paths now test it instead of the rate (`09496af`). The backfill marks
-   only rows whose rate is non-zero — a non-zero rate could only have been written
-   on purpose — and deliberately leaves the ambiguous `(0, 0)` rows on the old
+
+   Migration 00052 adds `commission_snapshot_present`, and the release and refund
+   paths test it instead of the rate (`09496af`). The backfill marks only rows
+   whose rate is non-zero — a non-zero rate could only have been written on
+   purpose — and deliberately leaves the ambiguous `(0, 0)` rows on the old
    fallback rather than baking a guess into the schema.
-   *Still open, and smaller: a caller cannot request an explicit 0% PER-ORDER,
-   because `payment_repo.go` still substitutes the active rate for a passed
-   `(0, 0)`. Expressing that needs a nullable rate or a second flag, plus a
-   product decision about whether per-order promo rates are wanted at all. Do not
-   "fix" it by defaulting a missing snapshot to 0 — that silently stops charging
-   commission on every pre-0042 intent.*
+
+   The remaining gap — a caller unable to request an explicit 0% per-order — is
+   also closed (`4ee61e2`): the flag on the INPUT is now the signal, so a caller
+   setting it says "these rates are mine, use them as given", `(0, 0)` included.
+   No schema change; existing callers set neither rates nor the flag and take the
+   default path unchanged.
+
+   Worth keeping as a lesson rather than deleting: the tempting fix at every step
+   was to let a missing `(0, 0)` mean 0%, which would have silently stopped
+   charging commission on every intent predating 00042. The flag exists so that
+   choice never has to be made.
 
 ### P1 — needed to be credible at scale
 
