@@ -628,9 +628,21 @@ func (s *PaymentService) buildRefundPlan(
 	fee := intent.FeeAmount
 	sellerAmount := intent.SellerAmount
 	if !intent.CommissionComputed {
-		if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
-			fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
+		// The SNAPSHOT is the correct source: it is the rate card that was in
+		// force when the charge was taken. This read the active rate
+		// unconditionally, directly contradicting the comment above it, so a
+		// refund of an order that was never released reversed the fee today's
+		// settings would have produced rather than the one that was quoted.
+		//
+		// Only an intent with no snapshot at all -- predating 00042, or charged
+		// while no rate card existed -- falls back to the active rate.
+		pct, fixed := intent.CommissionRatePct, intent.CommissionRateFixed
+		if !intent.CommissionSnapshotPresent {
+			if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
+				pct, fixed = cfg.Pct, cfg.Fixed
+			}
 		}
+		fee, sellerAmount = repository.Commission(pct, fixed, intent.Amount)
 	}
 	if fee < 0 {
 		fee = 0
@@ -900,10 +912,19 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	// every release.
 	if !intent.CommissionComputed {
 		pct, fixed := intent.CommissionRatePct, intent.CommissionRateFixed
-		if pct == 0 && fixed == 0 {
-			// No snapshot (an intent predating migration 00042, or a missing rate
-			// card at charge time). Fall back to the active rate, which is the
-			// pre-existing behaviour and strictly better than a zero fee.
+		if !intent.CommissionSnapshotPresent {
+			// No snapshot was ever written for this intent: one that predates
+			// migration 00042, or one whose rate card was missing at charge time.
+			// Fall back to the active rate -- strictly better than a zero fee, and
+			// the behaviour every pre-00042 row already has.
+			//
+			// The test used to be `pct == 0 && fixed == 0`, which cannot tell a
+			// missing snapshot from a genuine 0% rate because the columns are
+			// NOT NULL DEFAULT 0. That meant an order priced while the active rate
+			// was 0% was charged the NEW rate if an admin raised it before
+			// delivery -- money taken from a seller who never agreed to it, and
+			// invisible except by diffing the release against the settings
+			// history. `commission_snapshot_present` is what distinguishes them.
 			cfg, ferr := s.payments.ActiveFeeTx(ctx, q)
 			if ferr != nil {
 				return ferr

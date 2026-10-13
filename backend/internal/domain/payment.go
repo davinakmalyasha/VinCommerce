@@ -89,6 +89,23 @@ type PaymentIntent struct {
 	// was actually taken, not the fee that today's settings would produce.
 	CommissionRatePct   float64 `json:"commission_rate_pct"`
 	CommissionRateFixed float64 `json:"commission_rate_fixed"`
+
+	// CommissionSnapshotPresent says the two rates above are a real snapshot,
+	// rather than the `NOT NULL DEFAULT 0` that an intent predating migration
+	// 00042 carries.
+	//
+	// The columns are `NOT NULL DEFAULT 0`, so "no snapshot" and "a genuine 0%
+	// rate" are the same two values. Treating (0, 0) as absent is the safer of
+	// the two guesses, but it is still a guess: if the active rate was 0% when
+	// the order was placed and an admin raises it before delivery, the release
+	// reads "no snapshot" and charges the seller the NEW rate on a sale that was
+	// priced at 0%.
+	//
+	// A boolean cannot be ambiguous. This is the same argument the
+	// CommissionComputed field above records for the fee split, applied to the
+	// rate. `false` means "fall back to the active rate", which is what every
+	// pre-00042 intent should keep doing.
+	CommissionSnapshotPresent bool `json:"commission_snapshot_present"`
 }
 
 // Wallet holds seller balances.

@@ -318,29 +318,41 @@ func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.Payment
 // the rate at each of them is a chance to forget one. A refund is the only thing
 // that needs the snapshot, so the write has to be unconditional.
 //
-// A missing rate card is not an error: the intent is created with a zero
-// snapshot and commission_computed stays false, so the refund path falls back to
-// the active rate. That is strictly better than failing a checkout over a
-// missing configuration row, and strictly better than the retroactive
-// behaviour.
+// A missing rate card is not an error: the intent is created with no snapshot and
+// commission_computed stays false, so the refund path falls back to the active
+// rate. That is strictly better than failing a checkout over a missing
+// configuration row, and strictly better than the retroactive behaviour.
 func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *domain.PaymentIntent) error {
 	// Caller-supplied snapshot wins (a caller that already knows the rate, or a
 	// repair path), otherwise read the active card.
+	//
+	// `commission_snapshot_present` is set only where a rate is actually written.
+	// It is the difference between "(0, 0) because the rate was 0%" and "(0, 0)
+	// because nothing was ever written", which the two rate columns cannot express
+	// on their own -- they are NOT NULL DEFAULT 0. Getting this wrong in the other
+	// direction (marking present when the lookup failed) would make the release
+	// path honour a (0, 0) that means "unknown" and stop charging commission.
 	if in.CommissionRatePct == 0 && in.CommissionRateFixed == 0 {
 		if cfg, err := r.ActiveFeeTx(ctx, q); err == nil && cfg != nil {
 			in.CommissionRatePct = cfg.Pct
 			in.CommissionRateFixed = cfg.Fixed
+			// Present even when the card is (0, 0): a 0% rate that was READ is a
+			// real snapshot and must survive an admin change before delivery.
+			in.CommissionSnapshotPresent = true
 		}
+	} else {
+		in.CommissionSnapshotPresent = true
 	}
 	_, err := q.Exec(ctx, `
 		INSERT INTO payment_intents (id, order_id, buyer_id, amount, currency, status, gateway,
 			gateway_ref, snap_token, gateway_txn_id, redirect_url, method, idempotency_key,
-			commission_computed, commission_rate_pct, commission_rate_fixed)
+			commission_computed, commission_rate_pct, commission_rate_fixed,
+			commission_snapshot_present)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
-			NULLIF($12, ''), $13, false, $14, $15)`,
+			NULLIF($12, ''), $13, false, $14, $15, $16)`,
 		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway,
 		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey,
-		in.CommissionRatePct, in.CommissionRateFixed)
+		in.CommissionRatePct, in.CommissionRateFixed, in.CommissionSnapshotPresent)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return domain.E(domain.KindConflict, "INTENT_EXISTS", "this order already has a payment intent")
@@ -375,6 +387,7 @@ const intentColumns = `
 	COALESCE(method,''), idempotency_key,
 	escrow_released_at, captured_at, refunded_at, fee_amount, seller_amount,
 	commission_computed, commission_rate_pct, commission_rate_fixed,
+	commission_snapshot_present,
 	created_at, updated_at`
 
 func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
@@ -384,6 +397,7 @@ func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 		&in.Method, &in.IdempotencyKey,
 		&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.FeeAmount, &in.SellerAmount,
 		&in.CommissionComputed, &in.CommissionRatePct, &in.CommissionRateFixed,
+		&in.CommissionSnapshotPresent,
 		&in.CreatedAt, &in.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
