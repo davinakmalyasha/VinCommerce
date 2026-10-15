@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useSession } from '../../stores/session'
-import { formatDate } from '../../lib/format'
+import { formatDate, formatIDR } from '../../lib/format'
 import { Modal } from '../../components/Modal'
 
 interface AdminUser {
@@ -15,6 +15,17 @@ interface AdminUser {
   two_factor_enabled: boolean
   created_at: string
 }
+// AdminUserDetail is what GET /admin/users/{id} returns: the account plus what it
+// has done. Declared as an extension so a change to the account shape cannot
+// silently stop matching this.
+interface AdminUserDetail extends AdminUser {
+  order_count: number
+  total_spent: number
+  ticket_count: number
+  return_count: number
+  wallet_balance: number
+}
+
 
 export function AdminUsers() {
   const queryClient = useQueryClient()
@@ -72,6 +83,21 @@ export function AdminUsers() {
 
   const [error, setError] = useState('')
   const [confirmFor, setConfirmFor] = useState<{ text: string; run: () => void } | null>(null)
+
+  // GET /admin/users/{id} returned activity stats -- orders, spend, tickets,
+  // returns, wallet balance -- that nothing in the UI ever fetched. The list view
+  // shows the account; this shows what the account has DONE, which is what an
+  // operator needs before granting a role or revoking one.
+  //
+  // Fetched only for the row that was opened: `/admin/users` can be 20+ rows and
+  // one query per row would be 20 requests nobody asked for.
+  const [detailFor, setDetailFor] = useState<string | null>(null)
+  const { data: detail, isLoading: detailLoading } = useQuery({
+    queryKey: ['admin-user-detail', detailFor],
+    queryFn: async () =>
+      (await api.get<{ user: AdminUserDetail }>(`/admin/users/${detailFor}`)).data.user,
+    enabled: !!detailFor,
+  })
 
   const visible = (data?.users ?? []).filter((u) =>
     search ? u.full_name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()) : true,
@@ -143,6 +169,13 @@ export function AdminUsers() {
                       🎭 Login sebagai
                     </button>
                   )}
+                  <button type="button"
+                    onClick={() => setDetailFor(u.id)}
+                    className="text-xs text-gray-600 hover:underline dark:text-gray-300"
+                    title="Aktivitas akun: pesanan, belanja, tiket, retur, saldo"
+                  >
+                    📊 Detail
+                  </button>
                   {!u.roles.includes('seller') && (
                     <button type="button"
                       onClick={() => grantSeller.mutate(u.id)}
@@ -262,6 +295,34 @@ export function AdminUsers() {
         }
       >
         <p className="text-sm text-gray-600 dark:text-gray-300">{confirmFor?.text}</p>
+      </Modal>
+
+      <Modal
+        open={!!detailFor}
+        onClose={() => setDetailFor(null)}
+        title={detail ? `Aktivitas ${detail.full_name || detail.email}` : "Aktivitas pengguna"}
+      >
+        {detailLoading && <p className="text-sm text-gray-500">Memuat…</p>}
+        {detail && (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            {[
+              { label: "Pesanan", value: String(detail.order_count) },
+              { label: "Total belanja", value: formatIDR(detail.total_spent) },
+              { label: "Tiket dukungan", value: String(detail.ticket_count) },
+              { label: "Retur", value: String(detail.return_count) },
+              // Shown for sellers and empty for buyers rather than hidden:
+              // "no wallet" and "a wallet with nothing in it" are different
+              // answers and only one of them is a surprise.
+              { label: "Saldo dompet", value: formatIDR(detail.wallet_balance) },
+              { label: "Terdaftar", value: formatDate(detail.created_at) },
+            ].map((row) => (
+              <div key={row.label}>
+                <dt className="text-xs text-gray-500">{row.label}</dt>
+                <dd className="font-medium">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </Modal>
     </div>
   )

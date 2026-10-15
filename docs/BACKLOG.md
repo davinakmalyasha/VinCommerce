@@ -827,8 +827,13 @@ noise.
     Now WITH UI: session management, multi-address checkout (checkout sends
     `address_id` from the address book), the admin refund button, payout batches,
     and the parcel / return-label / arrival flows.
-    Still without: admin user-detail stats (`GET /admin/users/{id}` exists — the
-    list view and its actions do not show the detail) and return evidence upload.
+    Still without: return evidence upload.
+    **[closed] Admin user-detail stats.** `GET /admin/users/{id}` returned order
+    count, total spent, tickets, returns and wallet balance, and nothing fetched it
+    — the list showed the account and never what it had done, which is what an
+    operator needs before granting or revoking a role. Now a per-row Detail action
+    opening a modal, fetched only for the row opened (a query without an `enabled`
+    guard would fire once per row for data nobody asked for).
     **[closed] The CSV import template.** `GET /seller/products/import-template`
     existed and nothing could reach it, so the import UI asked sellers to produce a
     CSV whose columns were documented only in the handler. Now a download beside
