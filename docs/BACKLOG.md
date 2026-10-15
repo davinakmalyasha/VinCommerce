@@ -421,10 +421,20 @@ they would cost you in a real deployment.
    every order from a seller with a sub-kilogram catalogue — and a 2.2kg bundle
    billed as 1kg. Volumetric weight and zone pricing still need the carrier
    integration.
-7. **No shipment entity.** Fulfilment is whole-order and all-or-nothing: no
-   split shipping, no partial shipment, no return labels, no carrier
-   webhooks. This one gap blocks return logistics, bulk label printing,
-   pick/pack boards and SLA reporting.
+7. **[mostly closed] Shipments exist; carrier integration does not.** This entry
+   said fulfilment was whole-order and all-or-nothing with no split shipping, no
+   partial shipment and no return labels. None of that is true any more, and it
+   had been false since before this entry was last read: `00050_shipments.sql` added
+   `shipments` with per-parcel lines, sequence numbers and a derived order status
+   (`shipped` / `partially_shipped`), so split and partial shipping work and the
+   order status is derived from the boxes rather than set by hand;
+   `00051_return_label.sql` added return labels, which is what made the return
+   journey possible at all.
+   *Still open:* no carrier integration — no rate lookup, no tracking poll and no
+   shipment webhooks — which is why parcel status stops at `dispatched` and why
+   `MarkShipmentDelivered` has no caller (see the P2 entry). Bulk label printing,
+   pick/pack boards and SLA reporting are unbuilt, and the return journey depends on
+   a seller manually recording that the goods arrived.
 8. **Email is sent synchronously** inside the request or worker that triggers
    it, so checkout waits on 1–3 SMTP round trips. It should be enqueued. The
    asynq infrastructure already exists, so this is a queue and a dispatch.
@@ -776,24 +786,49 @@ profile), not more unit tests: the untested surface is overwhelmingly I/O and SQ
 Until then, treat per-package `-cover` as the useful number and the repo-wide total as
 noise.
 
-14. **External payment is self-asserted.** A buyer can mark any pending order
-    paid with a free-text reference and an amount checked against the total the
-    same API just returned. It is one-shot (the order leaves `pending`, so a
-    replay fails on status) and the amount is bounds-checked, but there is no
-    receipt, no gateway record and no admin verification gate, and it creates no
-    `payment_intents` row.
-15. **Several endpoints are backend-only with no UI**: session management,
-    admin user-detail stats, CSV template download, admin refund/release
-    buttons, multi-address checkout, return evidence upload. *(The README
-    previously listed five; there are eleven — see the audit in the commit
-    history.)*
+14. **[partly closed] External payment is self-asserted.** A buyer can mark any
+    pending order paid with a free-text reference and an amount checked against the
+    total the same API just returned. It is one-shot (the order leaves `pending`, so
+    a replay fails on status) and the amount is bounds-checked.
+    **[closed] It wrote no `payment_intents` row, so the order could never settle.**
+    `ReleaseEscrow` resolves the intent through `IntentByOrder`, so a confirmed
+    external payment was `paid` with no money path behind it and completion failed
+    `NO_INTENT` — silently unpaid on the buyer's route (the order had already moved
+    to `completed`, so nothing retried it) and a permanent retry loop on the
+    sweep's. `RecordExternalCapture` now books the payment inside the same
+    transaction as the status flip, through the same primitives as every other
+    capture (snapshot, guarded transition to `captured`, strict journal). It commits
+    a CLAIM, not a verified receipt, and says so.
+    *Still open: there is no admin verification gate.* The real answer to the trust
+    question is an operator confirming the transfer before the order leaves
+    `pending`; this entry is not closed until that exists.
+15. **Several endpoints are backend-only with no UI.** Re-audited after the parcel
+    and payout work, because this list had drifted in BOTH directions — it named
+    things that had UI and missed things that did not.
+    Now WITH UI: session management, multi-address checkout (checkout sends
+    `address_id` from the address book), the admin refund button, payout batches,
+    and the parcel / return-label / arrival flows.
+    Still without: CSV template download; admin user-detail stats
+    (`GET /admin/users/{id}` exists — the list view and its actions do not show the
+    detail); the admin order-release action (`POST /admin/orders/{orderId}/release`
+    exists and nothing calls it); and return evidence upload.
 16. **Bundle pricing is display-only.** "Ambil Paket" adds items at full price.
 17. **No PWA offline queue.** The cart is server-side, so add-to-cart fails
     offline even though the shell is cached.
 18. **Accessibility is partial.** Modals, forms and tables were brought up to
     keyboard/screen-reader basics, but there is no automated a11y gate in CI.
-19. **No rate limit falls back to a local limiter** when Redis is down — limits
-    fail *open*, so a Redis blip returns `/auth/login` to unlimited attempts.
+19. **[closed] No rate limit fell back to a local limiter** when Redis was down —
+    limits failed *open*, so a Redis blip returned `/auth/login` to unlimited
+    attempts. Failing closed was rejected as converting a degradation into a total
+    lockout, so the limiter now falls back to an in-process fixed-window limiter and
+    LOGS the fallback (once a minute, not once a request). It is weaker than the
+    shared limiter — N replicas admit N × max — which is stated in the code rather
+    than papered over. The fallback's map is bounded, and refuses rather than
+    growing past `maxLocalWindows`, because the key is attacker-influenced and a
+    Redis outage is when an attacker would choose to exploit that.
+    While fixing it: `X-RateLimit-Remaining` was `max - count`, which goes
+    **negative** once a window is exhausted, and was emitted on every over-limit
+    response. Clamped.
 20. **No database backup or PITR ships in-repo.** `SECURITY.md` says so. For a
     platform holding escrow and a wallet ledger this is the single largest
     operational risk.
