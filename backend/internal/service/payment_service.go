@@ -846,6 +846,59 @@ func (s *PaymentService) publish(ctx context.Context, orderID, from, to, message
 	}
 }
 
+// RecordExternalCapture books an off-platform payment inside the caller's
+// transaction, so that an order confirmed by the buyer can actually be settled.
+//
+// WHY THIS EXISTS. `OrderService.ConfirmExternalPayment` flipped the order to
+// `paid` and wrote nothing else -- no intent, no journal. `ReleaseEscrow` resolves
+// the intent through `IntentByOrder`, so the order became `paid` with no money path
+// behind it: completion failed `NO_INTENT`, and it failed differently by route
+// (silently unpaid on the buyer's path, a permanent retry on the sweep's).
+//
+// The intent is created through the same `CreateIntentTx` every other path uses, so
+// the rate card is snapshotted NOW and commission is derived from that snapshot
+// rather than from whatever the settings happen to say at release time.
+//
+// IDEMPOTENCY. Only a `pending` order reaches here, because `MarkExternalPaid` is
+// guarded on that status in the same transaction, and the intent insert is unique
+// per order -- so a replay fails on the order's status before it can create a
+// second intent.
+//
+// WHAT THIS IS NOT. It records a claim, not a verified receipt: the platform still
+// takes the buyer's word. Requiring an admin to confirm an off-platform transfer
+// before the order leaves `pending` is the real answer and is open in
+// docs/BACKLOG.md. This function does not pretend to be that.
+func (s *PaymentService) RecordExternalCapture(
+	ctx context.Context, q repository.Querier, order *domain.Order, reference string,
+) error {
+	intent := &domain.PaymentIntent{
+		ID: uuid.NewString(), OrderID: order.ID, BuyerID: order.BuyerID,
+		Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
+		Gateway: "external", Method: domain.MethodManualTransfer,
+		IdempotencyKey: "external-" + order.ID,
+	}
+	if err := s.payments.CreateIntentTx(ctx, q, intent); err != nil {
+		return err
+	}
+	if err := s.payments.SetIntentStatusGuardedTx(ctx, q, intent.ID,
+		[]string{domain.IntentInitiated}, domain.IntentCaptured); err != nil {
+		return err
+	}
+	// Strict, not the swallowing variant: a payment booked with no journal is
+	// precisely the omission this is fixing, and the strict variant is what refuses
+	// to move money with nothing recording it.
+	return s.postLedgerStrict(ctx, q, JournalSpec{
+		IdempotencyKey: "capture:" + intent.ID,
+		TxType:         TxTypePayment,
+		RefType:        "payment_intent",
+		RefID:          intent.ID,
+		Note:           "off-platform payment asserted by the buyer; funds assumed held in escrow",
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+			"order_id": order.ID, "method": intent.Method, "reference": reference,
+		}),
+	})
+}
+
 // ReleaseEscrow transfers funds to the seller wallet (on delivery completion),
 // deducting the platform commission. The status flip, fee split and both
 // wallet credits happen in ONE transaction — a crash can never release escrow

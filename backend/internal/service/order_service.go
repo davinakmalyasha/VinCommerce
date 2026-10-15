@@ -1038,9 +1038,39 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 		return err
 	}
 	defer tx.Rollback(ctx)
+	q := tx.Querier()
+
+	// BOOK THE PAYMENT, OR THE ORDER IS PAID BUT NOT SETTLEABLE.
+	//
+	// This used to flip the order to `paid` and write nothing else: no payment
+	// intent, no journal. `ReleaseEscrow` resolves the intent through
+	// `IntentByOrder`, so completion then failed NO_INTENT -- and it failed in two
+	// different, both-bad ways depending on the route:
+	//
+	//   CompleteOrder (buyer confirms)  the order moved to `completed` FIRST and
+	//                                   the release failed after, so the seller was
+	//                                   never paid and nothing retried it (the
+	//                                   sweep selects `delivered`, not `completed`)
+	//   CompleteDelivered (the sweep)   pays first, so it retried forever and the
+	//                                   order never completed
+	//
+	// The endpoint already acted on the buyer's claim by flipping the order to
+	// paid. Leaving the intent out added no safety; it only removed the accounting.
+	//
+	// Note what this does NOT do: it records a CLAIM, not a verified receipt.
+	// Requiring an admin to confirm the transfer before the order leaves `pending`
+	// is the real answer to that and is still open in docs/BACKLOG.md.
+	if s.payments != nil {
+		if err := s.payments.RecordExternalCapture(ctx, q, o, strings.TrimSpace(reference)); err != nil {
+			return err
+		}
+	}
+
+	// MarkExternalPaid consumes the stock reservation itself.
 	if err := tx.MarkExternalPaid(ctx, orderID, strings.TrimSpace(reference), paidAt); err != nil {
 		return err
 	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
