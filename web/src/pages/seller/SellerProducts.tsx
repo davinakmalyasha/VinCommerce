@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import type { Product, Category } from '../../types'
 import { formatIDR } from '../../lib/format'
 import { FileUpload } from '../../components/FileUpload'
@@ -90,6 +90,20 @@ export function SellerProducts() {
             placeholder="Cari produk..."
             className="px-3 py-2 border rounded-lg text-sm outline-none w-44"
           />
+          {/* GET /seller/products/import-template existed and nothing could reach it,
+              so the import UI asked sellers to produce a CSV whose columns were
+              only documented in the handler. Downloaded through `downloadFile`,
+              not a bare <a href>: the route is behind the seller auth group and a
+              plain link cannot send the Bearer header. */}
+          <button
+            type="button"
+            onClick={() =>
+              downloadFile('/seller/products/import-template', 'vincommerce-product-import.csv')
+            }
+            className="px-4 py-2 rounded-lg border border-gray-300 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            ⬇ Template CSV
+          </button>
           <label className="px-4 py-2 rounded-lg border border-gray-300 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800">
             ⬆ Import CSV
             <input

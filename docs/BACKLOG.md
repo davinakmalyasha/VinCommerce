@@ -808,9 +808,16 @@ noise.
     Now WITH UI: session management, multi-address checkout (checkout sends
     `address_id` from the address book), the admin refund button, payout batches,
     and the parcel / return-label / arrival flows.
-    Still without: CSV template download; admin user-detail stats
-    (`GET /admin/users/{id}` exists — the list view and its actions do not show the
-    detail); and return evidence upload.
+    Still without: admin user-detail stats (`GET /admin/users/{id}` exists — the
+    list view and its actions do not show the detail) and return evidence upload.
+    **[closed] The CSV import template.** `GET /seller/products/import-template`
+    existed and nothing could reach it, so the import UI asked sellers to produce a
+    CSV whose columns were documented only in the handler. Now a download beside
+    the import control, through `downloadFile` (the route is behind the seller auth
+    group, so a bare link would 401). A test pins the two ends together: the
+    importer reads columns positionally and skips row 0 on
+    `HasPrefix(records[0][0], "name")`, so a served header that stopped starting
+    with "name" would be imported as a product instead of skipped.
     **[closed] The admin order-release action.** `POST /payments/orders/{id}/release`
     existed, was admin/support-gated and audit-logged, and NOTHING called it — so an
     order whose automatic escrow release failed sat at `delivered` for ever with no
