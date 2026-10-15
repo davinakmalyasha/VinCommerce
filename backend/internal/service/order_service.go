@@ -238,16 +238,29 @@ func (s *OrderService) CompleteOrder(ctx context.Context, orderID, buyerID strin
 	if order.Status != domain.OrderDelivered {
 		return domain.E(domain.KindConflict, "INVALID_TRANSITION", "order is not in delivered state")
 	}
+	// PAY THE SELLER FIRST, THEN COMPLETE. The reverse order -- which is what this
+	// did -- transitions the order to `completed` and only then attempts the
+	// release, so a release that cannot happen leaves the order completed and the
+	// seller unpaid with NOTHING to retry it: the sweep selects `delivered` orders,
+	// and this one has already left that state.
+	//
+	// This matches CompleteDelivered, which pays first for the same reason. The
+	// retry hazard of paying first (a successful release followed by a failed
+	// transition) is handled by EnsureEscrowReleased, which treats an already
+	// released intent as success rather than wedging on ESCROW_NOT_HELD.
+	//
+	// Points are awarded AFTER the money moves. They used to be awarded before the
+	// release was even attempted, so an order whose escrow failed still earned them.
+	if s.payments != nil {
+		if err := s.payments.EnsureEscrowReleased(ctx, orderID); err != nil {
+			return err
+		}
+	}
 	if err := s.orders.TransitionOrder(ctx, orderID, domain.OrderDelivered, domain.OrderCompleted, buyerID); err != nil {
 		return err
 	}
 	s.publishOrderEvent(ctx, orderID, domain.OrderDelivered, domain.OrderCompleted)
 	s.awardPoints(ctx, orderID)
-	if s.payments != nil {
-		if err := s.payments.ReleaseEscrow(ctx, orderID); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -1343,7 +1356,7 @@ func (s *OrderService) CompleteDelivered(ctx context.Context, olderThan time.Dur
 		// Pay the seller FIRST. If this fails, the order stays `delivered` and
 		// the next run retries it. See the doc comment for why the order used
 		// to become permanently uncompletable.
-		if err := s.payments.ReleaseEscrow(ctx, id); err != nil {
+		if err := s.payments.EnsureEscrowReleased(ctx, id); err != nil {
 			failed++
 			s.log().Error("failed to release escrow; order left delivered for retry",
 				"order_id", id, "error", err.Error())

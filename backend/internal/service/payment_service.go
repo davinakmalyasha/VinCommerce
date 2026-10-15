@@ -846,6 +846,33 @@ func (s *PaymentService) publish(ctx context.Context, orderID, from, to, message
 	}
 }
 
+// EnsureEscrowReleased releases escrow if it is still held, and does nothing if it
+// has already been released.
+//
+// The completion paths must pay the seller BEFORE flipping the order to
+// `completed`, because the reverse order leaves the seller unpaid with nothing to
+// retry: the sweep selects `delivered`, and a completed order has left that state.
+//
+// Paying first introduces the mirror-image hazard -- a release that succeeds and a
+// transition that then fails leaves a `delivered` order whose escrow is already
+// gone, and a plain retry would be refused at `ESCROW_NOT_HELD` for ever. This is
+// what makes the retry safe: an already-released intent is a SUCCESS here, not an
+// error, so the retry proceeds to the transition.
+//
+// Anything else -- a captured intent, a refunded one, a missing one -- falls
+// through to ReleaseEscrow, which either does the work or refuses. Refusing is
+// correct: an order whose escrow was never held must not be completed.
+func (s *PaymentService) EnsureEscrowReleased(ctx context.Context, orderID string) error {
+	intent, err := s.payments.IntentByOrder(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if intent.Status == domain.IntentReleased {
+		return nil
+	}
+	return s.ReleaseEscrow(ctx, orderID)
+}
+
 // RecordExternalCapture books an off-platform payment inside the caller's
 // transaction, so that an order confirmed by the buyer can actually be settled.
 //
