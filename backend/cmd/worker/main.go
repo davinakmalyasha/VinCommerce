@@ -184,7 +184,11 @@ func run(logger *slog.Logger) error {
 		Sessions: graph.Repositories.Sessions,
 		Payment:  graph.Services.Payment,
 		Ledger:   graph.Services.Ledger,
-		Logger:   logger,
+		// Delivers the transactional emails the API deferred. Without it the
+		// handler FAILS rather than succeeding quietly, so a queue that drains
+		// while nothing is sent cannot look healthy.
+		Mail:   mailer,
+		Logger: logger,
 	})
 	if err != nil {
 		return err

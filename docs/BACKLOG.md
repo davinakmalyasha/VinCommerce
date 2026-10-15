@@ -435,26 +435,28 @@ they would cost you in a real deployment.
    `MarkShipmentDelivered` has no caller (see the P2 entry). Bulk label printing,
    pick/pack boards and SLA reporting are unbuilt, and the return journey depends on
    a seller manually recording that the goods arrived.
-8. **Email is sent synchronously** inside the request or worker that triggers
+8. **[closed] Email was sent synchronously** inside the request or worker that triggers
    it, so checkout waits on 1–3 SMTP round trips. It should be enqueued. The
    asynq infrastructure already exists, so this is a queue and a dispatch.
-   **[sized, not started] The above understates it, and checking properly is what
-   found that out.** There is **no `asynq.Client` anywhere in the repository** —
+   **[closed] The above understated it, and checking properly is what found that
+   out.** There is **no `asynq.Client` anywhere in the repository** —
    only the worker's `Server` and `Scheduler`. The enqueue has to happen in the API
    process (that is where checkout runs), so this is not "add a task type": it means
    wiring a queue PRODUCER into a process that currently has none, plus a
    `TaskSendEmail` constant, a handler, a `mail.Client` on the worker's `Deps`, and
    an adapter so the service layer keeps its import boundary.
-   *Attempted and reverted on purpose.* The service-side interface
-   (`EmailEnqueuer` + a setter + a fallback branch in `emailFor`) was written,
-   compiled, and then removed: with no caller it is dead code, and adding an unused
-   export to make a half-finished change look tidy is the same smell as
-   `MarkShipmentDelivered`, which this series spent a commit explaining. The next
-   attempt should start from the client wiring, not from the service.
-   *For reference, the shape that works:* keep `emailFor`'s lookups (cheap), hand
-   the send to the queue, and fall back to `mail.Send` when the enqueue fails —
-   never silently drop, because a full queue should cost a slow request and not a
-   missing receipt.
+   *Done in the right order on the second attempt:* the producer first (`worker`'s
+   `EmailEnqueuer`, over a real `asynq.Client`), then the consumer
+   (`TaskSendEmail` + a handler whose nil-mail-client case FAILS rather than
+   succeeding), then the wiring in both processes -- `cmd/api` sets the enqueuer,
+   `cmd/worker` supplies the mail client. Only then was the service-side interface
+   re-added, so it arrived with a caller.
+   A test pins the two ends together: a producer enqueueing under a name no handler
+   is registered for succeeds, delivers nothing and logs nothing, which is the
+   quietest failure available.
+   *Kept deliberately:* `emailFor` still does its DB lookups inline (they are
+   cheap) and falls back to `mail.Send` when the enqueue fails, so an unreachable
+   queue costs a slow request rather than a missing receipt.
 9. **[partly closed] No payout schedule.** Payouts were seller-initiated and on
    demand, KYC-gated only, and a request debited the wallet with no reservation:
    a seller could request a payout and then have a return come in against the same

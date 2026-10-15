@@ -8,6 +8,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/vincommerce/backend/internal/config"
+	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/repository"
 	"github.com/vincommerce/backend/internal/service"
 )
@@ -89,7 +90,12 @@ type Deps struct {
 	// Payment and Ledger drive the money reconciliation jobs.
 	Payment *service.PaymentService
 	Ledger  *service.LedgerService
-	Logger  *slog.Logger
+	// Mail delivers the transactional emails whose producers have already
+	// returned. A nil client does not disable the task; it makes the handler
+	// FAIL, because a queue that drains while nothing is delivered is worse
+	// than one that reports the problem.
+	Mail   *mail.Client
+	Logger *slog.Logger
 }
 
 // Server wires asynq workers and schedules recurring jobs.
@@ -273,6 +279,7 @@ func New(d Deps) (*Server, error) {
 	mux.HandleFunc(TaskPriceAlerts, withTimeout(priceAlertsHandler(market, logger)))
 	mux.HandleFunc(TaskBackInStock, withTimeout(backInStockHandler(market, logger)))
 	mux.HandleFunc(TaskCartRecovery, withTimeout(cartRecoveryHandler(orders, logger)))
+	mux.HandleFunc(TaskSendEmail, withTimeout(sendEmailHandler(d.Mail, logger)))
 	mux.HandleFunc(TaskSellerDigest, withTimeout(sellerDigestHandler(seller, logger)))
 	mux.HandleFunc(TaskLowStock, withTimeout(lowStockHandler(seller, logger)))
 	mux.HandleFunc(TaskSellerPresence, withTimeout(sellerPresenceHandler(seller, logger)))

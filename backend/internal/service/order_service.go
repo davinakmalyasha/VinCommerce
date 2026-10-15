@@ -92,6 +92,7 @@ type OrderService struct {
 	// ownership note on `CreateReturnParcel` for why that split is deliberate.
 	shipments    *ShipmentService
 	mailer       *mail.Client
+	enqueuer     EmailEnqueuer
 	webURL       string
 	insurancePct float64
 	logger       *slog.Logger
@@ -139,6 +140,29 @@ func (s *OrderService) SetPaymentService(p *PaymentService) { s.payments = p }
 func (s *OrderService) SetNotificationService(n *NotificationService) { s.notifications = n }
 func (s *OrderService) SetShipmentService(ship *ShipmentService)      { s.shipments = ship }
 
+// EmailEnqueuer defers a transactional email to the worker instead of sending it
+// inline.
+//
+// WHY. `mail.Client.Send` costs one SMTP round trip per call, and checkout makes
+// up to three of them before it can respond. So a buyer waits on the mail server
+// for work that has nothing to do with whether their order was accepted -- and
+// when SMTP is slow rather than down, the request is slow rather than failing,
+// which is the harder case to notice.
+//
+// Declared HERE, and taken as an interface, so this package never imports asynq
+// and can be tested without Redis. The producer lives in `worker`, which is the
+// layer allowed to know about the queue.
+type EmailEnqueuer interface {
+	EnqueueEmail(ctx context.Context, to, subject, template string, data map[string]any) error
+}
+
+// SetEmailEnqueuer defers transactional emails to the worker.
+//
+// Optional: without one, emails are sent inline, which is the behaviour this had
+// before. Keeping the fallback means a process wired without a queue still
+// delivers receipts instead of silently not.
+func (s *OrderService) SetEmailEnqueuer(e EmailEnqueuer) { s.enqueuer = e }
+
 // SetMailer enables transactional order emails.
 func (s *OrderService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
 
@@ -165,6 +189,18 @@ func (s *OrderService) emailFor(ctx context.Context, orderID string, templateNam
 	data["Name"] = buyer.FullName
 	data["OrderNumber"] = o.OrderNumber
 	data["OrderURL"] = s.webURL + "/orders/" + o.ID
+
+	// The lookups above are cheap; the SMTP round trip is not, and whoever got
+	// here is waiting on this request. Hand it to the worker when there is one.
+	if s.enqueuer != nil {
+		if err := s.enqueuer.EnqueueEmail(ctx, buyer.Email, subject, templateName, data); err != nil {
+			// Fall back rather than drop it. A full or unreachable queue should
+			// cost a slow request, never a missing receipt -- and this is the one
+			// place that knows the send did not happen.
+			_ = s.mailer.Send(ctx, buyer.Email, subject, templateName, data)
+		}
+		return
+	}
 	_ = s.mailer.Send(ctx, buyer.Email, subject, templateName, data)
 }
 

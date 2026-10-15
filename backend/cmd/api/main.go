@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/vincommerce/backend/internal/app"
 	"github.com/vincommerce/backend/internal/cache"
 	"github.com/vincommerce/backend/internal/config"
@@ -19,6 +20,7 @@ import (
 	"github.com/vincommerce/backend/internal/httpapi/handler"
 	"github.com/vincommerce/backend/internal/mail"
 	"github.com/vincommerce/backend/internal/metrics"
+	"github.com/vincommerce/backend/internal/worker"
 )
 
 // version is injected at build time via -ldflags "-X main.version=<git sha>".
@@ -97,6 +99,26 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// DEFER TRANSACTIONAL EMAIL TO THE WORKER.
+	//
+	// Checkout used to wait on the mail server: `mail.Client.Send` is one SMTP
+	// round trip per call and the order path makes up to three, so a slow SMTP
+	// made the request slow without failing it -- the harder case to notice.
+	// The producer is built HERE, in the process that creates the work, because
+	// that is the process whose request was waiting.
+	//
+	// Best-effort by construction: if the queue is unreachable the enqueue fails
+	// at call time and the service sends inline instead. A queue that is down
+	// should cost a slow request, never a missing receipt.
+	queueClient := asynq.NewClient(asynq.RedisClientOpt{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	defer queueClient.Close()
+	graph.Services.Order.SetEmailEnqueuer(worker.NewEmailEnqueuer(queueClient))
+	logger.Info("transactional email deferred to the worker queue")
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
