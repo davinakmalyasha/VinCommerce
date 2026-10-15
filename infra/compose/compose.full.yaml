@@ -33,7 +33,7 @@ services:
     # release, so an unpinned `docker compose pull` can silently change the
     # database major's minor version —— and therefore on-disk format behaviour ——
     # between a working machine and a broken one. Dependabot tracks the digest.
-    image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+    image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     environment:
       POSTGRES_USER: vincom
       POSTGRES_PASSWORD: vincom_dev
