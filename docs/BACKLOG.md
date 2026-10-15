@@ -827,7 +827,12 @@ noise.
     Now WITH UI: session management, multi-address checkout (checkout sends
     `address_id` from the address book), the admin refund button, payout batches,
     and the parcel / return-label / arrival flows.
-    Still without: return evidence upload.
+    **[reclassified] Return evidence upload is NOT a missing UI — it has no
+    endpoint at all.** `return_requests.evidence_urls JSONB` exists since 00006, and
+    nothing reads or writes it: no route, no service method, no storage. Listing it
+    here alongside endpoints that merely lack a screen was wrong, and the difference
+    matters — this is a feature (an upload route, somewhere to put the bytes, the
+    ownership checks, and a UI), not a button somebody forgot to wire.
     **[closed] Admin user-detail stats.** `GET /admin/users/{id}` returned order
     count, total spent, tickets, returns and wallet balance, and nothing fetched it
     — the list showed the account and never what it had done, which is what an
