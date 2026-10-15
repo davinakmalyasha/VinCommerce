@@ -6,9 +6,12 @@ import { formatIDR, orderStatusColors, orderStatusLabels } from '../../lib/forma
 
 
 export function AdminOrders() {
+  const queryClient = useQueryClient()
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('')
   const [search, setSearch] = useState('')
+  const [confirmRelease, setConfirmRelease] = useState<string | null>(null)
+  const [error, setError] = useState('')
 
   const { data } = useQuery({
     queryKey: ['admin-orders', search, status],
@@ -16,6 +19,30 @@ export function AdminOrders() {
       (await api.get<{ orders: Order[]; total: number }>(`/admin/orders?q=${encodeURIComponent(search)}&status=${status}`))
         .data,
   })
+
+  // Releasing escrow pays the seller, and nothing here can undo it — the money
+  // leaves the platform. `POST /payments/orders/{id}/release` is admin/support
+  // only and audit-logged, and until now nothing in the UI could reach it, which
+  // meant an order whose automatic release failed sat at `delivered` for ever
+  // with no way for an operator to clear it.
+  //
+  // Offered on `delivered` orders specifically: that is the state whose release
+  // is supposed to have happened already, so the button here is a RETRY of a
+  // failure rather than a way to pay early. Confirmed rather than one click,
+  // because it cannot be taken back.
+  const release = useMutation({
+    mutationFn: async (orderId: string) => api.post(`/payments/orders/${orderId}/release`),
+    onSuccess: () => {
+      setConfirmRelease(null)
+      setError('')
+      queryClient.invalidateQueries({ queryKey: ['admin-orders'] })
+    },
+    onError: (e: Error) => {
+      setConfirmRelease(null)
+      setError(e.message)
+    },
+  })
+
 
   return (
     <div className="space-y-4">
@@ -49,6 +76,12 @@ export function AdminOrders() {
         </div>
 
       </div>
+      {error && (
+        <p role="alert" className="rounded-lg bg-red-50 dark:bg-red-950/40 p-2.5 text-sm text-red-700">
+          {error}
+          <button type="button" onClick={() => setError('')} className="ml-2 underline">Tutup</button>
+        </p>
+      )}
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-x-auto">
         <table className="w-full min-w-[48rem] text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs text-gray-500">
@@ -60,6 +93,7 @@ export function AdminOrders() {
               <th className="px-4 py-3">Total</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Pembayaran</th>
+              <th className="px-4 py-3 text-right">Aksi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -75,6 +109,37 @@ export function AdminOrders() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-xs">{o.payment_status}</td>
+                <td className="px-4 py-3 text-right">
+                  {o.status === 'delivered' && (
+                    confirmRelease === o.id ? (
+                      <span className="inline-flex items-center gap-2 text-xs">
+                        <span className="text-amber-700 dark:text-amber-400">
+                          Bayar penjual sekarang? Tidak bisa dibatalkan.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => release.mutate(o.id)}
+                          disabled={release.isPending}
+                          className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
+                        >
+                          {release.isPending ? '…' : 'Ya, lepas escrow'}
+                        </button>
+                        <button type="button" onClick={() => setConfirmRelease(null)} className="underline text-gray-500">
+                          Batal
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => { setError(''); setConfirmRelease(o.id) }}
+                        className="px-2.5 py-1 rounded border border-amber-300 text-xs font-medium text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40"
+                        title="Lepas dana escrow ke penjual — untuk pesanan yang release otomatisnya gagal"
+                      >
+                        Lepas escrow
+                      </button>
+                    )
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

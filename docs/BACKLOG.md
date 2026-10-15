@@ -810,8 +810,14 @@ noise.
     and the parcel / return-label / arrival flows.
     Still without: CSV template download; admin user-detail stats
     (`GET /admin/users/{id}` exists — the list view and its actions do not show the
-    detail); the admin order-release action (`POST /admin/orders/{orderId}/release`
-    exists and nothing calls it); and return evidence upload.
+    detail); and return evidence upload.
+    **[closed] The admin order-release action.** `POST /payments/orders/{id}/release`
+    existed, was admin/support-gated and audit-logged, and NOTHING called it — so an
+    order whose automatic escrow release failed sat at `delivered` for ever with no
+    way for an operator to clear it. It is now a confirmed button on the admin orders
+    table, offered only on `delivered` orders (that is the state whose release is
+    supposed to have happened, so this is a retry of a failure rather than a way to
+    pay a seller early) and labelled as irreversible.
 16. **Bundle pricing is display-only.** "Ambil Paket" adds items at full price.
 17. **No PWA offline queue.** The cart is server-side, so add-to-cart fails
     offline even though the shell is cached.
