@@ -815,8 +815,20 @@ noise.
 16. **Bundle pricing is display-only.** "Ambil Paket" adds items at full price.
 17. **No PWA offline queue.** The cart is server-side, so add-to-cart fails
     offline even though the shell is cached.
-18. **Accessibility is partial.** Modals, forms and tables were brought up to
-    keyboard/screen-reader basics, but there is no automated a11y gate in CI.
+18. **[partly closed] Accessibility is partial.** Modals, forms and tables were
+    brought up to keyboard/screen-reader basics.
+    **[closed] There is now an automated a11y gate.** `axe-core` runs over
+    rendered components in `src/__tests__/a11y.test.tsx`, on the existing vitest
+    run, so it is enforced by CI without a new job. Rules that need real layout
+    (`color-contrast`, `target-size`, `scrollable-region-focusable`) are disabled
+    because jsdom has no layout engine and would report every element as failing
+    contrast for reasons that are not real. The suite includes a control test that
+    asserts axe FINDS a known violation, so the three "no violations" assertions
+    cannot pass vacuously.
+    *Still open:* axe catches the mechanical half -- accessible names, roles, aria
+    validity, alt text. It cannot see focus order, reading order, whether an
+    aria-label is USEFUL, or anything requiring assistive technology. Those remain
+    manual, and no automated gate will close them.
 19. **[closed] No rate limit fell back to a local limiter** when Redis was down —
     limits failed *open*, so a Redis blip returned `/auth/login` to unlimited
     attempts. Failing closed was rejected as converting a degradation into a total
