@@ -141,7 +141,7 @@ jobs:
         # The check is type-level for the service layer, so `pgx.ErrNoRows` is
         # still allowed -- matching that sentinel is legitimate -- while
         # `pgx.Tx` in a signature is not.
-        run: node scripts/check-import-boundaries.mjs
+        run: node ../scripts/check-import-boundaries.mjs
 
       - name: Unit tests
         run: go test ./internal/... -count=1 -race
