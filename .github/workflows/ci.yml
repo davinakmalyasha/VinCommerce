@@ -12,12 +12,22 @@ permissions:
 # Every job is bounded. Without a timeout, a hung Postgres container or an
 # npm/golang registry that never responds burns a full 6 hours of runner time
 # and reports nothing useful.
-env:
-  # Pinned by digest in the Dockerfiles and compose files; these are the same
-  # digests, mirrored here for the CI service containers, which do not go
-  # through the build.
-  POSTGRES_IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
-  REDIS_IMAGE: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
+# SERVICE IMAGES MUST BE LITERALS, NOT `env` REFERENCES.
+#
+# This block used to hold the two digests and `services.<job>.<service>.image`
+# referenced them. GitHub rejects that outright: the `env` context is NOT
+# available in `services.*.image`, because service containers are resolved before
+# `env` exists. The failure is a 0-second run with NO jobs and no logs:
+#
+#   Invalid workflow file: .github/workflows/ci.yml#L1
+#   (Line: 76, Col: 16): Unrecognized named-value: 'env'.
+#     Located at position 1 within expression: env.POSTGRES_IMAGE
+#
+# It did that on every push for two months, so nothing in this file had ever run.
+# The digests are now written out at each service and must be updated together.
+#
+# To verify a change here, push and confirm the run actually STARTS. A 0-second
+# failure means the file was rejected and no job ran at all.
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -73,7 +83,7 @@ jobs:
     timeout-minutes: 50
     services:
       postgres:
-        image: ${{ env.POSTGRES_IMAGE }}
+        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
@@ -83,7 +93,7 @@ jobs:
           --health-cmd "pg_isready -U vincom"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: ${{ env.REDIS_IMAGE }}
+        image: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
         ports: ["6379:6379"]
 
     defaults:
@@ -274,7 +284,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: ${{ env.POSTGRES_IMAGE }}
+        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
@@ -284,7 +294,7 @@ jobs:
           --health-cmd "pg_isready -U vincom"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: ${{ env.REDIS_IMAGE }}
+        image: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
         ports: ["6379:6379"]
     defaults:
       run:
@@ -505,7 +515,7 @@ jobs:
     timeout-minutes: 10
     services:
       redis:
-        image: ${{ env.REDIS_IMAGE }}
+        image: redis:8@sha256:718f745deb7dfefeac6eed7041fc7ec9476b50e61b247932682457c41adafa0e
         ports: ["6379:6379"]
     defaults:
       run:
