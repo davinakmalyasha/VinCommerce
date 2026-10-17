@@ -125,7 +125,13 @@ RUN set -eux; \
     sed 's|api:8080|127.0.0.1:8080|g' /tmp/default.conf.real \
       > /etc/nginx/conf.d/default.conf; \
     nginx -t; \
-    cp /tmp/default.conf.real /etc/nginx/conf.d/default.conf; \
+    # `nginx -t` WRITES THE PID FILE as a side effect, and this RUN is root
+    # (USER nginx comes later), so the check left the pid owned by root:root.
+    # At runtime the master is uid 101 and cannot overwrite it:
+    #   open() "/var/cache/nginx/nginx.pid" failed (13: Permission denied)
+    # and the container exits in under a second. The pid is meaningless once
+    # the check is over; the process that owns the container writes a fresh one.
+    rm -f /var/cache/nginx/nginx.pid; \n    cp /tmp/default.conf.real /etc/nginx/conf.d/default.conf; \
     rm -f /tmp/default.conf.real
 
 USER nginx
