@@ -131,7 +131,8 @@ RUN set -eux; \
     #   open() "/var/cache/nginx/nginx.pid" failed (13: Permission denied)
     # and the container exits in under a second. The pid is meaningless once
     # the check is over; the process that owns the container writes a fresh one.
-    rm -f /var/cache/nginx/nginx.pid; \n    cp /tmp/default.conf.real /etc/nginx/conf.d/default.conf; \
+    rm -f /var/cache/nginx/nginx.pid; \
+    cp /tmp/default.conf.real /etc/nginx/conf.d/default.conf; \
     rm -f /tmp/default.conf.real
 
 USER nginx
