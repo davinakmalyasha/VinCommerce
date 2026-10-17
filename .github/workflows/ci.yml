@@ -65,6 +65,19 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
         env:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # THE TOKEN IS NOT OPTIONAL IN PRACTICE.
+          #
+          # The action asks the GitHub API whether the repository owner is an
+          # individual, because a licence is only required for organisations. That
+          # call is UNAUTHENTICATED without this, so it shares the runner IP's
+          # 60-requests-an-hour budget -- and when it is rate-limited the action
+          # cannot verify and fails with "missing gitleaks license".
+          #
+          # That is what happened on a workflow re-run: the same commit passed one
+          # hour earlier and failed here, with the real cause in a warning above the
+          # error. A secret scan that fails for reasons unrelated to secrets trains
+          # people to ignore it.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Backend ──────────────────────────────────────────────────────────────
   backend:
