@@ -48,8 +48,16 @@ RUN set -eux; \
     chown -R nginx:nginx \
       /var/cache/nginx \
       /var/log/nginx \
-      /var/run \
       /usr/share/nginx/html; \
+    # /var/run is a SYMLINK to /run, and `chown -R` does not follow it, so the
+    # real directory stayed root-owned and the nginx user could not write its pid
+    # file: `open() "/run/nginx.pid" failed (13: Permission denied)`. That was
+    # invisible until CI ran the image and asserted `nginx -t` AS THE RUNTIME USER
+    # -- the BUILD-time `nginx -t` runs as root and passes.
+    #
+    # Non-recursive on purpose: /run holds other processes' runtime state, and
+    # this container only needs to create /run/nginx.pid in it.
+    chown nginx:nginx /run; \
     # The packaged nginx.conf carries `user nginx;`, which is only meaningful
     # when the master runs with super-user privileges. Left in place it makes
     # nginx log "the 'user' directive makes sense only if the master process

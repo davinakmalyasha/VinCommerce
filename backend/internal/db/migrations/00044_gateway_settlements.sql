@@ -1,4 +1,6 @@
 -- 00044_gateway_settlements.sql
+
+-- +goose Up
 --
 -- Wiring for the `gateway_settlements` table created (but never written) in
 -- 00043, plus the reconciliation query that proves a settlement is matched to a

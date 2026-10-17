@@ -1,4 +1,6 @@
 -- 00042_commission_rate_snapshot.sql
+
+-- +goose Up
 --
 -- The commission rate is snapshotted onto the payment intent at CHARGE time, and
 -- the intent carries an explicit "the split has been computed" flag.

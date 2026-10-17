@@ -1,4 +1,6 @@
 -- 00041_checkout_money_invariants.sql
+
+-- +goose Up
 --
 -- The constraints that internal/service/money_property_test.go proves the
 -- application now maintains, moved into the schema so a new code path that

@@ -1,4 +1,6 @@
 -- 00043_double_entry_ledger.sql
+
+-- +goose Up
 --
 -- A real double-entry ledger, because the previous model cannot answer the only
 -- question that matters to an escrow marketplace: "how much money are we
