@@ -87,12 +87,20 @@ RUN if nginx -V 2>&1 | grep -q -- '--with-brotli'; then \
 
 # Config syntax gate at BUILD time, so a typo in nginx.conf or a missing
 # snippet fails here instead of after a full build+push. `nginx -t` resolves
-# every proxy_pass upstream hostname at config-parse time, and `api` does not
-# exist in the build sandbox, so the upstream is swapped to a literal address
-# for the duration of the check and the real config is restored afterwards.
+# every upstream hostname at config-parse time, and `api` does not exist in the
+# build sandbox, so the upstream is swapped to a literal address for the duration
+# of the check and the real config is restored afterwards.
+#
+# It rewrites `api:8080`, NOT `http://api:8080`.
+#
+# The old pattern only matched the latter, and the config was later refactored to
+# an `upstream vc_api { server api:8080; }` block -- after which the substitution
+# matched NOTHING, the check resolved `api` for real, and the web image failed to
+# build with `host not found in upstream "api:8080"`. A rewrite that silently
+# stops matching is worse than no rewrite at all: it still looks like a gate.
 RUN set -eux; \
     cp /etc/nginx/conf.d/default.conf /tmp/default.conf.real; \
-    sed 's|http://api:8080|http://127.0.0.1:8080|g' /tmp/default.conf.real \
+    sed 's|api:8080|127.0.0.1:8080|g' /tmp/default.conf.real \
       > /etc/nginx/conf.d/default.conf; \
     nginx -t; \
     cp /tmp/default.conf.real /etc/nginx/conf.d/default.conf; \

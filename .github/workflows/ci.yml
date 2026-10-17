@@ -44,12 +44,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # gitleaks-action v2.3.9
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+      # CHECKOUT IS REQUIRED, and full history with it.
+      #
+      # Without this step the action ran in an empty workspace and failed with
+      # `fatal: not a git repository` -- there was no .git to scan. `fetch-depth: 0`
+      # because this scans HISTORY, not the diff: a key added and removed in one PR
+      # never appears in a diff-based check, and a shallow clone would hide it.
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          args: detect --redact --verbose --source .
-          # The action needs a token to clone private history; public repos do
-          # not, and a forked PR gets an auto-generated read-only token.
+          fetch-depth: 0
+
+      # gitleaks-action v2.3.9
+      #
+      # It takes NO inputs. This used to pass `args` and `GITLEAKS_LICENSE` in a
+      # `with:` block, which produced "Unexpected input(s) 'args', 'GITLEAKS_LICENSE',
+      # valid inputs are ['']" -- the args were silently ignored, so the scanner
+      # ran with its defaults rather than the flags that were written here. The
+      # licence belongs in `env`, and it is optional for an individual account.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   # ── Backend ──────────────────────────────────────────────────────────────
