@@ -18,6 +18,32 @@ set -uo pipefail
 
 IMAGE="${1:?usage: probe-web-image.sh <image-ref>}"
 
+# IMAGE INSPECTION FIRST, because it does not depend on the container staying up.
+#
+# The failure this was written for was nginx exiting in 0.7s with
+# `open() "/var/cache/nginx/nginx.pid" failed (13: Permission denied)` -- after the
+# Dockerfile had already `chown -R`'d that directory. Asking the IMAGE what the
+# ownership actually is answers that in seconds; asking the RUNNING container is
+# impossible once it has exited.
+echo "===== image inspection ====="
+echo "runtime identity:"
+docker run --rm "$IMAGE" id 2>&1 || true
+echo "ownership and mode (as root, so nothing is hidden by permissions):"
+docker run --rm --user root "$IMAGE" sh -c '
+  stat -c "%u:%g %a %n" /var/cache/nginx /run /tmp /dev/shm /var/lib 2>&1
+' || true
+echo "can the runtime user actually write the pid directory?"
+docker run --rm --user 101:101 "$IMAGE" sh -c '
+  if touch /var/cache/nginx/.write-probe 2>/dev/null; then
+    echo "WRITABLE: /var/cache/nginx"
+  else
+    echo "NOT WRITABLE: /var/cache/nginx"
+  fi
+' 2>&1 || true
+echo "is /var/cache/nginx a volume?"
+docker inspect -f '{{json .Mounts}}' "$IMAGE" 2>&1 || true
+echo "===== starting the container ====="
+
 docker run -d --name vc-web-probe -p 8080:8080 --add-host api:127.0.0.1 "$IMAGE"
 
 dump() {
