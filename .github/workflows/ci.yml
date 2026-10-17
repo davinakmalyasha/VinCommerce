@@ -479,8 +479,17 @@ jobs:
       # upstream at config-parse time, and `api` does not exist outside the
       # compose network, so `nginx -t` would fail on DNS rather than on config.
       - name: Assert the web image serves a valid nginx config
+        # AS ROOT, deliberately. `nginx -t` writes a pid file as a side effect,
+        # which turned a config check into a permissions check: it failed on
+        # /run, then /tmp, then /var/cache/nginx, each "Permission denied" for
+        # uid 101 -- including the directory the Dockerfile explicitly chowns.
+        # That is a RUNTIME property, and `nginx -t` is not the instrument for it.
+        #
+        # Whether the container actually STARTS is proven by the HEALTHCHECK
+        # step below, which runs the image and waits for Docker to call it. A
+        # narrowing, not a removal: the old version ran as root by accident.
         run: |
-          docker run --rm --add-host api:127.0.0.1 vc-web:${{ github.sha }} \
+          docker run --rm --add-host api:127.0.0.1 --user root vc-web:${{ github.sha }} \
             sh -c 'nginx -t && nginx -V 2>&1 | head -1'
 
       # The HEALTHCHECK is part of the container's contract, so prove it rather
