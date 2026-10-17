@@ -52,18 +52,26 @@ RUN set -eux; \
     # /var/run is a SYMLINK to /run, and `chown -R` does not follow it, so the
     # real directory stayed root-owned.
     #
-    # The pid file is moved to /tmp instead of relying on that ownership. /tmp is
-    # world-writable, so the master can create it whether or not /run survives as
-    # the same inode into the running container -- /run is runtime state and a
-    # runtime mount can replace it, which a build-time chown cannot survive. The
-    # pid path is a MAIN-context directive, so it has to be set here in the real
-    # /etc/nginx/nginx.conf; web/nginx.conf is included from http{} and cannot set
-    # it, which is why it was left at the image default.
+    # The pid file is moved under /var/cache/nginx, which this RUN already chowns
+    # to the nginx user. Two attempts failed before that:
+    #
+    #   /run      a build-time chown does not survive, because /run is runtime
+    #             state and a runtime mount can replace it.
+    #   /tmp      not writable by this user in this base image, despite the usual
+    #             convention -- `open() "/tmp/nginx.pid" failed (13: Permission
+    #             denied)`.
+    #
+    # /var/cache/nginx is the one directory here whose ownership this Dockerfile
+    # actually controls, so the pid goes where the guarantee already is.
+    #
+    # It must be set in the real /etc/nginx/nginx.conf: `pid` is main-context and
+    # web/nginx.conf is included from http{}, which is why it was left at the image
+    # default before.
     #
     # This only showed up when CI asserted `nginx -t` AS THE RUNTIME USER: the
     # build-time `nginx -t` runs as root and passes, and a container that cannot
     # write its pid cannot start at all.
-    sed -i -e '/^pid[[:space:]]/d' /etc/nginx/nginx.conf;     sed -i '1i pid /tmp/nginx.pid;' /etc/nginx/nginx.conf; \
+    sed -i -e '/^pid[[:space:]]/d' /etc/nginx/nginx.conf;     sed -i '1i pid /var/cache/nginx/nginx.pid;' /etc/nginx/nginx.conf; \
     # The packaged nginx.conf carries `user nginx;`, which is only meaningful
     # when the master runs with super-user privileges. Left in place it makes
     # nginx log "the 'user' directive makes sense only if the master process
