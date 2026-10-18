@@ -65,6 +65,7 @@ func run(logger *slog.Logger) error {
 
 	seeded := 0
 	seeded += s.seedUsers()
+	seeded += s.seedStores()
 	seeded += s.seedCategories()
 	seeded += s.seedAttributes()
 	seeded += s.seedBrandsAndProducts()
@@ -486,6 +487,54 @@ func rangeOf(n int) []int {
 		out[i] = i
 	}
 	return out
+}
+
+// seedStores gives every seller an ACTIVE storefront.
+//
+// WITHOUT THIS THE WHOLE DEMO CATALOGUE IS INVISIBLE. The public product surfaces
+// filter on
+//
+//	AND EXISTS (SELECT 1 FROM stores s
+//	             WHERE s.owner_id = p.seller_id AND s.status = 'active')
+//
+// so products belonging to a seller with no store row are not "unlisted" -- they are
+// 404 on the product page, absent from search and absent from related products. The
+// seed created users and products but no stores, which is why the e2e suite reported
+// `product smartphone-aurora-x5-pro not found: 404` for a product it had just
+// seeded, and why the failure looked like missing data when the data was there.
+func (s *seeder) seedStores() int {
+	sellers, err := s.users.ByRole(s.ctx, domain.RoleSeller)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "seed stores: cannot list sellers: %v\n", err)
+		s.failures++
+		return 0
+	}
+	created := 0
+	for _, u := range sellers {
+		name := u.FullName
+		if name == "" {
+			name = u.Email
+		}
+		name += " Store"
+		// Slug uniqueness is per store, and two sellers can share a full name, so the
+		// user id keeps the slug stable AND distinct across re-runs.
+		slug := slugify(name)
+		if len(u.ID) >= 8 {
+			slug += "-" + u.ID[:8]
+		}
+		if _, err := s.products.Pool().Exec(s.ctx, `
+			INSERT INTO stores (id, owner_id, name, slug, description, status)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active')
+			ON CONFLICT (owner_id) DO UPDATE
+			   SET status = 'active', updated_at = now()`,
+			u.ID, name, slug, "Toko demo "+name); err != nil {
+			fmt.Fprintf(os.Stderr, "seed store FAILED for %s: %v\n", u.Email, err)
+			s.failures++
+			continue
+		}
+		created++
+	}
+	return created
 }
 
 func (s *seeder) seedBrandsAndProducts() int {
