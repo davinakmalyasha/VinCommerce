@@ -10,6 +10,12 @@ import { ADMIN, BUYER, loginViaUi, registerBuyer } from './fixtures'
  * a broken role gate on the client and a broken check on the server.
  */
 test.describe('authorization', () => {
+  // The rate limiter on /auth/register answers 429 with Retry-After: 60, and the
+  // fixture WAITS it out rather than bypassing the control. That wait is longer than
+  // Playwright's 60s default test timeout, so it has to be declared here -- the
+  // alternative is a test that fails for having respected the API.
+  test.setTimeout(180_000)
+
   test('an admin-only route renders a denied state for a logged-in buyer', async ({ page }) => {
     await loginViaUi(page, BUYER)
     await page.goto('/admin/reports')
