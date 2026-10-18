@@ -74,6 +74,12 @@ func run(logger *slog.Logger) error {
 	seeded += s.seedDemoOrders()
 
 	logger.Info("seed complete", "items", seeded)
+	if s.failures > 0 {
+		// Loud on purpose. Everything downstream -- the e2e suite, the storefront,
+		// any screenshot of this project -- assumes the catalogue the seed describes.
+		// Exiting 0 with rows missing moves the failure somewhere unrelated.
+		return fmt.Errorf("seed wrote %d item(s) short; the catalogue is incomplete", s.failures)
+	}
 	return nil
 }
 
@@ -351,6 +357,11 @@ type seeder struct {
 	catalog    *service.CatalogService
 	password   *service.Password
 	brandIDs   map[string]string
+	// failures counts rows the seed could not write. A seed that prints and
+	// continues exits 0 and leaves a PARTIAL catalogue, which looks identical to a
+	// complete one -- the e2e suite then fails with a 404 for a product that was
+	// never created, several layers away from the cause.
+	failures int
 }
 
 func (s *seeder) seedUsers() int {
@@ -563,7 +574,8 @@ func (s *seeder) seedBrandsAndProducts() int {
 			ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
 			RETURNING id`, name, slug).Scan(&id)
 		if err != nil {
-			fmt.Println("seed brand:", err)
+			fmt.Fprintf(os.Stderr, "seed brand FAILED for %q: %v\n", name, err)
+			s.failures++
 			continue
 		}
 		s.brandIDs[name] = id
@@ -604,7 +616,8 @@ func (s *seeder) seedBrandsAndProducts() int {
 			RETURNING (xmax = 0)`,
 			productID, seller.ID, cat.ID, s.brandIDs[sp.brand], sp.name, slug, sp.desc, attrsJSON, 10+idx*7).Scan(&inserted)
 		if err != nil {
-			fmt.Println("seed product:", err)
+			fmt.Fprintf(os.Stderr, "seed product FAILED for %q (%s): %v\n", sp.name, slug, err)
+			s.failures++
 			continue
 		}
 		if !inserted {
