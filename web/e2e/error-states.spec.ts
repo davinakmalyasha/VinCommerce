@@ -111,8 +111,8 @@ test.describe('error states', () => {
     // The orders page requires a session; sign in through the API first so the
     // SPA is authenticated, then force only the list call to fail.
     await page.goto('/login')
-    await page.getByPlaceholder('Email').fill('buyer.sample@vincommerce.com')
-    await page.getByPlaceholder('Password').fill('BuyerPass123!')
+    await page.getByLabel('Email', { exact: true }).fill('buyer.sample@vincommerce.com')
+    await page.getByLabel('Password', { exact: true }).fill('BuyerPass123!')
     await page.getByRole('button', { name: 'Masuk' }).click()
     await expect(page).toHaveURL('/', { timeout: 20_000 })
 

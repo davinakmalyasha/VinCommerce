@@ -168,8 +168,8 @@ export async function clearCartLine(
 /** Signs a buyer in through the UI so the SPA holds a live session. */
 export async function loginViaUi(page: Page, who: { email: string; password: string }): Promise<void> {
   await page.goto('/login')
-  await page.getByPlaceholder('Email').fill(who.email)
-  await page.getByPlaceholder('Password').fill(who.password)
+  await page.getByLabel('Email', { exact: true }).fill(who.email)
+  await page.getByLabel('Password', { exact: true }).fill(who.password)
   await page.getByRole('button', { name: 'Masuk' }).click()
   await expect(page).toHaveURL('/', { timeout: 20_000 })
 }

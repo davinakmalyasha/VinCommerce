@@ -42,8 +42,8 @@ test('docs: swagger UI reachable through the API', async ({ request }) => {
 
 test('auth: login and land on home', async ({ page }) => {
   await page.goto('/login')
-  await page.getByPlaceholder('Email').fill('buyer.sample@vincommerce.com')
-  await page.getByPlaceholder('Password').fill('BuyerPass123!')
+  await page.getByLabel('Email', { exact: true }).fill('buyer.sample@vincommerce.com')
+  await page.getByLabel('Password', { exact: true }).fill('BuyerPass123!')
   await page.getByRole('button', { name: 'Masuk' }).click()
   await expect(page).toHaveURL('/', { timeout: 15_000 })
   await expect(page.getByTitle('Notifikasi')).toBeVisible()
@@ -309,8 +309,8 @@ test('search: autocomplete suggestions from header', async ({ page }) => {
 
 test('profile: avatar upload + verify banner shows for unverified buyer', async ({ page }) => {
   await page.goto('/login')
-  await page.getByPlaceholder('Email').fill('buyer.sample@vincommerce.com')
-  await page.getByPlaceholder('Password').fill('BuyerPass123!')
+  await page.getByLabel('Email', { exact: true }).fill('buyer.sample@vincommerce.com')
+  await page.getByLabel('Password', { exact: true }).fill('BuyerPass123!')
   await page.getByRole('button', { name: 'Masuk' }).click()
   await expect(page).toHaveURL('/', { timeout: 15_000 })
   const banner = page.getByText(/Verifikasi email kamu/)
