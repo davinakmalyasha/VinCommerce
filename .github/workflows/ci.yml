@@ -308,7 +308,14 @@ jobs:
     name: Playwright smoke
     runs-on: ubuntu-latest
     needs: [backend]
-    timeout-minutes: 15
+    # THE BUDGET IS MEASURED, NOT GUESSED. At 15 this job was killed 18 SECONDS
+    # past it -- started 15:29:55, completed 15:45:13 -- because the Playwright
+    # suite has never finished. It could not: this workflow did not execute at all
+    # until the `env`-in-services fix, so the number had never been tested.
+    #
+    # GitHub reports a timeout-killed job as "cancelled", which is why this looked
+    # like a concurrency cancellation for several runs. It was not.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
