@@ -51,9 +51,27 @@ export async function registerBuyer(
 ): Promise<{ token: string; email: string }> {
   const email = `e2e-${tag}-${RUN_ID}@vincommerce.test`
   const password = 'E2eFixture123!'
-  const res = await request.post(`${API}/api/v1/auth/register`, {
+
+  // /auth/register is limited to 10/minute per IP, and that is the endpoint doing
+  // its job. The suite is simply louder than a person: eight call sites, each
+  // retried by Playwright when a test fails, so a single 429 becomes several more
+  // registrations and the cascade is worse than the original failure.
+  //
+  // So wait it out rather than work around it. Bypassing the limit for tests would
+  // mean the one thing this environment never exercises is the control protecting
+  // account creation; waiting keeps the limiter honest and makes the suite
+  // deterministic. `Retry-After` is set by the limiter itself.
+  let res = await request.post(`${API}/api/v1/auth/register`, {
     data: { email, password, full_name: `E2E ${tag}`, device_name: 'playwright' },
   })
+  for (let attempt = 0; attempt < 2 && res.status() === 429; attempt++) {
+    const retryAfter = Number(res.headers()['retry-after'] ?? 65)
+    await new Promise((resolve) => setTimeout(resolve, (retryAfter + 2) * 1000))
+    res = await request.post(`${API}/api/v1/auth/register`, {
+      data: { email, password, full_name: `E2E ${tag}`, device_name: 'playwright' },
+    })
+  }
+
   expect(res.ok(), `register failed for ${email}: ${res.status()} ${await res.text()}`).toBeTruthy()
   return { token: (await res.json()).access_token as string, email }
 }
