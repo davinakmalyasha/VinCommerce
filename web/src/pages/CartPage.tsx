@@ -47,8 +47,16 @@ export function CartPage() {
   const [pendingRows, setPendingRows] = useState<Set<string>>(new Set())
   const [rowError, setRowError] = useState('')
 
+  // restore() decides WHO we are: the access token lives in memory only, so a full
+  // page load starts with none and the refresh cookie is rotated asynchronously.
+  // Querying before that resolves asks the API as a GUEST -- the request carries
+  // only X-Session-Key, the handler's cartIdentity finds no user, and it returns the
+  // empty guest cart, which react-query then caches under the shared CART_KEY. A
+  // logged-in customer reloading /cart saw "Keranjangmu masih kosong."
+  const sessionLoading = useSession((st) => st.loading)
   const cartQuery = useQuery({
     queryKey: CART_KEY,
+    enabled: !sessionLoading,
     queryFn: async () => {
       const res = (await api.get<{ lines: CartLine[]; free_shipping?: FreeShippingInfo[] }>('/cart')).data
       return { lines: (res.lines ?? []) as CartLine[], freeShip: res.free_shipping ?? [] }
