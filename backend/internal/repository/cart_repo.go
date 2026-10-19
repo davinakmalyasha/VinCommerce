@@ -123,9 +123,16 @@ func (r *CartRepository) UpdateItem(ctx context.Context, cartID, variantID strin
 	if quantity <= 0 {
 		return r.RemoveItem(ctx, cartID, variantID)
 	}
+	// An absolute set, so a missing line is created rather than silently ignored.
+	// The previous UPDATE matched zero rows for a variant that was not already in
+	// the cart, and pgx reports that as success -- the handler answered 200 with an
+	// unchanged cart, and checkout (which empties the cart) made that the normal
+	// case for anyone who came back to add more.
 	_, err := r.pool.Exec(ctx, `
-		UPDATE cart_items SET quantity = LEAST($3, 99)
-		WHERE cart_id = $1 AND variant_id = $2`,
+		INSERT INTO cart_items (id, cart_id, variant_id, quantity)
+		VALUES (gen_random_uuid(), $1, $2, LEAST($3, 99))
+		ON CONFLICT (cart_id, variant_id)
+		DO UPDATE SET quantity = LEAST(EXCLUDED.quantity, 99)`,
 		cartID, variantID, quantity)
 	return err
 }
