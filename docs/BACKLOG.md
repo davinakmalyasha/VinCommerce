@@ -956,3 +956,34 @@ from PostgreSQL semantics; it is not an observation of this code misbehaving.
   admin credential.
 - Back up Postgres (and rehearse a restore) before holding real escrow. No
   backup tooling ships in this repo.
+
+## Cart-stepper e2e failure: cause NOT yet identified, and a correction
+
+Status as of the `9f49c29` run: still failing. `cart-stepper.spec.ts:42` and `:126`
+cannot see the row's increment button, and the page renders "Keranjangmu masih
+kosong." for a buyer who has just written a line to their own cart via the API.
+
+CORRECTION. Commit `1b03e4e` claims a product bug -- "every logged-in customer who
+reloads the cart page sees an empty cart" -- caused by `CartPage` querying before
+`session.restore()` finished. That claim is WRONG, or at least unproven. `App.tsx:31`
+renders a full-screen "Memuat sesi..." placeholder while `loading` is true and does
+not mount the routes until it clears, so the pre-restore query cannot happen. The
+gate added in that commit is harmless defence in depth, but it is not the cause and
+did not fix the failure. The mutation-checked test added in `9f49c29` pins the gate,
+which is fine, but it pins a race that the app's own loading screen already
+prevents.
+
+RULED OUT, with evidence:
+  - query fires before restore   -> App gates rendering on `loading` (App.tsx:31)
+  - restore() fails after reload -> the failure snapshot shows `button "Keluar"`,
+    i.e. the browser IS authenticated as the buyer
+  - cart merge wipes the cart    -> CartRepository.Merge unions
+    (INSERT ... ON CONFLICT DO UPDATE, LEAST(quantity), capped at 99) and only
+    flips the guest cart to 'merged'; it deletes nothing
+  - a selector/name mismatch     -> firstVariant returns product_name = product.name,
+    which is what CartPage renders into the aria-label
+
+NEXT STEP, cheapest first: have the failing test GET /api/v1/cart with the API token
+immediately after the PUT and assert the line is there. That splits "the write did
+not persist" from "the browser session resolves to a different cart", which is the
+only remaining fork. The run's network trace answers the same question directly.
