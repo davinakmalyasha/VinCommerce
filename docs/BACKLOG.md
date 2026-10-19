@@ -1052,3 +1052,26 @@ The transferable lesson from this round is the round-2 one repeating: I fixed wh
 looked wrong (a relative URL, a fixture that picks by stock) and measured; one fix
 was real, two were not. Measuring after each batch is the only reason that is known
 instead of assumed.
+
+## Round 4: 11 failing, down from 14
+
+Run `39288585917` (`494da9c`).
+
+FIXED, measured:
+  - sse (2 of 2): the specs were calling page.evaluate on about:blank. Navigating to
+    '/' first fixed both. The relative-URL change in NotificationBell was NOT the
+    cause (Vite proxies /api), and the commit says so.
+  - checkout coupon per_user_limit (1): gone after the catalogue was priced in rupiah.
+
+STILL FAILING (11): cart-stepper 2, coupon "quote and the placed order" 1,
+error-states 2, regression-checkout-pdp 2, smoke 4.
+
+The pattern that is now established: the e2e suite keeps being right about symptoms
+and wrong about nothing -- but the fixes have to be located by evidence. Four of the
+six fixes in rounds 3-4 were found by disproving a hypothesis with a measurement
+(minPrice changed nothing -> the data was wrong; SSE still failed -> the URL was not
+the cause).
+
+NEXT: the remaining coupon failure is one spec, so its error message is the whole
+question. Then error-states (2) and regression (2) share the "page body not rendered"
+shape and should be grouped; smoke (4) needs its own evidence pass.
