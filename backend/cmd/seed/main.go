@@ -65,6 +65,7 @@ func run(logger *slog.Logger) error {
 
 	seeded := 0
 	seeded += s.seedUsers()
+	seeded += s.seedShippingMethods()
 	seeded += s.seedStores()
 	seeded += s.seedCategories()
 	seeded += s.seedAttributes()
@@ -502,6 +503,44 @@ func rangeOf(n int) []int {
 // seed created users and products but no stores, which is why the e2e suite reported
 // `product smartphone-aurora-x5-pro not found: 404` for a product it had just
 // seeded, and why the failure looked like missing data when the data was there.
+// seedShippingMethods inserts the methods the storefront offers.
+//
+// NOTHING SEEDED THIS TABLE, and no migration did either. ShippingMethodByCode then
+// returned nil for every code, so PlaceOrder rejected every checkout with
+// SHIPPING_METHOD "unknown shipping method" -- and the storefront's own default is
+// "regular". Coupons, external payment confirmation and order tracking were all
+// unreachable in the demo data for the same reason the catalogue was invisible
+// before seedStores: a required row nobody created.
+func (s *seeder) seedShippingMethods() int {
+	methods := []struct {
+		code, name       string
+		base, perKg      float64
+		minDays, maxDays int
+	}{
+		{"regular", "Reguler", 9000, 2000, 2, 4},
+		{"express", "Express", 18000, 3000, 1, 2},
+		{"cargo", "Kargo", 25000, 1500, 3, 7},
+	}
+	created := 0
+	for _, m := range methods {
+		if _, err := s.products.Pool().Exec(s.ctx, `
+			INSERT INTO shipping_methods
+			       (id, code, name, base_fee, per_kg_fee, min_days, max_days, is_active)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, TRUE)
+			ON CONFLICT (code) DO UPDATE
+			   SET name = EXCLUDED.name, base_fee = EXCLUDED.base_fee,
+			       per_kg_fee = EXCLUDED.per_kg_fee, min_days = EXCLUDED.min_days,
+			       max_days = EXCLUDED.max_days, is_active = TRUE`,
+			m.code, m.name, m.base, m.perKg, m.minDays, m.maxDays); err != nil {
+			fmt.Fprintf(os.Stderr, "seed shipping method FAILED for %s: %v\n", m.code, err)
+			s.failures++
+			continue
+		}
+		created++
+	}
+	return created
+}
+
 func (s *seeder) seedStores() int {
 	sellers, err := s.users.ByRole(s.ctx, domain.RoleSeller)
 	if err != nil {
