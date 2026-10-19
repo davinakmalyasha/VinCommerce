@@ -73,7 +73,11 @@ export function NotificationBell() {
 
       let res: Response
       try {
-        res = await fetch('/api/v1/stream/orders', {
+        // Respect the API base like every other call. A relative path only works
+        // behind a same-origin proxy (nginx in production); against the dev server /
+        // e2e web server the app is not the API, and the browser rejects it outright
+        // with "Failed to parse URL", killing realtime for the whole session.
+        res = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/v1/stream/orders`, {
           headers: { Authorization: `Bearer ${getAccessToken()}` },
           signal: controller.signal,
         })
