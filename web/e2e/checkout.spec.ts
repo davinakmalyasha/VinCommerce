@@ -17,7 +17,7 @@ test.describe('checkout: coupon happy path', () => {
     const { token } = await registerBuyer(request, 'coupon')
     const auth = { Authorization: `Bearer ${token}` }
 
-    const variant = await firstVariant(request, token, 'smartphone-aurora-x5-pro')
+    const variant = await firstVariant(request, token, 'smartphone-aurora-x5-pro', 50_000)
     // Guard the premise rather than letting a fixture regression show up as a
     // confusing "discount is zero" failure.
     expect(
@@ -94,7 +94,7 @@ test.describe('checkout: coupon happy path', () => {
     // code could be drained repeatedly. Fresh account, so this is a clean slate.
     const { token } = await registerBuyer(request, 'coupon-limit')
     const auth = { Authorization: `Bearer ${token}` }
-    const variant = await firstVariant(request, token, 'smartphone-aurora-x5-pro')
+    const variant = await firstVariant(request, token, 'smartphone-aurora-x5-pro', 50_000)
 
     await request.put(`${API}/api/v1/cart/items`, {
       headers: auth,

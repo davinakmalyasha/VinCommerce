@@ -92,13 +92,20 @@ export async function firstVariant(
   request: APIRequestContext,
   token: string,
   slug: string,
+  minPrice = 0,
 ): Promise<Variant> {
   const res = await request.get(`${API}/api/v1/products/${slug}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   expect(res.ok(), `product ${slug} not found: ${res.status()}`).toBeTruthy()
   const product = (await res.json()).product
-  const v = product.variants.find((x: { stock: number }) => x.stock > 3) ?? product.variants[0]
+  // minPrice lets a test demand a unit above a coupon floor instead of hoping the
+  // first in-stock variant happens to clear it.
+  const v =
+    product.variants.find(
+      (x: { stock: number; price: number | string }) =>
+        Number(x.stock) > 3 && Number(x.price) >= minPrice,
+    ) ?? product.variants.find((x: { stock: number }) => x.stock > 3) ?? product.variants[0]
   return {
     id: v.id,
     name: v.name,
