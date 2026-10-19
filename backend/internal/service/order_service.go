@@ -378,6 +378,23 @@ func (s *OrderService) UpdateCartItem(ctx context.Context, cartID, variantID str
 	if quantity < 0 {
 		return nil, nil, domain.E(domain.KindInvalid, "BAD_QUANTITY", "quantity must be positive")
 	}
+	// quantity == 0 removes the line; every other set passes the SAME guards as
+	// AddToCart. Since UpdateItem now upserts, omitting them would make PUT a
+	// second, weaker way into the cart: it would accept an inactive variant or a
+	// quantity above stock while POST rejected both.
+	if quantity > 0 {
+		var stock int
+		var active bool
+		if err := s.carts.EnsureVariant(ctx, variantID, &stock, &active); err != nil {
+			return nil, nil, err
+		}
+		if !active {
+			return nil, nil, domain.E(domain.KindConflict, "VARIANT_INACTIVE", "this variant is no longer available")
+		}
+		if stock < quantity {
+			return nil, nil, domain.E(domain.KindConflict, "INSUFFICIENT_STOCK", "not enough stock available")
+		}
+	}
 	if err := s.carts.UpdateItem(ctx, cartID, variantID, quantity); err != nil {
 		return nil, nil, err
 	}
