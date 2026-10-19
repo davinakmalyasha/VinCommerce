@@ -75,12 +75,23 @@ export const useSession = create<SessionState>((set) => ({
     sessionStorage.setItem(IMPERSONATION_KEY, JSON.stringify(info))
     // NOTE: deliberately not calling /auth/logout on exit — the admin's real
     // refresh cookie stays untouched and restores their session.
+    //
+    // Entering impersonation CHANGES IDENTITY, so the caches are purged exactly as
+    // login/logout purge them. Without this every cached query — cart, orders,
+    // notifications, admin tables — renders the ADMIN’s data while the banner
+    // says the admin is acting as someone else, which is the same lie the banner
+    // exists to prevent.
+    clearQueryCache()
+    clearServiceWorkerCache()
     setAccessToken(token)
     set({ user: target, accessToken: token, impersonating: info })
   },
 
   stopImpersonation: async () => {
     sessionStorage.removeItem(IMPERSONATION_KEY)
+    // Identity is changing back to the admin; purge for the same reason as above.
+    clearQueryCache()
+    clearServiceWorkerCache()
     set({ impersonating: null })
     // Re-mint an admin access token from the untouched refresh cookie.
     // Routed through the shared single-flight refresh so concurrent callers
