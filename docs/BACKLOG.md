@@ -987,3 +987,36 @@ NEXT STEP, cheapest first: have the failing test GET /api/v1/cart with the API t
 immediately after the PUT and assert the line is there. That splits "the write did
 not persist" from "the browser session resolves to a different cart", which is the
 only remaining fork. The run's network trace answers the same question directly.
+
+## Round 2: the cart is no longer empty, and the suite is bigger than I reported
+
+Run `39262401019` (`3c738cb`): backend GREEN, Playwright 28 passed / 15 failed.
+
+PROGRESS, measured: "Keranjangmu masih kosong." no longer appears in the failure log
+(0 occurrences, previously 2 per attempt). The upsert in `235f33d` did what it said:
+`PUT /cart/items` now creates the line, so the buyer's cart is no longer empty when
+the page loads. That is the first real change in this symptom.
+
+BUT THE TEST STILL FAILS, at the same assertion: the button
+`Tambah jumlah Smartphone Aurora X5 Pro` is not visible. So an empty cart was part of
+the story and not all of it. The cart now holds a line and the row still does not
+render (or renders with a different accessible name). Next diagnostic is the run's
+`error-context.md` again: it will show whether the page has a cart row at all, and
+what the row is called.
+
+CORRECTION TO MY OWN REPORTING. I previously described this suite as "4 failures"
+because I grepped four matching lines out of the failure summary. It has 15, and
+likely has had all along:
+
+  - sse (2): "Failed to parse URL from /api/v1/stream/orders" -- the stream client is
+    given a RELATIVE url, which works same-origin but not against the e2e dev server
+  - checkout (2): COUPON_MIN_NOT_MET, plus a test-side assertion that the chosen
+    fixture is above the Rp50.000 floor -- so `firstVariant` is picking a cheap line
+  - regression-checkout-pdp (3): order tracking, PDP add-to-cart, checkout summary
+  - smoke (4): swagger UI, coupons page, follow-store, external payment
+  - error-states (2): retry + 500 handling
+  - cart-stepper (2): the above
+
+Reading four lines and calling it the failure count was the same mistake as grepping
+ANSI output earlier: the check was wrong, not the system. The lesson is to take the
+whole summary, not the lines that match the hypothesis I already had.
