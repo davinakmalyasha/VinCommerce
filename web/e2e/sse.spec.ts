@@ -25,6 +25,11 @@ import { API, BUYER, login } from './fixtures'
 test.describe('server-sent events', () => {
   test('GET /api/v1/stream/orders returns 200 text/event-stream', async ({ page, request }) => {
     const token = await login(request, BUYER)
+    // page.evaluate runs on whatever document the page is on. Without a navigation
+    // that is about:blank, where a relative fetch cannot resolve a base URL and the
+    // browser throws "Failed to parse URL" -- the test was measuring its own blank
+    // page, not the API.
+    await page.goto('/')
 
     const result = await page.evaluate(
       async ({ url, token }) => {
@@ -63,6 +68,11 @@ test.describe('server-sent events', () => {
 
   test('the stream actually delivers events, not just an open socket', async ({ page, request }) => {
     const token = await login(request, BUYER)
+    // page.evaluate runs on whatever document the page is on. Without a navigation
+    // that is about:blank, where a relative fetch cannot resolve a base URL and the
+    // browser throws "Failed to parse URL" -- the test was measuring its own blank
+    // page, not the API.
+    await page.goto('/')
 
     // Read the first event off the wire. `response.body` is a ReadableStream
     // that yields as data arrives, so this resolves on the server's first
