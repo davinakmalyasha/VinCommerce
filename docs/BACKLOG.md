@@ -1020,3 +1020,35 @@ likely has had all along:
 Reading four lines and calling it the failure count was the same mistake as grepping
 ANSI output earlier: the check was wrong, not the system. The lesson is to take the
 whole summary, not the lines that match the hypothesis I already had.
+
+## Round 3: one fix worked, two did not
+
+Run `39274959381` (`8517a4e`): Playwright 14 failing, was 15.
+
+WORKED: seeding `shipping_methods` (c9e4581). `regression-checkout-pdp` "buyer A
+cannot read buyer B's order" is gone -- order B could finally be placed. The
+`SHIPPING_METHOD` / "could not place B's order: 400" symptoms are gone with it.
+
+DID NOT WORK 1: the stream base URL fix (006102d). SSE still fails with "the stream
+request never returned headers" and "no stream data arrived". The relative-URL smell
+was real and the change is correct in isolation, but it was not the cause of these two
+failures. Next: check whether the e2e web server actually defines VITE_API_URL (if it
+does not, `${''}` is still a relative path and nothing changed), and look at what the
+API's stream endpoint requires/returns in the job.
+
+DID NOT WORK 2: the coupon fixture minPrice (8517a4e). The assertion is unchanged --
+"the fixture must be a single unit above it" -- which means NO variant of
+smartphone-aurora-x5-pro satisfies price >= 50_000, so the filter falls back to the
+old selection. Before changing anything again, dump the variant price shape from
+GET /products/smartphone-aurora-x5-pro in the e2e environment. Either the prices are
+different from what the seed suggests, or the field is not what `firstVariant` reads
+(`Number(v.price)` can be NaN, and NaN >= 0 is false, so a wrong field name would
+silently produce exactly this).
+
+STILL FAILING (14): cart-stepper (2), checkout coupons (2), error-states (2),
+regression-checkout-pdp (2), smoke (4), sse (2).
+
+The transferable lesson from this round is the round-2 one repeating: I fixed what
+looked wrong (a relative URL, a fixture that picks by stock) and measured; one fix
+was real, two were not. Measuring after each batch is the only reason that is known
+instead of assumed.
