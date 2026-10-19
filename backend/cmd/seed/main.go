@@ -586,6 +586,13 @@ func (s *seeder) seedBrandsAndProducts() int {
 		stock                      int
 	}
 
+	// The price literals below are in THOUSANDS of rupiah (4999 means Rp4.999.000);
+	// variants store rupiah. Inserting them raw priced a flagship phone at Rp4.999,
+	// which put EVERY product under WELCOME10's Rp50.000 floor and made the coupon
+	// unusable in the demo data -- the e2e spec's own fixture note assumed the
+	// flagship cleared it, and it could not.
+	const priceScale = 1000
+
 	specs := []seedProduct{
 		{"Smartphone Aurora X5 Pro", "Flagship phone with 6.7\" AMOLED, 5G, 200MP camera.", "phones-tablets", "Aurora",
 			4999, 5999, map[string]string{"Storage": "256GB", "Connectivity": "5G"}, []string{"Black", "Silver", "Blue"}, 250},
@@ -713,7 +720,7 @@ func (s *seeder) seedBrandsAndProducts() int {
 		}
 
 		for i, vname := range sp.variants {
-			price := sp.price
+			price := sp.price * priceScale
 			if i == 0 && sp.compareAt > 0 {
 				// first variant carries compare-at discount
 				_ = price
@@ -727,7 +734,7 @@ func (s *seeder) seedBrandsAndProducts() int {
 			if _, err := s.products.Pool().Exec(s.ctx, `
 				INSERT INTO product_variants (id, product_id, sku, name, price, compare_at_price, stock, weight_grams, attributes)
 				VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)`,
-				productID, sku, vname, price, optionalPrice(sp.compareAt), sp.stock/(len(sp.variants)+1), 500+idx*30, attrs); err != nil {
+				productID, sku, vname, price, optionalPrice(sp.compareAt*priceScale), sp.stock/(len(sp.variants)+1), 500+idx*30, attrs); err != nil {
 				fmt.Println("seed variant:", err)
 			}
 		}
