@@ -51,7 +51,7 @@ test.describe('product page: single-variant products', () => {
 
     // Seed a clean, non-guest session so the cart the assertion reads is
     // attributable to this test.
-    const { token } = await registerBuyer(request, 'pdpsingle')
+    const { token, email } = await registerBuyer(request, 'pdpsingle')
 
     // --- Precondition: prove the fixture really is single-variant. Without
     // --- this, a future seed change silently turns the regression test below
@@ -65,6 +65,12 @@ test.describe('product page: single-variant products', () => {
       product.product.variants.length,
       `${SINGLE_VARIANT_SLUG} must be seeded with exactly one variant for this test to be meaningful`,
     ).toBe(1)
+
+    // The API registration above authenticates the REQUEST context, not the
+    // browser. The comment says "clean, non-guest session", so make that true:
+    // without this the browser is a guest, restore() has no refresh cookie, and
+    // POST /auth/refresh answers 400 "refresh_token required" on every load.
+    await loginViaUi(page, { email, password: 'E2eFixture123!' })
 
     await page.goto(`/product/${SINGLE_VARIANT_SLUG}`)
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
