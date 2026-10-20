@@ -44,10 +44,14 @@ test.describe('error states', () => {
   })
 
   test('the retry button re-issues the request and recovers when the API heals', async ({ page }) => {
-    let failNext = true
+    // Keep failing until the retry button is actually pressed. Flipping on the
+    // FIRST request was wrong: react-query retries transient failures on its own,
+    // so the retry succeeded, the query recovered, and "Gagal memuat produk" never
+    // appeared -- the assertion waited 20s for a state the harness had already
+    // healed.
+    let failing = true
     await page.route(`**/api/v1/products/${BULK_SLUG}`, async (route) => {
-      if (failNext) {
-        failNext = false
+      if (failing) {
         await route.fulfill({
           status: 503,
           contentType: 'application/json',
@@ -61,6 +65,8 @@ test.describe('error states', () => {
     await page.goto(`/product/${BULK_SLUG}`)
     await expect(page.getByText('Gagal memuat produk')).toBeVisible({ timeout: 20_000 })
 
+    // Heal only now, so the request the button issues is the one that succeeds.
+    failing = false
     await page.getByRole('button', { name: 'Coba lagi' }).click()
 
     // React Query retries transient failures on its own too, so a bare
@@ -100,7 +106,10 @@ test.describe('error states', () => {
   })
 
   test('a 500 on the orders list shows an error, not a perpetual "Memuat..."', async ({ page }) => {
-    await page.route('**/api/v1/orders?*', (route) =>
+    // OrdersPage requests '/orders' with NO query string (OrdersPage.tsx:25). The
+    // old pattern required a '?' after it, so it matched nothing and the 500 never
+    // reached the client -- the spec was asserting an error state it never induced.
+    await page.route('**/api/v1/orders', (route) =>
       route.fulfill({
         status: 500,
         contentType: 'application/json',
