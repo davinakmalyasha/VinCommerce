@@ -41,6 +41,13 @@ test.describe('product page: single-variant products', () => {
       if (m.type() === 'error') console.log('CONSOLE-ERROR:', m.text())
     })
     page.on('crash', () => console.log('PAGE CRASHED'))
+    // The console only reports the status, not which endpoint. This names it, and
+    // includes the response body the API sent back.
+    page.on('response', async (r) => {
+      if (r.status() >= 400) {
+        console.log('HTTP-FAIL', r.status(), r.request().method(), r.url(), (await r.text().catch(() => '')).slice(0, 200))
+      }
+    })
 
     // Seed a clean, non-guest session so the cart the assertion reads is
     // attributable to this test.
