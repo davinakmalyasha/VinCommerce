@@ -1075,3 +1075,17 @@ the cause).
 NEXT: the remaining coupon failure is one spec, so its error message is the whole
 question. Then error-states (2) and regression (2) share the "page body not rendered"
 shape and should be grouped; smoke (4) needs its own evidence pass.
+
+## Round 5: 8 failing, down from 11
+
+Run `39418696062` (`1b1873a`).
+
+FIXED, measured: coupon quote assertion (test), both error-state mocks (test).
+
+STILL FAILING (8): cart-stepper 2, regression-checkout-pdp 2 (single-variant add,
+checkout summary), smoke 4 (swagger, follow-store, external payment, vouchers).
+
+The single-variant spec STILL fails after its locator was corrected to "+ Keranjang".
+Its new error-context contains no Locator/Error line at all -- so the next question is
+not the selector but what actually failed (timeout? navigation? crash?). Re-read that
+file in full before changing anything; the previous four guesses all cost a run.
