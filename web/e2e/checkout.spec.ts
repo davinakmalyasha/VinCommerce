@@ -42,6 +42,7 @@ test.describe('checkout: coupon happy path', () => {
       discount_amount: number
       total: number
       coupon_code?: string
+      shipping: { code: string; fee: number }[]
     }
 
     expect(quote.coupon_code).toBe('WELCOME10')
@@ -49,7 +50,12 @@ test.describe('checkout: coupon happy path', () => {
     // 10% off, and NOT more than 10% off — a discount larger than the coupon's
     // own rate is how a buyer gets charged less than quoted.
     expect(quote.discount_amount).toBeCloseTo(Math.round(quote.subtotal * 0.1), 0)
-    expect(quote.total).toBeCloseTo(quote.subtotal - quote.discount_amount, 0)
+    // total INCLUDES the chosen shipping fee; comparing it to subtotal - discount
+    // asserted a different number and failed by exactly one shipping fee. The
+    // identity being protected is "the discount is the only thing taken off", so
+    // the fee has to be on both sides.
+    const shippingFee = quote.shipping?.find((m) => m.code === 'regular')?.fee ?? 0
+    expect(quote.total).toBeCloseTo(quote.subtotal - quote.discount_amount + shippingFee, 0)
 
     // ── Place: the placed order must carry the same discount ───────────────
     const placed = await request.post(`${API}/api/v1/checkout/place`, {
