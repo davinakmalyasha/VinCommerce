@@ -55,7 +55,11 @@ test.describe('product page: single-variant products', () => {
     // enabled state and the mutation's own guard disagreed, because one read
     // `selected` (which falls back to variants[0]) and the other read the raw
     // `variantId` state (which starts null).
-    const addToCart = page.getByRole('button', { name: /Tambah ke Keranjang/i })
+    // The PDP button's accessible name is "+ Keranjang" (ProductPage.tsx:568).
+    // This spec asked for "Tambah ke Keranjang", which no element has, so it was
+    // waiting on a locator that could never resolve -- a test bug, not the
+    // product bug it was written to guard.
+    const addToCart = page.getByRole('button', { name: '+ Keranjang' })
     await expect(addToCart).toBeEnabled()
 
     // Click WITHOUT selecting a variant. The request must actually go out.
