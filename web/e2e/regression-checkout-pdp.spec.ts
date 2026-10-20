@@ -31,6 +31,17 @@ test.describe('product page: single-variant products', () => {
     page,
     request,
   }) => {
+    // DIAGNOSTIC, no behaviour change. The last run timed out with a BLANK
+    // screenshot after this test had already passed the heading and toBeEnabled
+    // checks -- so the tree disappeared rather than an assertion being wrong, and
+    // the trace recorded no console data. These listeners put the thrown error in
+    // the job log where it can be read.
+    page.on('pageerror', (e) => console.log('PAGEERROR:', e.message, e.stack ?? ''))
+    page.on('console', (m) => {
+      if (m.type() === 'error') console.log('CONSOLE-ERROR:', m.text())
+    })
+    page.on('crash', () => console.log('PAGE CRASHED'))
+
     // Seed a clean, non-guest session so the cart the assertion reads is
     // attributable to this test.
     const { token } = await registerBuyer(request, 'pdpsingle')
