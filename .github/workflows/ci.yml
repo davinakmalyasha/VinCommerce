@@ -140,7 +140,7 @@ jobs:
       # actions/setup-go v5.6.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           cache-dependency-path: backend/go.sum
 
       - name: Format check
@@ -348,7 +348,7 @@ jobs:
       # actions/setup-go v5.6.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           cache-dependency-path: backend/go.sum
 
       - name: Cache Playwright browsers
@@ -544,7 +544,7 @@ jobs:
       # actions/setup-go v5.6.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           cache-dependency-path: backend/go.sum
       - name: Probe exits non-zero when the queue is unreachable
         # REDIS_ADDR points at a closed port on loopback. Exit 1 here is the
