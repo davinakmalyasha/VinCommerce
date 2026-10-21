@@ -41,6 +41,15 @@ test.describe('product page: single-variant products', () => {
       if (m.type() === 'error') console.log('CONSOLE-ERROR:', m.text())
     })
     page.on('crash', () => console.log('PAGE CRASHED'))
+    // Whether the browser ever RECEIVES the refresh cookie. The handler sets it on
+    // every token response (httpOnly, Path=/api/v1, Secure=false in dev), so a
+    // missing Set-Cookie here means the proxy dropped it; a present one means it is
+    // being stored but not sent back, which is a different fix.
+    page.on('response', async (r) => {
+      if (!r.url().includes('/auth/')) return
+      const h = await r.allHeaders().catch(() => ({} as Record<string, string>))
+      console.log('AUTH-RESP', r.status(), r.request().method(), r.url(), 'set-cookie:', h['set-cookie'] ?? '(none)')
+    })
     // The console only reports the status, not which endpoint. This names it, and
     // includes the response body the API sent back.
     page.on('response', async (r) => {
