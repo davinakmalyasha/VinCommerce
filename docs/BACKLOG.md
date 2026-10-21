@@ -1089,3 +1089,16 @@ The single-variant spec STILL fails after its locator was corrected to "+ Keranj
 Its new error-context contains no Locator/Error line at all -- so the next question is
 not the selector but what actually failed (timeout? navigation? crash?). Re-read that
 file in full before changing anything; the previous four guesses all cost a run.
+
+## Round 6: 6 failed, 2 flaky, 35 passed
+
+Run `39450114319` (`6f67089`).
+
+The browser sign-in fixed the checkout-render spec's session, and follow-store +
+external-payment are now FLAKY rather than failing (they pass on retry). The
+single-variant PDP spec still fails, so the signed-out browser was not its whole
+cause -- the HTTP-FAIL listener is still in that spec and the next run's log carries
+the request that breaks it.
+
+REMAINING (6): cart-stepper 2, regression-checkout-pdp 2 (single-variant at :30,
+checkout render at :121), smoke swagger, smoke vouchers.
