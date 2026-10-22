@@ -14,9 +14,18 @@ interface FreeShippingInfo {
   threshold?: number | null
 }
 
+/**
+ * The shape BOTH cart consumers cache under the shared ['cart'] key.
+ *
+ * react-query stores one value per key, so the header and this page must agree on
+ * what that value IS. The header cached the lines array and this page cached an
+ * object, which meant the page read `data.lines` off an array -- undefined -- and
+ * rendered the empty cart while the header showed a badge of 1. This is the raw
+ * response, so both read the same fields.
+ */
 interface CartPayload {
   lines: CartLine[]
-  freeShip: FreeShippingInfo[]
+  free_shipping?: FreeShippingInfo[]
 }
 
 const CART_KEY = ['cart'] as const
@@ -58,12 +67,12 @@ export function CartPage() {
     queryKey: CART_KEY,
     enabled: !sessionLoading,
     queryFn: async () => {
-      const res = (await api.get<{ lines: CartLine[]; free_shipping?: FreeShippingInfo[] }>('/cart')).data
-      return { lines: (res.lines ?? []) as CartLine[], freeShip: res.free_shipping ?? [] }
+      const res = (await api.get<CartPayload>('/cart')).data
+      return res
     },
   })
   const lines = cartQuery.data?.lines ?? []
-  const freeShip = cartQuery.data?.freeShip
+  const freeShip = cartQuery.data?.free_shipping ?? []
 
   const markRow = (variantId: string, on: boolean) =>
     setPendingRows((prev) => {

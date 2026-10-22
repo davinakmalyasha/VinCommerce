@@ -93,3 +93,34 @@ describe('the source tree is walkable from the test', () => {
     expect(files.some((f) => f.endsWith('SellerBundles.tsx'))).toBe(true)
   })
 })
+
+// The cart badge in the header and the cart page itself share the ['cart'] key.
+//
+// react-query stores ONE value per key, and `useQuery` treats a cache hit as
+// success without ever running its own queryFn. The two consumers therefore have to
+// agree on what that value IS. They did not: the header cached the lines ARRAY and
+// the page cached an OBJECT, so the page read `data.lines` off an array, got
+// undefined, and rendered "Keranjangmu masih kosong." -- on the same page, at the
+// same moment, where the header badge read the very same cache entry and showed 1.
+//
+// This is narrow and exact on purpose: a general collision detector was tried and
+// deleted for crying wolf (see the note above).
+describe('the header badge and the cart page share one cart cache entry', () => {
+  const header = readFileSync(join(process.cwd(), 'src/components/layout/Header.tsx'), 'utf-8')
+  const cartPage = readFileSync(join(process.cwd(), 'src/pages/CartPage.tsx'), 'utf-8')
+
+  it('both cache the response envelope rather than a reshaped subset', () => {
+    expect(header).toMatch(/queryKey:\s*\[\s*'cart'\s*\]/)
+    expect(cartPage).toMatch(/const CART_KEY = \['cart'\]/)
+
+    // The bug: one side returned the lines and the other returned an object.
+    expect(header).not.toMatch(/return res\.data\.lines/)
+    expect(cartPage).not.toMatch(/lines:\s*\(res\.lines \?\? \[\]\)/)
+    expect(cartPage).not.toMatch(/freeShip:\s*res\.free_shipping/)
+  })
+
+  it('both read the same fields off that envelope', () => {
+    expect(header).toMatch(/cartData\?\.lines/)
+    expect(cartPage).toMatch(/cartQuery\.data\?\.lines/)
+  })
+})

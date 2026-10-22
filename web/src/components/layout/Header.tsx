@@ -14,6 +14,8 @@ interface Suggestion {
   slug: string
 }
 
+const EMPTY_CART_LINES: CartLine[] = []
+
 export function Header() {
   const { user, logout } = useSession()
   const navigate = useNavigate()
@@ -41,16 +43,24 @@ export function Header() {
     staleTime: 30_000,
   })
 
-  const { data: cart } = useQuery({
+  // The payload, not just the lines. This key is SHARED with CartPage, and
+  // react-query caches one value per key: whichever query fills the entry first
+  // decides what the other one reads. The header used to cache the ARRAY while the
+  // cart page cached the OBJECT, so the page read `data.lines` off an array, got
+  // undefined, and rendered "Keranjangmu masih kosong." -- while this very
+  // component read the same entry and showed a badge of 1. One request, one key,
+  // one shape.
+  const { data: cartData } = useQuery({
     queryKey: ['cart'],
     queryFn: async () => {
       const res = await api.get<{ lines: CartLine[] }>('/cart')
-      return res.data.lines
+      return res.data
     },
     enabled: cartOpen || !!user,
   })
 
-  const cartCount = (cart ?? []).reduce((sum, l) => sum + l.quantity, 0)
+  const cart = cartData?.lines ?? EMPTY_CART_LINES
+  const cartCount = cart.reduce((sum, l) => sum + l.quantity, 0)
 
   const readList = (key: string): string[] => {
     try {
