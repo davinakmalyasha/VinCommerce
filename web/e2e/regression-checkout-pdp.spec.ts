@@ -101,7 +101,11 @@ test.describe('product page: single-variant products', () => {
         (r) => r.url().includes('/api/v1/cart/items') && r.method() === 'POST',
         { timeout: 15_000 },
       ),
-      addToCart.click(),
+      // A click with its OWN timeout, so the failure says WHY it could not click
+      // (not stable, covered by <X>, intercepts pointer events) instead of the
+      // bare 60s test timeout. The click's default timeout IS the test timeout, so
+      // an unclickable button produced no message at all.
+      addToCart.click({ timeout: 10_000 }),
     ])
 
     // ...and it must carry the single variant's real id, not null/undefined.
