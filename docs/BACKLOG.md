@@ -1102,3 +1102,27 @@ the request that breaks it.
 
 REMAINING (6): cart-stepper 2, regression-checkout-pdp 2 (single-variant at :30,
 checkout render at :121), smoke swagger, smoke vouchers.
+
+## Round 7: 37 passed, 6 failed -- the bare timeouts are gone
+
+Run `39775054942` (`63a1743`).
+
+The two specs that failed with "Test timeout of 60000ms exceeded" and no error at all
+(the single-variant PDP and external payment) now PASS. The cause was proven from the
+network trace: it held exactly one request -- POST /api/v1/auth/register -- with no
+response, and the browser made none. The spec was killed inside the fixture's own
+rate-limit wait: /auth/login and /auth/register are both 10/minute per IP, the suite
+shares one IP, Retry-After is 60s, the fixture waited 62s, and the test timeout was
+60s. The limiter is untouched; the suite is no longer louder than a person.
+
+REMAINING (6), all with a real assertion error now:
+  - cart-stepper 2: the row's "+ Tambah jumlah ..." button is not found, though the
+    PUT succeeded. Next: capture the GET /cart response the browser received and
+    compare its product_name with what the row renders.
+  - regression "checkout page renders" 1: the order summary is not visible.
+  - smoke 3: swagger (expect false), follow-store (expect false), vouchers (heading
+    not visible).
+
+Also: the Go toolchain pin moved to 1.27 for GO-2026-6809 (crypto/x509, stdlib) in
+`21878ed`, which unblocked the Backend job -- and with it the Playwright job, which
+had been SKIPPED whenever Backend failed.
