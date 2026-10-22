@@ -23,15 +23,36 @@ export const BUYER = { email: 'buyer.sample@vincommerce.com', password: 'BuyerPa
 export const SELLER = { email: 'seller.elektro@vincommerce.com', password: 'SellerPass123!' }
 export const ADMIN = { email: 'admin@vincommerce.com', password: 'AdminPass123!' }
 
+/**
+ * Cached per account, briefly.
+ *
+ * /auth/login is limited to 10/minute per IP, and the whole suite shares one IP:
+ * twenty-odd API logins plus a browser login per spec ran the limiter over, and a
+ * 429 does not fail a login -- it costs a Retry-After wait that was LONGER than the
+ * test timeout, so the test was killed mid-wait with no message at all.
+ *
+ * The TTL is 90 seconds: short enough that no token can expire underneath a
+ * long-running spec, long enough to collapse a file's worth of logins into one.
+ */
+const LOGIN_CACHE_TTL_MS = 90_000
+const loginCache = new Map<string, { token: string; at: number }>()
+const registeredAccounts = new Map<string, { token: string; at: number }>()
+
 export async function login(
   request: APIRequestContext,
   who: { email: string; password: string },
 ): Promise<string> {
+  const hit = loginCache.get(who.email)
+  if (hit && Date.now() - hit.at < LOGIN_CACHE_TTL_MS) {
+    return hit.token
+  }
   const res = await request.post(`${API}/api/v1/auth/login`, {
     data: { email: who.email, password: who.password },
   })
   expect(res.ok(), `login failed for ${who.email}: ${res.status()}`).toBeTruthy()
-  return (await res.json()).access_token as string
+  const token = (await res.json()).access_token as string
+  loginCache.set(who.email, { token, at: Date.now() })
+  return token
 }
 
 /**
@@ -51,6 +72,15 @@ export async function registerBuyer(
 ): Promise<{ token: string; email: string }> {
   const email = `e2e-${tag}-${RUN_ID}@vincommerce.test`
   const password = 'E2eFixture123!'
+
+  // A RETRY of this spec re-runs this function, and the email is derived from the
+  // tag and the run, so it is the SAME account. The users table has a unique email
+  // and no ON CONFLICT clause, so re-registering is a 409. Re-use the account
+  // instead: log in with the same credentials.
+  const known = registeredAccounts.get(tag)
+  if (known && Date.now() - known.at < LOGIN_CACHE_TTL_MS) {
+    return { token: known.token, email }
+  }
 
   // /auth/register is limited to 10/minute per IP, and that is the endpoint doing
   // its job. The suite is simply louder than a person: eight call sites, each
@@ -72,8 +102,22 @@ export async function registerBuyer(
     })
   }
 
+  if (res.status() === 409) {
+    // This account already exists -- a retry of this spec. Log in instead of
+    // re-registering, so the retry is deterministic.
+    const signIn = await request.post(`${API}/api/v1/auth/login`, {
+      data: { email, password },
+    })
+    expect(signIn.ok(), `login for ${email} failed: ${signIn.status()}`).toBeTruthy()
+    const token = (await signIn.json()).access_token as string
+    registeredAccounts.set(tag, { token, at: Date.now() })
+    return { token, email }
+  }
+
   expect(res.ok(), `register failed for ${email}: ${res.status()} ${await res.text()}`).toBeTruthy()
-  return { token: (await res.json()).access_token as string, email }
+  const token = (await res.json()).access_token as string
+  registeredAccounts.set(tag, { token, at: Date.now() })
+  return { token, email }
 }
 
 /** A product slug that is seeded, active and comfortably above the Rp50.000 coupon floor. */

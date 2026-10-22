@@ -51,7 +51,12 @@ export default defineConfig({
   testDir: './e2e',
   // 30s is not enough for a cold Vite transform of a lazy route plus an API
   // round trip on a loaded CI runner.
-  timeout: 60_000,
+  // 150s, not 60s. The auth endpoints are rate limited to 10/minute per IP and the
+  // whole suite shares one IP, so a limit response is a Retry-After of 60s -- and
+  // that wait has to FIT inside the test timeout. At 60s the test was killed
+  // mid-wait and reported nothing but "Test timeout of 60000ms exceeded", which is
+  // how two specs failed with no diagnosable cause.
+  timeout: 150_000,
   expect: { timeout: 15_000 },
   // These tests mutate shared database state — a pending order is consumed, cart
   // rows are written, moderation reports accumulate — so they must not run
