@@ -70,6 +70,13 @@ export default defineConfig({
     headless: true,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    // An action with no timeout of its own inherits the 60s TEST timeout, so a
+    // click that never settles produces only "Test timeout exceeded" -- no call, no
+    // line, no reason. Bounding actions separately makes the failure name itself.
+    // 15s is generous for a loaded runner while still failing fast enough to
+    // report WHERE.
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
   webServer: [

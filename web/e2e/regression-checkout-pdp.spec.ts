@@ -41,6 +41,12 @@ test.describe('product page: single-variant products', () => {
       if (m.type() === 'error') console.log('CONSOLE-ERROR:', m.text())
     })
     page.on('crash', () => console.log('PAGE CRASHED'))
+    // Bound EVERY action, not just the ones I think to pass a timeout to. Without
+    // this, an action that never settles consumes the whole 60s test timeout and
+    // the report says only "Test timeout exceeded" -- no call, no line, no reason.
+    // With it, the next run names the exact call that hangs.
+    page.setDefaultTimeout(10_000)
+    page.setDefaultNavigationTimeout(15_000)
     // Whether the browser ever RECEIVES the refresh cookie. The handler sets it on
     // every token response (httpOnly, Path=/api/v1, Secure=false in dev), so a
     // missing Set-Cookie here means the proxy dropped it; a present one means it is
