@@ -26,11 +26,39 @@ export function attachDiagnostics(page: Page): void {
   })
 }
 
-/** Logs every /cart response the browser receives, with its body. */
+/**
+ * Logs what the cart actually contains, rather than a truncated body.
+ *
+ * The raw payload was useless: `lines` sorts after `free_shipping` in the JSON, so a
+ * character limit cut it off exactly where the answer was. Log the LINES -- the
+ * variant, the quantity and the product name the row will render.
+ */
 export function logCartResponses(page: Page): void {
   page.on('response', async (r) => {
     if (!r.url().includes('/api/v1/cart')) return
     const body = await r.text().catch(() => '')
-    console.log('BROWSER-CART', r.status(), r.url(), body.slice(0, 600))
+    let summary = body.slice(0, 200)
+    try {
+      const parsed = JSON.parse(body) as {
+        lines?: { variant_id: string; quantity: number; product_name?: string }[]
+      }
+      if (Array.isArray(parsed.lines)) {
+        summary = `lines=${parsed.lines.length} ` +
+          parsed.lines.map((l) => `${l.product_name ?? '(no product_name)'} x${l.quantity} ${l.variant_id}`).join(' | ')
+      } else {
+        summary = `NO lines key: ${body.slice(0, 200)}`
+      }
+    } catch {
+      summary = `unparseable: ${body.slice(0, 200)}`
+    }
+    console.log('BROWSER-CART', r.status(), r.url(), summary)
   })
+}
+
+/** Logs the accessible names of every button on the page, and the page's text. */
+export async function logPageSurface(page: Page, label: string): Promise<void> {
+  const names = await page.getByRole('button').allInnerTexts().catch(() => [] as string[])
+  console.log(`PAGE-SURFACE ${label} buttons=${JSON.stringify(names.map((n) => n.trim()).filter(Boolean))}`)
+  const text = await page.locator('main').innerText().catch(() => '')
+  console.log(`PAGE-SURFACE ${label} text=${text.replace(/\s+/g, ' ').slice(0, 400)}`)
 }

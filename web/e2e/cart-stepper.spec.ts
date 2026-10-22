@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { API, BUYER, clearCartLine, firstVariant, login, loginViaUi } from './fixtures'
-import { attachDiagnostics, logCartResponses } from './diagnostics'
+import { attachDiagnostics, logCartResponses, logPageSurface } from './diagnostics'
 
 /**
  * Cart quantity stepper under rapid clicking.
@@ -55,6 +55,8 @@ test.describe('cart: quantity stepper', () => {
 
     await loginViaUi(page, BUYER)
     await page.goto('/cart')
+    await page.waitForTimeout(1500)
+    await logPageSurface(page, 'cart')
 
     const increase = page.getByRole('button', { name: `Tambah jumlah ${variant.product_name}` })
     await expect(increase).toBeVisible({ timeout: 20_000 })
@@ -150,6 +152,8 @@ test.describe('cart: quantity stepper', () => {
 
     await loginViaUi(page, BUYER)
     await page.goto('/cart')
+    await page.waitForTimeout(1500)
+    await logPageSurface(page, 'cart')
 
     const incA = page.getByRole('button', { name: `Tambah jumlah ${a.product_name}` })
     const incB = page.getByRole('button', { name: `Tambah jumlah ${b.product_name}` })
