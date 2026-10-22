@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { BUYER, registerBuyer, loginViaUi, API } from './fixtures'
+import { attachDiagnostics } from './diagnostics'
 
 /**
  * Regression tests for two defects that made the two highest-intent flows in
@@ -27,43 +28,22 @@ import { BUYER, registerBuyer, loginViaUi, API } from './fixtures'
 const SINGLE_VARIANT_SLUG = 'gaming-laptop-gt-16'
 
 test.describe('product page: single-variant products', () => {
+  test.beforeEach(async ({ page }) => {
+    // Diagnostics live in one place now: page errors, console errors, crashes and
+    // every response >= 400 with its endpoint and body. The PDP-specific
+    // Set-Cookie listener came and went with the refresh-cookie question, which
+    // the AUTH-RESP log answered.
+    attachDiagnostics(page)
+    // Bound every action, so a hang names itself instead of consuming the whole
+    // test timeout and reporting nothing.
+    page.setDefaultTimeout(10_000)
+    page.setDefaultNavigationTimeout(15_000)
+  })
+
   test('add-to-cart works without the buyer ever clicking a variant chip', async ({
     page,
     request,
   }) => {
-    // DIAGNOSTIC, no behaviour change. The last run timed out with a BLANK
-    // screenshot after this test had already passed the heading and toBeEnabled
-    // checks -- so the tree disappeared rather than an assertion being wrong, and
-    // the trace recorded no console data. These listeners put the thrown error in
-    // the job log where it can be read.
-    page.on('pageerror', (e) => console.log('PAGEERROR:', e.message, e.stack ?? ''))
-    page.on('console', (m) => {
-      if (m.type() === 'error') console.log('CONSOLE-ERROR:', m.text())
-    })
-    page.on('crash', () => console.log('PAGE CRASHED'))
-    // Bound EVERY action, not just the ones I think to pass a timeout to. Without
-    // this, an action that never settles consumes the whole 60s test timeout and
-    // the report says only "Test timeout exceeded" -- no call, no line, no reason.
-    // With it, the next run names the exact call that hangs.
-    page.setDefaultTimeout(10_000)
-    page.setDefaultNavigationTimeout(15_000)
-    // Whether the browser ever RECEIVES the refresh cookie. The handler sets it on
-    // every token response (httpOnly, Path=/api/v1, Secure=false in dev), so a
-    // missing Set-Cookie here means the proxy dropped it; a present one means it is
-    // being stored but not sent back, which is a different fix.
-    page.on('response', async (r) => {
-      if (!r.url().includes('/auth/')) return
-      const h = await r.allHeaders().catch(() => ({} as Record<string, string>))
-      console.log('AUTH-RESP', r.status(), r.request().method(), r.url(), 'set-cookie:', h['set-cookie'] ?? '(none)')
-    })
-    // The console only reports the status, not which endpoint. This names it, and
-    // includes the response body the API sent back.
-    page.on('response', async (r) => {
-      if (r.status() >= 400) {
-        console.log('HTTP-FAIL', r.status(), r.request().method(), r.url(), (await r.text().catch(() => '')).slice(0, 200))
-      }
-    })
-
     // Seed a clean, non-guest session so the cart the assertion reads is
     // attributable to this test.
     const { token, email } = await registerBuyer(request, 'pdpsingle')
@@ -137,6 +117,10 @@ test.describe('product page: single-variant products', () => {
 })
 
 test.describe('checkout page renders for a logged-in buyer', () => {
+  test.beforeEach(async ({ page }) => {
+    attachDiagnostics(page)
+  })
+
   test('shows the order summary instead of the route error boundary', async ({
     page,
     request,

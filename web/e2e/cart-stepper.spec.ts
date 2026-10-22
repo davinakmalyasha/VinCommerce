@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { API, BUYER, clearCartLine, firstVariant, login, loginViaUi } from './fixtures'
+import { attachDiagnostics, logCartResponses } from './diagnostics'
 
 /**
  * Cart quantity stepper under rapid clicking.
@@ -23,6 +24,9 @@ test.describe('cart: quantity stepper', () => {
     page,
     request,
   }) => {
+    attachDiagnostics(page)
+    logCartResponses(page)
+
     const token = await login(request, BUYER)
     const auth = { Authorization: `Bearer ${token}` }
     const variant = await firstVariant(request, token, 'smartphone-aurora-x5-pro')
@@ -34,6 +38,20 @@ test.describe('cart: quantity stepper', () => {
       data: { variant_id: variant.id, quantity: 1 },
     })
     expect(set.ok(), `could not seed the cart: ${set.status()}`).toBeTruthy()
+
+    // THE SERVER STATE FIRST. This check used to live AFTER the UI assertion, so it
+    // never ran: the spec failed on a missing button and never found out whether
+    // the write had persisted. Now it splits the only fork that matters -- did the
+    // PUT stick, and does the browser see a cart with no lines?
+    const after = await request.get(`${API}/api/v1/cart`, { headers: auth })
+    const afterBody = await after.text()
+    console.log('SERVER-CART-AFTER-PUT', after.status(), afterBody.slice(0, 600))
+    expect(after.ok(), `could not read the cart back: ${after.status()}`).toBeTruthy()
+    const afterLines = (JSON.parse(afterBody) as { lines?: { variant_id: string }[] }).lines ?? []
+    expect(
+      afterLines.some((l) => l.variant_id === variant.id),
+      'the PUT returned 2xx but the line is not in the cart',
+    ).toBeTruthy()
 
     await loginViaUi(page, BUYER)
     await page.goto('/cart')
@@ -104,6 +122,9 @@ test.describe('cart: quantity stepper', () => {
     page,
     request,
   }) => {
+    attachDiagnostics(page)
+    logCartResponses(page)
+
     const token = await login(request, BUYER)
     const auth = { Authorization: `Bearer ${token}` }
     const a = await firstVariant(request, token, 'smartphone-aurora-x5-pro')
@@ -117,6 +138,15 @@ test.describe('cart: quantity stepper', () => {
       headers: auth,
       data: { variant_id: b.id, quantity: 1 },
     })
+
+    // Same reasoning as the first spec: read the server's cart back before
+    // blaming the page for an empty one.
+    const after = await request.get(`${API}/api/v1/cart`, { headers: auth })
+    const afterBody = await after.text()
+    console.log('SERVER-CART-AFTER-PUT', after.status(), afterBody.slice(0, 600))
+    const afterLines = (JSON.parse(afterBody) as { lines?: { variant_id: string }[] }).lines ?? []
+    expect(afterLines.some((l) => l.variant_id === a.id), 'row A did not persist').toBeTruthy()
+    expect(afterLines.some((l) => l.variant_id === b.id), 'row B did not persist').toBeTruthy()
 
     await loginViaUi(page, BUYER)
     await page.goto('/cart')

@@ -1,6 +1,15 @@
 import { test, expect } from '@playwright/test'
 import { placeOrder, registerBuyer } from './fixtures'
 
+import { attachDiagnostics } from './diagnostics'
+
+
+// Every spec in this file gets the shared diagnostics: the three failures here all
+// reported "expect(received).toBeTruthy() -> false" without saying WHICH request
+// had failed, and one heading that never appeared.
+test.beforeEach(async ({ page }) => {
+  attachDiagnostics(page)
+})
 test('storefront: home loads with recommendations', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: /Semua yang kamu butuhkan/i })).toBeVisible()
