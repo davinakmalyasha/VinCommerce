@@ -388,6 +388,13 @@ jobs:
       - name: Run Playwright suite
         run: npx playwright test
 
+      # The webServer tees the API's output here (see playwright.config.ts). Without
+      # this the server's own explanation of a 500 never reached the log, and three
+      # cycles were spent inferring what it already knew.
+      - name: API log
+        if: always()
+        run: tail -n 400 api-e2e.log || true
+
       - name: Upload Playwright report on failure
         if: failure()
         # actions/upload-artifact v4.6.2

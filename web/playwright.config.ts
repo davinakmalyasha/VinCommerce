@@ -88,7 +88,11 @@ export default defineConfig({
     {
       // `go run ./cmd/seed && go run ./cmd/api` — see the note above on why the
       // seed is chained rather than a separate entry.
-      command: 'go run ./cmd/seed && go run ./cmd/api',
+      // tee the API's output to a file. Playwright forwards the startup lines and
+      // then nothing, so a 500 the server LOGS at request time was invisible in CI:
+      // the client only ever saw {"code":"","message":""}. The workflow prints this
+      // file after the suite, on failure and success alike.
+      command: 'go run ./cmd/seed && (go run ./cmd/api 2>&1 | tee ../api-e2e.log)',
       // Resolved relative to this configuration file's directory.
       cwd: '../backend',
       // /health/ready, not /health/live: it reports 200 only once BOTH
