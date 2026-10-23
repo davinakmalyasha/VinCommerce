@@ -1157,3 +1157,51 @@ What the suite found that reading the code had not, across the whole run:
 Now: product backlog only. Bundle pricing (needs a rule), admin verification for
 off-platform payments (needs a decision), coverage harness (needs a machine where
 PostgreSQL starts).
+
+## Item 16 — bundle pricing: what implementing it actually requires
+
+`bundles`/`bundle_items` have existed since 00014 and nothing in the checkout path
+reads them. `bundles.price` is therefore decorative: the storefront advertises a
+bundled price that the quote ignores.
+
+A bundle is SELLER-SCOPED (`bundles.seller_id`), and its items are exact
+`(variant_id, quantity)` rows with a primary key on both, so "strict match" is the
+only rule the schema can express unambiguously: a bundle applies when a cart's lines
+for that seller contain exactly those variants in exactly those quantities.
+
+It is not a one-line price adjustment, because a discount must survive everything
+that happens after it:
+
+  1. Quote and Place must agree. They are separate code paths today; the discount has
+     to be computed by one function both call, or the buyer is quoted one number and
+     charged another.
+  2. Per-LINE allocation. Refunds are per line and are capped by what was paid for
+     that line, so a bundle discount has to be spread across its lines (by subtotal
+     proportion, with the remainder assigned deterministically) and stored on the
+     order lines, not just on the order.
+  3. Commission. The commission snapshot is per line; a discount that is not
+     allocated before commission silently overpays the seller.
+  4. Coupons and points. Order of application is a business decision: stack, or
+     best-of? Stacking a 10% coupon on a bundle price is a different discount depth
+     than applying it to the sum of the parts.
+  5. Partial carts. If the buyer adds a fourth item, does the bundle stop applying to
+     the other three (strict) or still apply to the matching subset (subset)? Strict
+     is what the schema implies and what the storefront shows.
+
+DECISION NEEDED before code: (a) strict match, (b) subset match, and coupon order
+(stack vs best-of). Recommendation remains (a) strict + best-of, because both are
+unambiguous and neither can charge less than quoted.
+
+Not implemented. A seeded bundle whose price is not honoured at checkout would be
+worse than none: it would advertise a discount the API then ignores.
+
+## Also fixed after green: the seller product list showed zeroes
+
+`GET /seller/products` returns products without an embedded `variants` array, so the
+table rendered "0 varian", Rp 0 and 0 stock for every row -- while `ListBySeller`
+computed the stock sum and variant count and discarded them. Same defect class as the
+public store page: a query computing data no field could hold.
+
+Now returns `stock`, `variant_count` and `min_price` (MIN over variants), and the
+table reads them. Two e2e specs pin it (payload + rendered cells). CI: 6/6 jobs,
+**45/45** e2e.
