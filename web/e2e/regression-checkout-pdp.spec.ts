@@ -125,7 +125,7 @@ test.describe('checkout page renders for a logged-in buyer', () => {
     page,
     request,
   }) => {
-    const { token } = await registerBuyer(request, 'checkoutrender')
+    const { token, email } = await registerBuyer(request, 'checkoutrender')
     const auth = { Authorization: `Bearer ${token}` }
 
     // Put something in the cart so the quote endpoint has a subtotal to
@@ -143,11 +143,10 @@ test.describe('checkout page renders for a logged-in buyer', () => {
     expect(put.ok(), `could not seed cart: ${put.status()}`).toBeTruthy()
 
     // Sign in through the UI so the SPA holds a real access token in memory.
-    // registerBuyer only returns an API token, which the SPA cannot use.
-    const email = `e2e-checkoutrender-${Date.now().toString(36)}@vincommerce.test`
-    await request.post(`${API}/api/v1/auth/register`, {
-      data: { email, password: 'E2eFixture123!', full_name: 'Render Check', device_name: 'pw' },
-    })
+    // registerBuyer only returns an API token, which the SPA cannot use -- but it
+    // must be the SAME account. This used to register a SECOND buyer here, so the
+    // cart seeded above belonged to an account the browser was never signed in as,
+    // and the checkout page had nothing to summarise.
     await loginViaUi(page, { email, password: 'E2eFixture123!' })
 
     // THE REGRESSION. `CheckoutPage.tsx` computed its best-coupon suggestion
