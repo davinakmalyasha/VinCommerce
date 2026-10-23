@@ -87,8 +87,10 @@ test.describe('cart: quantity stepper', () => {
       Array.from({ length: BURST }, () => increase.click({ timeout: 3_000 })),
     )
 
-    // Let every in-flight request finish and the cache settle.
-    await page.waitForLoadState('networkidle')
+    // NOT waitForLoadState('networkidle'): the notification bell holds an SSE stream
+    // open for the whole session, so the network is NEVER idle and the wait can only
+    // time out. The poll below is the real settlement signal -- it reads the server's
+    // quantity until it stops moving, which is what "the cache settled" means here.
     await expect
       .poll(
         async () => {
