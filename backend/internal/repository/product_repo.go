@@ -482,9 +482,7 @@ func (r *ProductRepository) ListActiveBySeller(ctx context.Context, sellerID str
 	rows, err := r.pool.Query(ctx, `
 		SELECT p.id, p.seller_id, p.category_id, p.brand_id, p.name, p.slug, p.description,
 		       p.status, p.attributes, p.avg_rating, p.rating_count, p.sold_count,
-		       p.published_at, p.created_at, p.updated_at,
-		       COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0),
-		       (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id)
+		       p.published_at, p.created_at, p.updated_at
 		FROM products p
 		WHERE p.seller_id = $1 AND p.status = 'active'
 		ORDER BY p.created_at DESC
