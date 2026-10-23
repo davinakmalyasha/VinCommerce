@@ -135,6 +135,11 @@ test('engagement: follow store then see it in followed list', async ({ request }
     // means it is BySlug or the product listing.
     const anon = await request.get('http://localhost:8080/api/v1/stores/elektrostore')
     console.log('STORE-ANON', anon.status(), (await anon.text()).slice(0, 300))
+    // A slug that certainly does not exist. BySlug answers 404 (NOT_FOUND) for no
+    // row and only 500s if the SCAN fails, so this separates "the row is missing"
+    // from "reading a row is broken".
+    const missing = await request.get('http://localhost:8080/api/v1/stores/no-such-store-xyz')
+    console.log('STORE-MISSING', missing.status(), (await missing.text()).slice(0, 300))
   }
   expect(
     store.ok(),
