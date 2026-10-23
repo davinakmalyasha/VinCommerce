@@ -128,18 +128,13 @@ test('engagement: follow store then see it in followed list', async ({ request }
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!store.ok()) {
-    // The API's own log is not forwarded by the webServer, so ask the admin listing
-    // what the seeded stores are actually called. A 500 here is not "not found" --
-    // BySlug answers 404 with code NOT_FOUND for a missing row -- so the slugs will
-    // say whether the store exists at all.
-    const adminLogin = await request.post('http://localhost:8080/api/v1/auth/login', {
-      data: { email: 'admin@vincommerce.com', password: 'AdminPass123!' },
-    })
-    const adminToken = adminLogin.ok() ? (await adminLogin.json()).access_token : ''
-    const list = await request.get('http://localhost:8080/api/v1/admin/stores', {
-      headers: { Authorization: `Bearer ${adminToken}` },
-    })
-    console.log('ADMIN-STORES', list.status(), (await list.text()).slice(0, 900))
+    // The route is optional-auth: with no user, PublicStore skips IsFollowing and
+    // the KYC/presence lookups that depend on one. So the SAME endpoint, anonymous,
+    // splits the remaining suspects in a single run: an anonymous 200 means the
+    // authenticated-only `IsFollowing` query is the one failing; an anonymous 500
+    // means it is BySlug or the product listing.
+    const anon = await request.get('http://localhost:8080/api/v1/stores/elektrostore')
+    console.log('STORE-ANON', anon.status(), (await anon.text()).slice(0, 300))
   }
   expect(
     store.ok(),
