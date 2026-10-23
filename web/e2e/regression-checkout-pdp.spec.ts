@@ -168,7 +168,9 @@ test.describe('checkout page renders for a logged-in buyer', () => {
     await expect(page.getByText('Terjadi kesalahan di halaman ini')).toHaveCount(0)
 
     // The page must render its actual summary, and the quote must land.
-    await expect(page.getByRole('heading', { name: /Checkout/i })).toBeVisible()
+    // The summary section's heading is "Ringkasan" (CheckoutPage.tsx:442); there is
+    // no "Checkout" heading anywhere on the page, so this assertion could never pass.
+    await expect(page.getByRole('heading', { name: 'Ringkasan' })).toBeVisible()
     await expect(page.getByText('Ringkasan')).toBeVisible()
     await expect(page.getByRole('button', { name: /Buat Pesanan/i })).toBeVisible()
 

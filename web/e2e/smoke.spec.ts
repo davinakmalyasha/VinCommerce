@@ -127,7 +127,10 @@ test('engagement: follow store then see it in followed list', async ({ request }
   const store = await request.get('http://localhost:8080/api/v1/stores/elektrostore', {
     headers: { Authorization: `Bearer ${token}` },
   })
-  expect(store.ok()).toBeTruthy()
+  expect(
+    store.ok(),
+    `GET /stores/elektrostore -> ${store.status()} ${await store.text()}`,
+  ).toBeTruthy()
   const storeId = (await store.json()).store.id
 
   // Normalise the starting state. A follow row left behind by an earlier run —
