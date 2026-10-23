@@ -73,9 +73,15 @@ type Product struct {
 	AvgRating      float64           `json:"avg_rating"`
 	RatingCount    int               `json:"rating_count"`
 	SoldCount      int               `json:"sold_count"`
-	PublishedAt    *time.Time        `json:"published_at,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	// Aggregates, populated by the seller listing. Omitted when zero so the public
+	// product payload does not claim a stock figure it never computed -- the public
+	// queries do not select these.
+	Stock        int        `json:"stock,omitempty"`
+	VariantCount int        `json:"variant_count,omitempty"`
+	MinPrice     float64    `json:"min_price,omitempty"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 
 	Category *Category         `json:"category,omitempty"`
 	Brand    *Brand            `json:"brand,omitempty"`

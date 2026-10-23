@@ -48,6 +48,10 @@ export interface Product {
   brand?: { id: string; name: string }
   seller?: { id: string; name: string; slug?: string }
   variants?: Variant[]
+  // Aggregates returned by the seller listing (see product_repo.ListBySeller).
+  stock?: number
+  variant_count?: number
+  min_price?: number
   images?: { url: string; is_primary?: boolean }[]
   attributes?: Record<string, string>
 }

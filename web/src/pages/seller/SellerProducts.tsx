@@ -170,10 +170,15 @@ export function SellerProducts() {
               <tr key={p.id}>
                 <td className="px-4 py-3">
                   <p className="font-medium line-clamp-1 max-w-56">{p.name}</p>
-                  <p className="text-xs text-gray-400">{p.variants?.length ?? 0} varian</p>
+                  <p className="text-xs text-gray-400">{p.variant_count ?? 0} varian</p>
                 </td>
-                <td className="px-4 py-3">{formatIDR(p.variants?.[0]?.price ?? 0)}</td>
-                <td className="px-4 py-3">{p.variants?.[0]?.stock ?? 0}</td>
+                {/* This endpoint returns aggregates, not an embedded variant list, so
+                    variants[0].price rendered Rp0 for every product. */}
+                <td className="px-4 py-3">{formatIDR(p.min_price ?? 0)}</td>
+                {/* The API returns an aggregate `stock` for this listing, not an
+                    embedded variant list, so reading variants[0].stock showed 0 for
+                    every product. */}
+                <td className="px-4 py-3">{p.stock ?? 0}</td>
                 <td className="px-4 py-3">{p.sold_count}</td>
                 <td className="px-4 py-3">
                   <span className={`px-2 py-0.5 rounded-full text-xs ${p.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>

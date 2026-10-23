@@ -440,7 +440,8 @@ func (r *ProductRepository) ListBySeller(ctx context.Context, sellerID string, p
 		       p.status, p.attributes, p.avg_rating, p.rating_count, p.sold_count,
 		       p.published_at, p.created_at, p.updated_at,
 		       COALESCE((SELECT SUM(v.stock) FROM product_variants v WHERE v.product_id = p.id), 0),
-		       (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id)
+		       (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id),
+		       COALESCE((SELECT MIN(v.price) FROM product_variants v WHERE v.product_id = p.id), 0)
 		FROM products p
 		WHERE p.seller_id = $1
 		ORDER BY p.created_at DESC
@@ -454,15 +455,11 @@ func (r *ProductRepository) ListBySeller(ctx context.Context, sellerID string, p
 	for rows.Next() {
 		var p domain.Product
 		var attrs []byte
-		var stockSum int
-		var variantCount int
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
 			&p.Status, &attrs, &p.AvgRating, &p.RatingCount, &p.SoldCount,
-			&p.PublishedAt, &p.CreatedAt, &p.UpdatedAt, &stockSum, &variantCount); err != nil {
+			&p.PublishedAt, &p.CreatedAt, &p.UpdatedAt, &p.Stock, &p.VariantCount, &p.MinPrice); err != nil {
 			return nil, 0, err
 		}
-		_ = stockSum
-		_ = variantCount
 		if err := json.Unmarshal(attrs, &p.Attributes); err != nil {
 			return nil, 0, err
 		}
