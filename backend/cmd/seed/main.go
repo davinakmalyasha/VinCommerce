@@ -554,18 +554,21 @@ func (s *seeder) seedStores() int {
 		if name == "" {
 			name = u.Email
 		}
-		name += " Store"
-		// Slug uniqueness is per store, and two sellers can share a full name, so the
-		// user id keeps the slug stable AND distinct across re-runs.
+		// The store is the seller's own name, and the slug is derived from it WITHOUT
+		// a suffix. Other specs and the storefront link to /stores/elektrostore, so
+		// appending " Store" and the user id made those links 404 even though the
+		// storefront existed. The seed's sellers have distinct names, and the seed is
+		// idempotent on owner_id, so the slug only has to be stable.
 		slug := slugify(name)
-		if len(u.ID) >= 8 {
-			slug += "-" + u.ID[:8]
+		if slug == "" {
+			slug = "store"
 		}
 		if _, err := s.products.Pool().Exec(s.ctx, `
 			INSERT INTO stores (id, owner_id, name, slug, description, status)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, 'active')
 			ON CONFLICT (owner_id) DO UPDATE
-			   SET status = 'active', updated_at = now()`,
+			   SET status = 'active', name = EXCLUDED.name, slug = EXCLUDED.slug,
+			       updated_at = now()`,
 			u.ID, name, slug, "Toko demo "+name); err != nil {
 			fmt.Fprintf(os.Stderr, "seed store FAILED for %s: %v\n", u.Email, err)
 			s.failures++
