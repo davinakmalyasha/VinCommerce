@@ -43,10 +43,22 @@ test('help center: browse and read an article', async ({ page }) => {
 })
 
 test('docs: swagger UI reachable through the API', async ({ request }) => {
-  const res = await request.get('http://localhost:8080/docs/')
+  // /api-docs, not /docs: the SPA owns /docs and nginx proxies it to the web app,
+  // so the API docs were moved here deliberately. This spec kept asking for the old
+  // URL, which is why it failed.
+  const res = await request.get('http://localhost:8080/api-docs/')
   expect(res.ok()).toBeTruthy()
   const body = await res.text()
   expect(body).toContain('swagger-ui')
+
+  // The page is only USABLE if its assets and spec resolve at the same prefix. The
+  // handler was mounted at /api-docs while its HTML still pointed at /docs, so the
+  // document would load and then render nothing -- a failure the old assertion
+  // (string match on the HTML) could not see.
+  const css = await request.get('http://localhost:8080/api-docs/swagger-ui.css')
+  expect(css.ok(), 'swagger-ui.css must resolve under /api-docs').toBeTruthy()
+  const spec = await request.get('http://localhost:8080/api-docs/openapi.json')
+  expect(spec.ok(), 'openapi.json must resolve under /api-docs').toBeTruthy()
 })
 
 test('auth: login and land on home', async ({ page }) => {
@@ -81,7 +93,10 @@ test('tracking: public order tracking page renders', async ({ page }) => {
 
 test('vouchers: collectible store coupons page', async ({ page }) => {
   await page.goto('/vouchers')
-  await expect(page.getByRole('heading', { name: 'Kumpulkan Kupon Toko' })).toBeVisible()
+  // The page's heading is "Kupon & Voucher" (VouchersPage.tsx:61). This spec asked
+  // for "Kumpulkan Kupon Toko", a string that appears nowhere in the frontend --
+  // it could never pass, regardless of the page's state.
+  await expect(page.getByRole('heading', { name: 'Kupon & Voucher' })).toBeVisible()
 })
 
 test('compare: page handles empty state', async ({ page }) => {
