@@ -1126,3 +1126,34 @@ REMAINING (6), all with a real assertion error now:
 Also: the Go toolchain pin moved to 1.27 for GO-2026-6809 (crypto/x509, stdlib) in
 `21878ed`, which unblocked the Backend job -- and with it the Playwright job, which
 had been SKIPPED whenever Backend failed.
+
+## GREEN: CI 6/6, Playwright 43/43
+
+Run `39975890009` (`cd99207`). Every job passes and the whole e2e suite passes with no
+flaky retries. For context, the workflow had never completed a run: 71 consecutive
+failures since 2026-08-25, all of them dying in seconds.
+
+The last defect was the one the API log named immediately once its output was
+captured: `ListActiveBySeller` selected 17 columns and scanned 15, so every PUBLIC
+STORE PAGE returned 500. It had been broken for as long as the query existed and was
+invisible only because no store row existed until the seed started creating them.
+
+What the suite found that reading the code had not, across the whole run:
+  - `env` in services.*.image        -> the entire workflow never started
+  - four migrations missing +goose   -> 00041-00044
+  - a real CVE (golang.org/x/text)   -> GO-2026-6629, then the stdlib GO-2026-6809
+  - seed created no stores           -> the whole catalogue was 404
+  - seed created no shipping methods -> every checkout was 400
+  - seed priced the catalogue /1000  -> coupon floor unreachable
+  - store slugs were synthetic       -> /stores/elektrostore 404
+  - PUT /cart/items matched 0 rows   -> silent no-op, 200 with an unchanged cart
+  - header and cart page shared a
+    query key with different shapes  -> cart read an array, rendered empty
+  - ListActiveBySeller 17 vs 15      -> every store page 500
+  - networkidle vs the SSE stream    -> test could only time out
+  - the fixture's own 62s rate-limit
+    wait inside a 60s test timeout   -> two unexplainable timeouts
+
+Now: product backlog only. Bundle pricing (needs a rule), admin verification for
+off-platform payments (needs a decision), coverage harness (needs a machine where
+PostgreSQL starts).
