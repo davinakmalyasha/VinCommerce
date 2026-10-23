@@ -526,10 +526,10 @@ jobs:
       # container healthy. A failure here means the non-root nginx cannot write
       # its temp/pid paths, or cannot bind 8080.
       - name: Assert the web container becomes healthy and serves hardened headers
-        # The probe lives in scripts/probe-web-image.sh so this pipeline and the
-        # manual web-image-probe workflow share ONE implementation. Two copies of a
-        # container check drift, and a drifted check is worse than none -- this repo
-        # has already paid for that lesson with the nginx build gate.
+        # The probe lives in scripts/probe-web-image.sh rather than inline, so the
+        # check can be run on its own when a runner-only Docker problem appears. Two
+        # copies of a container check drift, and a drifted check is worse than none --
+        # this repo has already paid for that lesson with the nginx build gate.
         #
         # It also dumps a dossier on failure (container state, every health probe's
         # output, process list, listening sockets, pid permissions), which is what
