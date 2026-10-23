@@ -393,7 +393,9 @@ jobs:
       # cycles were spent inferring what it already knew.
       - name: API log
         if: always()
-        run: tail -n 400 api-e2e.log || true
+        # The webServer's cwd is ../backend, so its `tee ../api-e2e.log` lands at the
+        # REPO ROOT; this step runs from web/.
+        run: tail -n 400 ../api-e2e.log || true
 
       - name: Upload Playwright report on failure
         if: failure()
