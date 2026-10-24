@@ -240,6 +240,17 @@ jobs:
           # Poll instead of a fixed sleep: robust on slow runners, fast on good ones.
           curl --retry 30 --retry-delay 1 --retry-connrefused -sf http://localhost:8080/api/v1/health/ready
 
+      - name: Money-path integration test (real database)
+        # Opt-in, because the ordinary suite must also run where Postgres cannot
+        # start. CI has a migrated, seeded database by now, so this is where the SQL
+        # that source-inspection tests cannot see is actually exercised: repository
+        # coverage is 1.1%, and the last three SQL defects all reached the point of a
+        # 500 or a silent no-op.
+        env:
+          INTEGRATION_DB: "1"
+          DB_PASSWORD: vincom_dev
+        run: go test ./internal/service/ -run TestQuoteAppliesSeededBundle -count=1 -v
+
   # ── Web ──────────────────────────────────────────────────────────────────
   web:
     name: Web lint, typecheck, test, build
