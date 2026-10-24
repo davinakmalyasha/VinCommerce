@@ -229,15 +229,19 @@ func itemStatus(order string, placed time.Time) string {
 // changed; two units of a named variant is stable. The price is derived from the
 // variant (10% off two units) rather than hardcoded, so it cannot drift from the
 // catalogue the price-scale fix established.
+//
+// $1 is cast to text explicitly: without it Postgres infers varchar(120) from the
+// INSERT target and varchar(160) from `b.name`, and refuses the statement with
+// "inconsistent types deduced for parameter $1".
 func (s *seeder) seedBundles() int {
 	const name = "Aurora X5 Pro Duo"
 	if _, err := s.products.Pool().Exec(s.ctx, `
 		INSERT INTO bundles (id, seller_id, name, description, price, is_active)
-		SELECT gen_random_uuid(), p.seller_id, $1, $2, ROUND(v.price * 2 * 0.9, 2), TRUE
+		SELECT gen_random_uuid(), p.seller_id, $1::text, $2::text, ROUND(v.price * 2 * 0.9, 2), TRUE
 		FROM products p
 		JOIN product_variants v ON v.product_id = p.id AND v.name = 'Black'
 		WHERE p.slug = 'smartphone-aurora-x5-pro'
-		  AND NOT EXISTS (SELECT 1 FROM bundles b WHERE b.name = $1)`,
+		  AND NOT EXISTS (SELECT 1 FROM bundles b WHERE b.name = $1::text)`,
 		name, "Dua unit Aurora X5 Pro, lebih hemat."); err != nil {
 		fmt.Fprintf(os.Stderr, "seed bundle FAILED: %v\n", err)
 		s.failures++
