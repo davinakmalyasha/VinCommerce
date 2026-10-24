@@ -171,7 +171,30 @@ jobs:
         run: node ../scripts/check-import-boundaries.mjs
 
       - name: Unit tests
-        run: go test ./internal/... -count=1 -race
+        # -cover is a MEASUREMENT, not a gate. With no database-backed tests a
+        # threshold would be arbitrary, and an arbitrary gate teaches people to
+        # write tests for the metric instead of for the behaviour. The profile is
+        # uploaded below so the number is tracked rather than rediscovered by hand.
+        run: go test ./internal/... -count=1 -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: Coverage summary
+        if: always()
+        # The per-package breakdown is already printed by `go test -cover` above;
+        # this is the repository total, which is the number worth watching.
+        run: |
+          if [ -f coverage.out ]; then
+            go tool cover -func=coverage.out | tail -1
+          else
+            echo "no coverage profile (tests did not reach the point of writing one)"
+          fi
+
+      - name: Upload coverage profile
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: go-coverage
+          path: backend/coverage.out
 
       - name: Prove the refund guards actually detect regressions
         # The refund cap and the provider-notification path carry a double-refund
