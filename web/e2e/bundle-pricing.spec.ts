@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test'
-import { API, registerBuyer } from './fixtures'
+import { API, registerBuyer, loginViaUi } from './fixtures'
+import { attachDiagnostics } from './diagnostics'
 
 /**
- * Bundle pricing: STRICT MATCH, and it is actually charged.
+ * Bundle pricing: STRICT MATCH, actually charged, and explained to the buyer.
  *
  * `bundles.price` existed in the schema and nothing read it, so the storefront could
  * advertise a bundle price the quote ignored. The seeded "Aurora X5 Pro Duo" is two
@@ -17,9 +18,11 @@ import { API, registerBuyer } from './fixtures'
  * storefront reads, so it cannot drift from the seeded data the way a literal would.
  */
 test('checkout: a strict-match bundle applies, and stops when the cart differs', async ({
+  page,
   request,
 }) => {
-  const { token } = await registerBuyer(request, 'bundle')
+  attachDiagnostics(page)
+  const { token, email } = await registerBuyer(request, 'bundle')
   const auth = { Authorization: `Bearer ${token}` }
 
   const product = await (
@@ -44,24 +47,29 @@ test('checkout: a strict-match bundle applies, and stops when the cart differs',
       subtotal: number
       discount_amount: number
       total: number
-      bundle_ids?: string[]
+      bundles?: { id: string; name: string; discount: number }[]
     }>
 
   // Exactly the bundle's quantities: 2 x Black.
   expect((await setQty(2)).ok()).toBeTruthy()
   const exact = await quote()
-  expect(
-    exact.bundle_ids?.length,
-    'the bundle did not apply at its exact quantity',
-  ).toBe(1)
-  expect(exact.discount_amount).toBeGreaterThan(0)
-  // 10% off two units: the discount is a tenth of the subtotal, not of one unit.
+  expect(exact.bundles?.length, 'the bundle did not apply at its exact quantity').toBe(1)
+  const applied = exact.bundles![0]
+  expect(applied.name, 'the quote must name the bundle for the summary').toBeTruthy()
+  expect(applied.discount).toBeGreaterThan(0)
+  // 10% off two units: a tenth of the subtotal, not of one unit.
   expect(exact.subtotal).toBeCloseTo(Number(black.price) * 2, 0)
   expect(exact.discount_amount).toBeCloseTo(Math.round(exact.subtotal * 0.1), 0)
+
+  // The buyer must be TOLD. The summary renders "Diskon <coupon code>", so a bundle
+  // that wins the best-of comparison without a name produced a bare "Diskon ".
+  await loginViaUi(page, { email, password: 'E2eFixture123!' })
+  await page.goto('/checkout')
+  await expect(page.getByText(`Bundle ${applied.name}`)).toBeVisible({ timeout: 20_000 })
 
   // STRICT: one unit more and the bundle must not describe the cart any more.
   expect((await setQty(3)).ok()).toBeTruthy()
   const strict = await quote()
-  expect(strict.bundle_ids ?? [], 'a bundle applied to a cart it does not describe').toHaveLength(0)
+  expect(strict.bundles ?? [], 'a bundle applied to a cart it does not describe').toHaveLength(0)
   expect(strict.discount_amount, 'a discount survived the bundle not matching').toBe(0)
 })

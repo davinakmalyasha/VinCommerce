@@ -494,14 +494,25 @@ func (s *OrderService) FreeShippingStatus(ctx context.Context, userID, sessionKe
 // --- Checkout ---
 
 // Quote computes the checkout breakdown without placing the order.
+// AppliedBundle is one bundle that the quote charged.
+type AppliedBundle struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Discount float64 `json:"discount"`
+}
+
 type Quote struct {
 	Lines          []*domain.CartLine `json:"lines"`
 	Subtotal       float64            `json:"subtotal"`
 	DiscountAmount float64            `json:"discount_amount"`
 	CouponCode     string             `json:"coupon_code,omitempty"`
-	BundleIDs      []string           `json:"bundle_ids,omitempty"`
-	Shipping       []*ShippingQuote   `json:"shipping"`
-	Total          float64            `json:"total"`
+	// Bundles lists the bundles that were applied, with the name each one carries.
+	// IDs alone were not enough: the checkout summary renders "Diskon <coupon code>",
+	// so a bundle winning the best-of comparison produced an empty label and a buyer
+	// saw a discount with no explanation.
+	Bundles  []AppliedBundle  `json:"bundles,omitempty"`
+	Shipping []*ShippingQuote `json:"shipping"`
+	Total    float64          `json:"total"`
 
 	InsuranceAvailable bool    `json:"insurance_available"`
 	InsuranceSelected  bool    `json:"insurance_selected"`
@@ -645,10 +656,14 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 
 		if bundleTotal > 0 && bundleTotal > couponWorth {
 			for sid, m := range matched {
-				quote.BundleIDs = append(quote.BundleIDs, m.bundle.ID)
+				quote.Bundles = append(quote.Bundles, AppliedBundle{
+					ID: m.bundle.ID, Name: m.bundle.Name, Discount: m.discount,
+				})
 				quote.discountBySeller[sid] += m.discount
 			}
-			sort.Strings(quote.BundleIDs)
+			sort.Slice(quote.Bundles, func(i, j int) bool {
+				return quote.Bundles[i].Name < quote.Bundles[j].Name
+			})
 			quote.DiscountAmount = bundleTotal
 			// The coupon loses and must not also be applied: it would otherwise be
 			// added per seller further down.

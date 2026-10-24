@@ -14,6 +14,7 @@ interface Quote {
   subtotal: number
   discount_amount: number
   coupon_code?: string
+  bundles?: { id: string; name: string; discount: number }[]
   shipping: { code: string; name: string; fee: number; min_days: number; max_days: number }[]
   total: number
   insurance_available?: boolean
@@ -444,7 +445,16 @@ export function CheckoutPage() {
             <span className="text-gray-500">Subtotal</span>
             <span>{formatIDR(quote?.subtotal ?? 0)}</span>
           </div>
-          {quote && quote.discount_amount > 0 && (
+          {/* Each applied bundle gets its own line, by name. Before the quote carried
+              names this label rendered as a bare "Diskon " whenever a bundle won the
+              best-of comparison against a coupon -- a discount with no explanation. */}
+          {quote?.bundles?.map((b) => (
+            <div key={b.id} className="flex justify-between text-sm text-green-600">
+              <span>Bundle {b.name}</span>
+              <span>−{formatIDR(b.discount)}</span>
+            </div>
+          ))}
+          {quote && quote.discount_amount > 0 && quote.coupon_code && (
             <div className="flex justify-between text-sm text-green-600">
               <span>Diskon {quote.coupon_code}</span>
               <span>−{formatIDR(quote.discount_amount)}</span>
