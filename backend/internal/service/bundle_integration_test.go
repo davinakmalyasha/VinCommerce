@@ -139,6 +139,51 @@ func TestQuoteAppliesSeededBundle(t *testing.T) {
 			"the charge disagree", got, exact.Bundles[0].Discount)
 	}
 
+	// BEST-OF, both directions. A coupon and a bundle never stack: the deeper one
+	// applies and the other is inert. Two throwaway coupons make this deterministic
+	// without depending on the seeded WELCOME10, whose per-user limit the seed's demo
+	// orders may already have spent.
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	shallowCode := "ITEST-SHALLOW-" + stamp
+	deepCode := "ITEST-DEEP-" + stamp
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO coupons (code, type, value, min_subtotal, per_user_limit, is_active)
+		VALUES ($1, 'percent', 1, 0, 5, TRUE), ($2, 'percent', 50, 0, 5, TRUE)`,
+		shallowCode, deepCode); err != nil {
+		t.Fatalf("create coupons: %v", err)
+	}
+
+	// 1% loses to the 10% bundle: the bundle applies, the coupon does not.
+	withShallow, err := svc.QuoteCheckout(ctx, userID, cart.ID, shallowCode, "regular", false, 0)
+	if err != nil {
+		t.Fatalf("quote with shallow coupon: %v", err)
+	}
+	if len(withShallow.Bundles) != 1 || withShallow.CouponCode != "" {
+		t.Fatalf("a shallower coupon displaced the bundle: bundles=%+v coupon=%q",
+			withShallow.Bundles, withShallow.CouponCode)
+	}
+	if withShallow.DiscountAmount != exact.Bundles[0].Discount {
+		t.Fatalf("discount changed with a losing coupon: %v, want the bundle's %v",
+			withShallow.DiscountAmount, exact.Bundles[0].Discount)
+	}
+
+	// 50% beats the bundle: the coupon applies and the bundle must be inert.
+	withDeep, err := svc.QuoteCheckout(ctx, userID, cart.ID, deepCode, "regular", false, 0)
+	if err != nil {
+		t.Fatalf("quote with deep coupon: %v", err)
+	}
+	if len(withDeep.Bundles) != 0 {
+		t.Fatalf("the bundle applied alongside a deeper coupon: %+v -- they stacked",
+			withDeep.Bundles)
+	}
+	if withDeep.CouponCode != deepCode {
+		t.Fatalf("the deeper coupon was not the one applied: %q", withDeep.CouponCode)
+	}
+	if withDeep.DiscountAmount <= exact.Bundles[0].Discount {
+		t.Fatalf("a 50%% coupon discounted %v, no more than the bundle's %v",
+			withDeep.DiscountAmount, exact.Bundles[0].Discount)
+	}
+
 	// THE STRONGEST INVARIANT: what the quote showed must be what the order charges.
 	// QuoteCheckout is what PlaceOrder calls, so this is not testing a copy of the
 	// arithmetic -- but it IS testing that nothing between them (per-seller
