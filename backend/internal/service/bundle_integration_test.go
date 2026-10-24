@@ -88,6 +88,14 @@ func TestQuoteAppliesSeededBundle(t *testing.T) {
 		t.Fatalf("the bundle's seeded variant is missing: %v", err)
 	}
 
+	var sellerID string
+	if err := pool.QueryRow(ctx, `
+		SELECT p.seller_id FROM products p
+		JOIN product_variants v ON v.product_id = p.id
+		WHERE v.id = $1`, variantID).Scan(&sellerID); err != nil {
+		t.Fatalf("seller lookup: %v", err)
+	}
+
 	cart, err := svc.CartFor(ctx, userID, "")
 	if err != nil {
 		t.Fatalf("cart: %v", err)
@@ -121,6 +129,13 @@ func TestQuoteAppliesSeededBundle(t *testing.T) {
 		t.Fatalf("quote discount %v does not equal the applied bundle %v -- the buyer "+
 			"would be shown one number and charged another",
 			exact.DiscountAmount, exact.Bundles[0].Discount)
+	}
+	// DiscountAmount is what the UI shows; DiscountFor is what PlaceOrder actually
+	// subtracts per sub-order. If those two ever disagree, the quote is honest and
+	// the charge is not -- or the reverse.
+	if got := exact.DiscountFor(sellerID); got != exact.Bundles[0].Discount {
+		t.Fatalf("charged discount for the seller = %v, displayed = %v: the quote and "+
+			"the charge disagree", got, exact.Bundles[0].Discount)
 	}
 
 	// One unit more: strict match fails, so neither the bundle nor its discount
