@@ -9,6 +9,7 @@ import (
 
 	"github.com/vincommerce/backend/internal/config"
 	"github.com/vincommerce/backend/internal/db"
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/repository"
 )
 
@@ -138,6 +139,45 @@ func TestQuoteAppliesSeededBundle(t *testing.T) {
 			"the charge disagree", got, exact.Bundles[0].Discount)
 	}
 
+	// THE STRONGEST INVARIANT: what the quote showed must be what the order charges.
+	// QuoteCheckout is what PlaceOrder calls, so this is not testing a copy of the
+	// arithmetic -- but it IS testing that nothing between them (per-seller
+	// allocation, rounding, shipping) changes the number the buyer saw.
+	placed, err := svc.PlaceOrder(ctx, PlaceOrderInput{
+		UserID: userID,
+		CartID: cart.ID,
+		Address: &domain.Address{
+			Recipient:    "Integration Test",
+			Phone:        "080000000000",
+			AddressLine1: "Jl. Test Integrasi No. 1",
+			City:         "Bandung",
+			Province:     "Jawa Barat",
+			PostalCode:   "40115",
+			Country:      "Indonesia",
+		},
+		ShippingMethodCode: "regular",
+		IdempotencyKey:     "integration-bundle-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+	})
+	if err != nil {
+		t.Fatalf("place order: %v", err)
+	}
+	if placed.GrandTotal != exact.Total {
+		t.Fatalf("charged %v but quoted %v -- the buyer is told one number and charged "+
+			"another", placed.GrandTotal, exact.Total)
+	}
+	if len(placed.Orders) == 0 {
+		t.Fatal("place order returned no orders")
+	}
+	for _, o := range placed.Orders {
+		if o.DiscountAmount != exact.Bundles[0].Discount {
+			t.Fatalf("order %s carries discount %v, the bundle was %v",
+				o.OrderNumber, o.DiscountAmount, exact.Bundles[0].Discount)
+		}
+	}
+
+	// One unit more: strict match fails, so neither the bundle nor its discount
+	// may survive. The checkout above emptied the cart; setting a quantity creates
+	// the line again on the same active cart.
 	// One unit more: strict match fails, so neither the bundle nor its discount
 	// may survive.
 	if _, _, err := svc.UpdateCartItem(ctx, cart.ID, variantID, 3); err != nil {
