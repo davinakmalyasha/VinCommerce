@@ -83,6 +83,7 @@ type OrderService struct {
 	users         *repository.UserRepository
 	stores        *repository.StoreRepository
 	loyalty       *repository.LoyaltyRepository
+	bundles       *repository.QARepository
 	wishlist      *repository.WishlistRepository
 	broker        *stream.Broker
 	payments      *PaymentService
@@ -111,6 +112,10 @@ func (s *OrderService) SetWishlist(w *repository.WishlistRepository) { s.wishlis
 
 // SetLoyalty awards points when orders complete.
 func (s *OrderService) SetLoyalty(l *repository.LoyaltyRepository) { s.loyalty = l }
+
+// SetBundles enables strict-match bundle pricing in quotes. Nil leaves it off, which
+// is what every test that does not care about bundles gets.
+func (s *OrderService) SetBundles(m *repository.QARepository) { s.bundles = m }
 
 // awardPoints credits 1 point per Rp 1000 spent on a completed order.
 func (s *OrderService) awardPoints(ctx context.Context, orderID string) {
@@ -494,6 +499,7 @@ type Quote struct {
 	Subtotal       float64            `json:"subtotal"`
 	DiscountAmount float64            `json:"discount_amount"`
 	CouponCode     string             `json:"coupon_code,omitempty"`
+	BundleIDs      []string           `json:"bundle_ids,omitempty"`
 	Shipping       []*ShippingQuote   `json:"shipping"`
 	Total          float64            `json:"total"`
 
@@ -594,6 +600,60 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		quote.CouponCode = coupon.Code
 		if coupon.SellerID == nil {
 			quote.DiscountAmount = couponDiscount(coupon, subtotal)
+		}
+	}
+
+	// Bundle pricing. STRICT MATCH: a seller-scoped bundle applies only when that
+	// seller's lines are exactly its variants in exactly its quantities, because
+	// bundle_items is keyed on (bundle_id, variant_id) and describes a fixed set.
+	// BEST-OF: the deeper of {bundles, coupon} wins and they never stack, so the
+	// arithmetic cannot compound two promotions into a price neither describes.
+	//
+	// This runs BEFORE the points cap below, so a bundle can never combine with
+	// points redemption to take the merchandise total below zero. Points stay
+	// additive: they are the buyer's own balance, not a promotion.
+	if s.bundles != nil {
+		all, err := s.bundles.Bundles(ctx, "")
+		if err != nil {
+			return nil, err
+		}
+		cartBySeller := map[string]map[string]int{}
+		subtotalsBySeller := map[string]float64{}
+		for _, l := range lines {
+			m := cartBySeller[l.SellerID]
+			if m == nil {
+				m = map[string]int{}
+				cartBySeller[l.SellerID] = m
+			}
+			m[l.VariantID] += l.Quantity
+			subtotalsBySeller[l.SellerID] = moneyRound(subtotalsBySeller[l.SellerID] + l.Subtotal)
+		}
+		matched := matchBundles(cartBySeller, all, subtotalsBySeller)
+		bundleTotal := 0.0
+		for _, m := range matched {
+			bundleTotal += m.discount
+		}
+		bundleTotal = moneyRound(bundleTotal)
+
+		// What the coupon is worth, for the comparison only. A store coupon is
+		// scoped to one seller, so it is compared against that seller's subtotal; a
+		// platform coupon has already been applied to DiscountAmount.
+		couponWorth := quote.DiscountAmount
+		if coupon != nil && coupon.SellerID != nil {
+			couponWorth = couponDiscount(coupon, subtotalsBySeller[*coupon.SellerID])
+		}
+
+		if bundleTotal > 0 && bundleTotal > couponWorth {
+			for sid, m := range matched {
+				quote.BundleIDs = append(quote.BundleIDs, m.bundle.ID)
+				quote.discountBySeller[sid] += m.discount
+			}
+			sort.Strings(quote.BundleIDs)
+			quote.DiscountAmount = bundleTotal
+			// The coupon loses and must not also be applied: it would otherwise be
+			// added per seller further down.
+			coupon = nil
+			quote.CouponCode = ""
 		}
 	}
 

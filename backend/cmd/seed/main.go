@@ -74,6 +74,7 @@ func run(logger *slog.Logger) error {
 	seeded += s.seedFlags()
 	seeded += s.seedCoupons()
 	seeded += s.seedDemoOrders()
+	seeded += s.seedBundles()
 
 	logger.Info("seed complete", "items", seeded)
 	if s.failures > 0 {
@@ -220,6 +221,43 @@ func itemStatus(order string, placed time.Time) string {
 
 // seedCoupons creates the demo coupons advertised in the README plus
 // spin-the-wheel prize coupons.
+// seedBundles creates ONE deterministic bundle so that the storefront's bundle strip
+// and the strict-match pricing in QuoteCheckout have something to exercise.
+//
+// Two units of ONE variant, not two products. How many variants a product gets is a
+// seed detail, and a bundle that depended on it would silently stop matching if that
+// changed; two units of a named variant is stable. The price is derived from the
+// variant (10% off two units) rather than hardcoded, so it cannot drift from the
+// catalogue the price-scale fix established.
+func (s *seeder) seedBundles() int {
+	const name = "Aurora X5 Pro Duo"
+	if _, err := s.products.Pool().Exec(s.ctx, `
+		INSERT INTO bundles (id, seller_id, name, description, price, is_active)
+		SELECT gen_random_uuid(), p.seller_id, $1, $2, ROUND(v.price * 2 * 0.9, 2), TRUE
+		FROM products p
+		JOIN product_variants v ON v.product_id = p.id AND v.name = 'Black'
+		WHERE p.slug = 'smartphone-aurora-x5-pro'
+		  AND NOT EXISTS (SELECT 1 FROM bundles b WHERE b.name = $1)`,
+		name, "Dua unit Aurora X5 Pro, lebih hemat."); err != nil {
+		fmt.Fprintf(os.Stderr, "seed bundle FAILED: %v\n", err)
+		s.failures++
+		return 0
+	}
+	if _, err := s.products.Pool().Exec(s.ctx, `
+		INSERT INTO bundle_items (bundle_id, variant_id, quantity)
+		SELECT b.id, v.id, 2
+		FROM bundles b
+		JOIN products p ON p.seller_id = b.seller_id AND p.slug = 'smartphone-aurora-x5-pro'
+		JOIN product_variants v ON v.product_id = p.id AND v.name = 'Black'
+		WHERE b.name = 'Aurora X5 Pro Duo'
+		ON CONFLICT DO NOTHING`); err != nil {
+		fmt.Fprintf(os.Stderr, "seed bundle items FAILED: %v\n", err)
+		s.failures++
+		return 0
+	}
+	return 1
+}
+
 func (s *seeder) seedCoupons() int {
 	md := 15000.0
 	coupons := []struct {

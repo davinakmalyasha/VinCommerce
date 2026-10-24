@@ -281,6 +281,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	orderSvc.SetStores(r.Stores)
 	orderSvc.SetLoyalty(r.Loyalty)
 	orderSvc.SetWishlist(r.Wishlist)
+	orderSvc.SetBundles(r.Market)
 	orderSvc.SetInsurancePct(cfg.Payments.ShippingInsurancePct)
 	orderSvc.SetPaymentService(paymentSvc)
 	orderSvc.SetNotificationService(notificationSvc)
