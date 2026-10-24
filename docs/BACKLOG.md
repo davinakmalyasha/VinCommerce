@@ -1205,3 +1205,28 @@ public store page: a query computing data no field could hold.
 Now returns `stock`, `variant_count` and `min_price` (MIN over variants), and the
 table reads them. Two e2e specs pin it (payload + rendered cells). CI: 6/6 jobs,
 **45/45** e2e.
+
+## Item 16 CLOSED — bundle pricing
+
+Run `40072780062` (`c3ba1e0`): CI 6/6, e2e **46/46**.
+
+`bundles.price` was never read. It now is, under the two rules recorded above:
+
+  - STRICT MATCH (schema-imposed): the seller's lines must be exactly the bundle's
+    variants in exactly its quantities.
+  - BEST-OF (business decision): the deeper of {bundles, coupon} applies; points stay
+    additive.
+
+Implemented as one pure matcher (`matchBundles`, six table-driven cases) plus a block
+in `QuoteCheckout` placed BEFORE the points cap so a bundle cannot combine with
+points to drive the merchandise total negative. `PlaceOrder` already called
+`QuoteCheckout`, so quote and charge share one implementation by construction;
+refunds are capped at the charged amount, so the discount cannot enable an over-refund.
+
+Seeded bundle: 2 x Aurora Black at 10% off, priced from the variant so it cannot drift
+from the catalogue. The e2e spec reads the same quote the storefront does and asserts
+the discount applies at 2 units and is GONE at 3 -- the strict rule, end to end.
+
+Two things this caught that reading would not have: the seed's parameter-type conflict
+("inconsistent types deduced for parameter $1", only visible against real Postgres) and
+the need for the decision to precede the points cap.
