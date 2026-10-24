@@ -1262,3 +1262,32 @@ but that is reasoning, not evidence, and it is recorded as such.
 Next step if this is worth deepening: more DB-backed cases (coupon vs bundle best-of,
 PlaceOrder's total against the quote) using the same harness. That is now cheap where
 it used to be impossible.
+
+## Coverage harness, step 2: the pricing rule is now verified where it runs
+
+Run `40090764867` (`0270222`): CI 6/6, e2e 46/46, integration test PASS.
+
+`TestQuoteAppliesSeededBundle` now covers, against a real migrated+seeded database:
+
+  1. STRICT MATCH -- the bundle applies at exactly its quantities and is gone one unit
+     later, with both the bundle list and the discount checked.
+  2. DISPLAYED == CHARGED -- `DiscountAmount` (what the UI shows) equals both the
+     applied bundle's discount and `DiscountFor(seller)` (what PlaceOrder subtracts).
+  3. QUOTE == ORDER -- `placed.GrandTotal` equals the quote's `Total`, and the
+     persisted order carries the same `discount_amount`. This is the invariant the
+     whole checkout exists to keep.
+  4. BEST-OF, BOTH DIRECTIONS -- a 1% coupon loses to the 10% bundle (coupon inert,
+     discount unchanged) and a 50% coupon beats it (bundle inert, nothing doubled).
+     Two throwaway coupons make it deterministic; the seeded WELCOME10's per-user
+     limit may already be spent by the seed's demo orders.
+
+Two harness lessons worth keeping:
+  - opt-in via INTEGRATION_DB, because the suite must also run where Postgres cannot
+    start; CI sets it after the existing migrate+seed step, so nothing was reordered;
+  - a test that can only run in CI must say so in its own failure messages, because
+    nobody will be able to iterate on it locally. The assertions here print the quote
+    and the charge side by side for exactly that reason.
+
+Coverage is 8.7% overall and `repository` is still 1.1% -- unchanged by this test,
+because one integration test exercises a path, not a package. Raising that number
+means many more DB-backed cases, which is now cheap rather than impossible.
