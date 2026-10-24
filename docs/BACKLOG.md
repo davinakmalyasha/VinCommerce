@@ -1230,3 +1230,35 @@ the discount applies at 2 units and is GONE at 3 -- the strict rule, end to end.
 Two things this caught that reading would not have: the seed's parameter-type conflict
 ("inconsistent types deduced for parameter $1", only visible against real Postgres) and
 the need for the decision to precede the points cap.
+
+## Coverage harness, step 1: measured, and the first DB-backed test
+
+Run `40086799868` (`c0cf829`): CI 6/6, e2e 46/46, integration test PASS.
+
+COVERAGE IS NOW MEASURED ON EVERY RUN, not remembered: the unit-test step writes a
+profile, prints the repository total (currently **8.7%**) and uploads it as an
+artifact. Deliberately not a gate -- with no database-backed tests a threshold would
+be arbitrary, and an arbitrary threshold teaches people to test the metric.
+
+THE NUMBER THAT MATTERS is the per-package one: `repository` 1.1%, `httpapi/handler`
+0.7%. Every defect that reached a 500 or a silent no-op in this project lived in
+exactly that untested slice (a 17-vs-15 column scan, a PUT matching zero rows, a seed
+statement Postgres refused), and no source-inspection test could see any of them.
+
+So the second half: `TestQuoteAppliesSeededBundle`, opt-in via INTEGRATION_DB=1 and run
+by CI AFTER the migrate+seed step, exercises the real SQL -- the cart write, the bundle
+listing, the strict-match decision, and the quote arithmetic. It asserts three
+invariants in one place:
+  - the bundle applies at exactly its quantities and is gone one unit later;
+  - the displayed discount equals the applied bundle's discount;
+  - `DiscountFor(seller)`, which is what PlaceOrder actually subtracts, equals it too.
+    That last one is the split that would be worst: quote honest, charge not.
+
+NOT verified by mutation, unlike every other test added here: a mutation needs the
+database, and this machine cannot start Postgres. The mutation it would catch is the
+bundle feature itself (revert the quote integration and the first assertion fails),
+but that is reasoning, not evidence, and it is recorded as such.
+
+Next step if this is worth deepening: more DB-backed cases (coupon vs bundle best-of,
+PlaceOrder's total against the quote) using the same harness. That is now cheap where
+it used to be impossible.
