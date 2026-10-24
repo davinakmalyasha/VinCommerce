@@ -249,7 +249,8 @@ jobs:
         env:
           INTEGRATION_DB: "1"
           DB_PASSWORD: vincom_dev
-        run: go test ./internal/service/ -run TestQuoteAppliesSeededBundle -count=1 -v
+        run: |
+          go test ./internal/service/ -count=1 -v             -run 'TestQuoteAppliesSeededBundle|TestStoreQueriesReturnRealData'
 
   # ── Web ──────────────────────────────────────────────────────────────────
   web:
