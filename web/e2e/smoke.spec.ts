@@ -206,42 +206,83 @@ test('engagement: back-in-stock alert lifecycle', async ({ request }) => {
   expect(cancel.ok()).toBeTruthy()
 })
 
-test('payments: external payment confirmation', async ({ request }) => {
-  // This test CONSUMES a pending order: confirming it moves the order to
-  // `paid` and nothing moves it back. The original version searched the seeded
-  // buyer's orders for a `pending` one and, on the second run of the suite
-  // against the same database, found none — took an early `return` — and
-  // reported GREEN with zero assertions. A regression in the payment
-  // confirmation path would have shipped through that.
-  //
-  // The fixture is now created here, so the transition is exercised on every
-  // run, against an order this test owns. A per-run account is used because the
-  // buyer's cart, coupons and orders are all per-user state that other specs
-  // also touch.
+test('payments: an off-platform claim needs admin verification', async ({ request }) => {
+  // This test CONSUMES a pending order: approving its claim moves the order to
+  // `paid` and nothing moves it back. The fixture is created here, so the transition
+  // is exercised on every run, against an order this test owns.
   const { token } = await registerBuyer(request, 'pay')
   const h = { Authorization: `Bearer ${token}` }
 
   const order = await placeOrder(request, token)
   expect(order.status, 'a freshly placed order must be pending').toBe('pending')
 
-  const res = await request.post(`http://localhost:8080/api/v1/orders/${order.id}/external-payment`, {
-    headers: h,
-    data: { reference: `E2E-TEST-REF-${Date.now()}`, amount: order.total_amount },
-  })
-  expect(res.ok()).toBeTruthy()
-  expect((await res.json()).confirmed).toBe(true)
+  const claim = await request.post(
+    `http://localhost:8080/api/v1/orders/${order.id}/external-payment`,
+    {
+      headers: h,
+      data: { reference: `E2E-TEST-REF-${Date.now()}`, amount: order.total_amount },
+    },
+  )
+  // 202 Accepted: recorded for review, NOT confirmed.
+  expect(claim.status(), 'a claim should be accepted for review, not confirmed').toBe(202)
+  const { claim_id } = await claim.json()
+  expect(claim_id, 'the claim id is needed to approve it').toBeTruthy()
 
-  const after = await request.get(`http://localhost:8080/api/v1/orders/${order.id}`, { headers: h })
-  expect(after.ok()).toBeTruthy()
-  expect((await after.json()).order.status).toBe('paid')
+  // THE SECURITY PROPERTY. The buyer used to be able to mark their own order paid
+  // with a reference string; a claim alone must leave it pending.
+  const stillPending = await request.get(
+    `http://localhost:8080/api/v1/orders/${order.id}`,
+    { headers: h },
+  )
+  expect(
+    (await stillPending.json()).order.status,
+    'a buyer claim paid the order without verification',
+  ).toBe('pending')
 
-  // Confirming an already-paid order must be refused, not silently accepted:
-  // a double-capture here is a money bug.
-  const again = await request.post(`http://localhost:8080/api/v1/orders/${order.id}/external-payment`, {
-    headers: h,
-    data: { reference: `E2E-TEST-REF-DUP-${Date.now()}`, amount: order.total_amount },
+  // A second claim while one is pending is a duplicate, not a new fact.
+  const duplicate = await request.post(
+    `http://localhost:8080/api/v1/orders/${order.id}/external-payment`,
+    {
+      headers: h,
+      data: { reference: `E2E-TEST-REF-DUP-${Date.now()}`, amount: order.total_amount },
+    },
+  )
+  expect(
+    duplicate.status(),
+    'a duplicate claim was accepted while one was already pending',
+  ).toBeGreaterThanOrEqual(400)
+
+  // The admin queue lists it, and approval is what pays the order.
+  const adminLogin = await request.post('http://localhost:8080/api/v1/auth/login', {
+    data: { email: 'admin@vincommerce.com', password: 'AdminPass123!' },
   })
-  expect(again.status(), 'a second external payment on a paid order was accepted').toBeGreaterThanOrEqual(400)
+  expect(adminLogin.ok()).toBeTruthy()
+  const ah = { Authorization: `Bearer ${(await adminLogin.json()).access_token}` }
+
+  const queue = await request.get('http://localhost:8080/api/v1/admin/external-payments', {
+    headers: ah,
+  })
+  expect(queue.ok()).toBeTruthy()
+  const queued = (await queue.json()).claims as { id: string }[]
+  expect(queued.some((c) => c.id === claim_id), 'the pending claim is not in the admin queue').toBe(
+    true,
+  )
+
+  const approve = await request.post(
+    `http://localhost:8080/api/v1/admin/external-payments/${claim_id}/decide`,
+    { headers: ah, data: { decision: 'approved' } },
+  )
+  expect(approve.ok(), `approve failed: ${approve.status()} ${await approve.text()}`).toBeTruthy()
+
+  const paid = await request.get(`http://localhost:8080/api/v1/orders/${order.id}`, { headers: h })
+  expect((await paid.json()).order.status, 'approval did not pay the order').toBe('paid')
+
+  // A decided claim cannot be decided again.
+  const twice = await request.post(
+    `http://localhost:8080/api/v1/admin/external-payments/${claim_id}/decide`,
+    { headers: ah, data: { decision: 'approved' } },
+  )
+  expect(twice.status(), 'an already-reviewed claim was decided twice').toBeGreaterThanOrEqual(400)
 })
 
 test('moderation: report a product and admin sees it', async ({ request }) => {

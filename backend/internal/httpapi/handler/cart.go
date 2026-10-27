@@ -649,8 +649,8 @@ type externalPaymentRequest struct {
 	PaidAt    string  `json:"paid_at,omitempty"`
 }
 
-// ExternalPayment handles POST /orders/{id}/external-payment — records an
-// off-platform payment (buyer pays outside the app).
+// ExternalPayment handles POST /orders/{id}/external-payment — records the buyer's
+// CLAIM that an off-platform transfer was made, for an admin to verify.
 func (h *Orders) ExternalPayment(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
 	var req externalPaymentRequest
@@ -667,11 +667,15 @@ func (h *Orders) ExternalPayment(w http.ResponseWriter, r *http.Request) {
 		}
 		paidAt = t
 	}
-	if err := h.svc.ConfirmExternalPayment(r.Context(), chi.URLParam(r, "id"), user.ID, req.Reference, req.Amount, paidAt); err != nil {
+	claimID, err := h.svc.SubmitExternalPaymentClaim(r.Context(), chi.URLParam(r, "id"), user.ID, req.Reference, req.Amount, paidAt)
+	if err != nil {
 		writeErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"confirmed": true})
+	// 202 Accepted, not 200 confirmed: this records the buyer's CLAIM and the order
+	// stays pending until an admin verifies it. The endpoint used to mark the order
+	// paid on the buyer's own say-so.
+	writeJSON(w, http.StatusAccepted, map[string]any{"claim_id": claimID, "status": "pending"})
 }
 
 type orderTransitionRequest struct {

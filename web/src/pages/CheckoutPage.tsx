@@ -544,6 +544,11 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
   const queryClient = useQueryClient()
   const [form, setForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [done, setDone] = useState(false)
+  // A claim is not a payment: wallet/Snap capture immediately, an off-platform
+  // transfer waits for an admin. `done` covers the instant paths, so the claim needs
+  // its own state or the buyer is told a transfer was received when it was merely
+  // reported.
+  const [claimSubmitted, setClaimSubmitted] = useState(false)
   const [err, setErr] = useState('')
   const [showExternal, setShowExternal] = useState(false)
 
@@ -561,7 +566,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
         paid_at: form.paid_at ? new Date(form.paid_at).toISOString() : undefined,
       }),
     onSuccess: () => {
-      setDone(true)
+      setClaimSubmitted(true)
       refreshOrder()
     },
     onError: (e: Error) => setErr(e.message),
@@ -603,7 +608,9 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
         <p className="font-medium text-sm">{order.order_number}</p>
         <p className="font-bold text-sm text-amber-600">{formatIDR(order.total_amount)}</p>
       </div>
-      {done ? (
+      {claimSubmitted ? (
+        <p className="text-sm text-amber-700">⏳ Klaim pembayaran dikirim. Menunggu verifikasi admin sebelum pesanan diproses.</p>
+      ) : done ? (
         <p className="text-sm text-green-700">✅ Metode pembayaran tercatat. Penjual akan memproses pesananmu.</p>
       ) : (
         <>

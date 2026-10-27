@@ -55,6 +55,9 @@ export function OrderDetailPage() {
   const [returnFor, setReturnFor] = useState<string | null>(null)
   const [payForm, setPayForm] = useState({ reference: '', amount: '', paid_at: '' })
   const [payDone, setPayDone] = useState(false)
+  // Off-platform transfers are a CLAIM awaiting admin verification; wallet/Snap
+  // capture immediately, so they keep using payDone.
+  const [payClaimed, setPayClaimed] = useState(false)
   const [notice, setNotice] = useState('')
 
   const orderQuery = useQuery({
@@ -125,7 +128,7 @@ export function OrderDetailPage() {
         paid_at: payForm.paid_at ? new Date(payForm.paid_at).toISOString() : undefined,
       }),
     onSuccess: () => {
-      setPayDone(true)
+      setPayClaimed(true)
       queryClient.invalidateQueries({ queryKey: ['order', id] })
       queryClient.invalidateQueries({ queryKey: ['order-events', id] })
     },
@@ -223,7 +226,9 @@ export function OrderDetailPage() {
               <PaymentCountdown placedAt={data.placed_at} />
             )}
           </div>
-          {payDone ? (
+          {payClaimed ? (
+            <p className="text-sm text-amber-700 font-medium">⏳ Klaim pembayaran dikirim. Menunggu verifikasi admin.</p>
+          ) : payDone ? (
             <p className="text-sm text-green-700 font-medium">Pembayaran tercatat! Penjual akan segera memproses pesananmu. ✅</p>
           ) : payBlocked ? (
 

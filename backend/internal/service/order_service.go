@@ -84,6 +84,7 @@ type OrderService struct {
 	stores        *repository.StoreRepository
 	loyalty       *repository.LoyaltyRepository
 	bundles       *repository.QARepository
+	claims        *repository.PaymentClaimRepository
 	wishlist      *repository.WishlistRepository
 	broker        *stream.Broker
 	payments      *PaymentService
@@ -112,6 +113,12 @@ func (s *OrderService) SetWishlist(w *repository.WishlistRepository) { s.wishlis
 
 // SetLoyalty awards points when orders complete.
 func (s *OrderService) SetLoyalty(l *repository.LoyaltyRepository) { s.loyalty = l }
+
+// SetPaymentClaims wires the off-platform claim queue. Without it, submitting a
+// claim fails loudly rather than falling through to an unverified payment.
+func (s *OrderService) SetPaymentClaims(c *repository.PaymentClaimRepository) {
+	s.claims = c
+}
 
 // SetBundles enables strict-match bundle pricing in quotes. Nil leaves it off, which
 // is what every test that does not care about bundles gets.
@@ -1146,29 +1153,40 @@ func (s *OrderService) Transition(ctx context.Context, orderID, from, to string,
 // the app, e.g. bank transfer), moving the order from pending to paid.
 // The reported amount must match the order total — a mismatching or absent
 // amount is rejected so an order can never be marked paid for less than owed.
-func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) error {
+// externalClaimOrder validates the inputs a payment CLAIM makes about an order.
+// Shared by the buyer's submission and by the admin's approval, so the two can never
+// disagree about what a valid claim looks like.
+func (s *OrderService) externalClaimOrder(ctx context.Context, orderID, buyerID, reference string, amount float64) (*domain.Order, error) {
 	o, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if o.BuyerID != buyerID {
-		return domain.E(domain.KindForbidden, "NOT_OWNED", "order does not belong to user")
+		return nil, domain.E(domain.KindForbidden, "NOT_OWNED", "order does not belong to user")
 	}
 	if o.Status != domain.OrderPending {
-		return domain.E(domain.KindConflict, "NOT_PENDING", "only unpaid orders can be confirmed")
+		return nil, domain.E(domain.KindConflict, "NOT_PENDING", "only unpaid orders can be confirmed")
 	}
 	if strings.TrimSpace(reference) == "" {
-		return domain.E(domain.KindInvalid, "REF_REQUIRED", "external payment reference is required")
+		return nil, domain.E(domain.KindInvalid, "REF_REQUIRED", "external payment reference is required")
 	}
 	if len(strings.TrimSpace(reference)) > 100 {
-		return domain.E(domain.KindInvalid, "REF_TOO_LONG", "external payment reference is too long")
+		return nil, domain.E(domain.KindInvalid, "REF_TOO_LONG", "external payment reference is too long")
 	}
 	if amount <= 0 {
-		return domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
+		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
 	}
 	if absDiff(amount, o.TotalAmount) > 1.0 {
-		return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
+		return nil, domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
 			fmt.Sprintf("reported amount Rp %.2f does not match order total Rp %.2f", amount, o.TotalAmount))
+	}
+	return o, nil
+}
+
+func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) error {
+	o, err := s.externalClaimOrder(ctx, orderID, buyerID, reference, amount)
+	if err != nil {
+		return err
 	}
 	if paidAt.IsZero() {
 		paidAt = time.Now().UTC()
@@ -1224,6 +1242,75 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 	s.emailFor(ctx, orderID, "order_paid", "Pembayaran diterima — VinCommerce",
 		map[string]any{"Total": fmt.Sprintf("Rp %.0f", o.TotalAmount)})
 	return nil
+}
+
+// SubmitExternalPaymentClaim records the buyer's claim and NOTHING else.
+//
+// The endpoint used to mark the order paid on this call: a reference string and an
+// amount equal to the total were treated as proof that money had arrived. This is the
+// claim; ApproveExternalPaymentClaim is the decision.
+func (s *OrderService) SubmitExternalPaymentClaim(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) (string, error) {
+	if s.claims == nil {
+		return "", domain.E(domain.KindConflict, "CLAIMS_UNAVAILABLE",
+			"payment verification is not configured")
+	}
+	if _, err := s.externalClaimOrder(ctx, orderID, buyerID, reference, amount); err != nil {
+		return "", err
+	}
+	if paidAt.IsZero() {
+		paidAt = time.Now().UTC()
+	}
+	return s.claims.Create(ctx, orderID, buyerID, strings.TrimSpace(reference), amount, paidAt)
+}
+
+// ApproveExternalPaymentClaim is the ONLY route from a buyer's claim to a paid order.
+//
+// It confirms the claim's OWN figures rather than accepting fresh ones: the admin
+// approves the evidence they were shown, not a number supplied at approval time.
+func (s *OrderService) ApproveExternalPaymentClaim(ctx context.Context, adminID, claimID string) error {
+	if s.claims == nil {
+		return domain.E(domain.KindConflict, "CLAIMS_UNAVAILABLE", "payment verification is not configured")
+	}
+	c, err := s.claims.ByID(ctx, claimID)
+	if err != nil {
+		return err
+	}
+	if c.Status != "pending" {
+		return domain.E(domain.KindConflict, "CLAIM_DECIDED", "this claim has already been reviewed")
+	}
+	if err := s.ConfirmExternalPayment(ctx, c.OrderID, c.BuyerID, c.Reference, c.Amount, c.PaidAt); err != nil {
+		var de *domain.Error
+		if !(errors.As(err, &de) && de.Code == "NOT_PENDING") {
+			return err
+		}
+		// Already paid by another route; the claim is still true, so record the
+		// decision rather than failing forever on a stale queue entry.
+	}
+	return s.claims.Decide(ctx, claimID, "approved", adminID, "")
+}
+
+// RejectExternalPaymentClaim leaves the order pending. Nothing is refunded because
+// nothing was charged; the buyer can submit corrected evidence.
+func (s *OrderService) RejectExternalPaymentClaim(ctx context.Context, adminID, claimID, note string) error {
+	if s.claims == nil {
+		return domain.E(domain.KindConflict, "CLAIMS_UNAVAILABLE", "payment verification is not configured")
+	}
+	c, err := s.claims.ByID(ctx, claimID)
+	if err != nil {
+		return err
+	}
+	if c.Status != "pending" {
+		return domain.E(domain.KindConflict, "CLAIM_DECIDED", "this claim has already been reviewed")
+	}
+	return s.claims.Decide(ctx, claimID, "rejected", adminID, strings.TrimSpace(note))
+}
+
+// PendingExternalPaymentClaims backs the admin queue.
+func (s *OrderService) PendingExternalPaymentClaims(ctx context.Context) ([]*repository.ExternalPaymentClaim, error) {
+	if s.claims == nil {
+		return nil, domain.E(domain.KindConflict, "CLAIMS_UNAVAILABLE", "payment verification is not configured")
+	}
+	return s.claims.Pending(ctx)
 }
 
 // CancelOrder cancels an order and releases its stock.

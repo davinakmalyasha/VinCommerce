@@ -94,6 +94,7 @@ type Repositories struct {
 	FeatureFlags  *repository.FeatureFlagRepository
 	Chat          *repository.ChatRepository
 	Market        *repository.QARepository
+	Claims        *repository.PaymentClaimRepository
 	Loyalty       *repository.LoyaltyRepository
 	Disputes      *repository.DisputeRepository
 	Gamification  *repository.GamificationRepository
@@ -161,6 +162,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 		FeatureFlags:  repository.NewFeatureFlagRepository(pool),
 		Chat:          repository.NewChatRepository(pool),
 		Market:        repository.NewQARepository(pool),
+		Claims:        repository.NewPaymentClaimRepository(pool),
 		Loyalty:       repository.NewLoyaltyRepository(pool),
 		Disputes:      repository.NewDisputeRepository(pool),
 		Gamification:  repository.NewGamificationRepository(pool),
@@ -282,6 +284,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	orderSvc.SetLoyalty(r.Loyalty)
 	orderSvc.SetWishlist(r.Wishlist)
 	orderSvc.SetBundles(r.Market)
+	orderSvc.SetPaymentClaims(r.Claims)
 	orderSvc.SetInsurancePct(cfg.Payments.ShippingInsurancePct)
 	orderSvc.SetPaymentService(paymentSvc)
 	orderSvc.SetNotificationService(notificationSvc)

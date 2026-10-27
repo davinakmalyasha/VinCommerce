@@ -112,6 +112,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	cart := handler.NewCart(orderSvc)
 	checkout := handler.NewCheckout(orderSvc, deps.Redis.Client)
 	ordersH := handler.NewOrders(orderSvc, productSvc)
+	claimsH := handler.NewAdminClaims(orderSvc)
 	addressesH := handler.NewAddresses(orderSvc)
 	paymentsH := handler.NewPayments(paymentSvc)
 	wallet := handler.NewWallet(paymentSvc)
@@ -404,6 +405,9 @@ func NewRouter(deps Dependencies) http.Handler {
 			// On adminOps, not admin: the money operations live with the other ops
 			// handlers, and splitting them across two admin types is how half an
 			// admin surface ends up on one and half on the other.
+			// Off-platform payments: the buyer files a claim, an admin decides.
+			r.Get("/external-payments", claimsH.Pending)
+			r.Post("/external-payments/{id}/decide", claimsH.Decide)
 			r.Get("/refunds", adminOps.Refunds)
 			r.Get("/refunds/summary", adminOps.RefundSummary)
 			r.Get("/ledger/trial-balance", adminOps.TrialBalance)

@@ -21,6 +21,7 @@ export function AdminLayout() {
     { to: '/admin/reviews', label: 'Moderasi Ulasan' },
     { to: '/admin/reports', label: 'Moderasi Produk' },
     { to: '/admin/returns', label: 'Antrian Retur' },
+    { to: '/admin/payment-claims', label: 'Verifikasi Pembayaran' },
     { to: '/admin/disputes', label: 'Sengketa' },
     { to: '/admin/coupons', label: 'Kupon' },
     { to: '/admin/flash-sales', label: 'Flash Sale' },

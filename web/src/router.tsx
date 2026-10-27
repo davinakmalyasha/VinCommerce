@@ -48,6 +48,10 @@ const AdminTickets = lazyOf(() => import('./pages/admin/AdminTickets'), 'AdminTi
 const AdminReviews = lazyOf(() => import('./pages/admin/AdminReviews'), 'AdminReviews')
 const AdminReports = lazyOf(() => import('./pages/admin/AdminReports'), 'AdminReports')
 const AdminReturns = lazyOf(() => import('./pages/admin/AdminReturns'), 'AdminReturns')
+const AdminPaymentClaims = lazyOf(
+  () => import('./pages/admin/AdminPaymentClaims'),
+  'AdminPaymentClaims',
+)
 const AdminShipping = lazyOf(() => import('./pages/admin/AdminShipping'), 'AdminShipping')
 const AdminOps = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminOrders')
 const AdminAudit = lazyOf(() => import('./pages/admin/AdminOpsPages'), 'AdminAudit')
@@ -185,6 +189,7 @@ export const router = createBrowserRouter([
           { path: 'reviews', element: route(<AdminReviews />, 'Moderasi ulasan') },
           { path: 'reports', element: route(<AdminReports />, 'Laporan produk') },
           { path: 'returns', element: route(<AdminReturns />, 'Antrean retur') },
+          { path: 'payment-claims', element: route(<AdminPaymentClaims />, 'Verifikasi pembayaran') },
           { path: 'coupons', element: route(<AdminCoupons />, 'Kupon platform') },
           { path: 'shipping', element: route(<AdminShipping />, 'Metode pengiriman') },
           { path: 'users', element: route(<AdminUsers />, 'Pengguna') },
