@@ -1291,3 +1291,35 @@ Two harness lessons worth keeping:
 Coverage is 8.7% overall and `repository` is still 1.1% -- unchanged by this test,
 because one integration test exercises a path, not a package. Raising that number
 means many more DB-backed cases, which is now cheap rather than impossible.
+
+## Item 14 CLOSED -- off-platform payments need admin verification
+
+Run `40545005020` (`3a38f52`): CI 6/6, e2e 46/46.
+
+THE DEFECT WAS WORSE THAN "UNVERIFIED". `POST /orders/{id}/external-payment` marked
+the order PAID on the buyer's own say-so -- a reference string and an amount equal to
+the total -- so any buyer could pay their own order with a fabricated reference and
+the seller would ship against it. The comment beside the intent booking already named
+the fix: "records a CLAIM, not a verified receipt".
+
+NOW:
+  - the buyer files a CLAIM (202), one open claim per order (partial unique index);
+  - the order stays `pending` -- asserted in e2e, because that is the security
+    property, not a happy path;
+  - an admin sees the queue with the claimed amount beside the order's real total, so
+    a mismatch is visible before anyone approves;
+  - approval runs the existing paid-transition using the CLAIM'S figures;
+  - rejection leaves the order pending: nothing is refunded because nothing was
+    charged;
+  - a decided claim cannot be decided again (guarded UPDATE, 0 rows = conflict).
+
+`ConfirmExternalPayment` is now reachable ONLY from approval, pinned structurally
+because the service methods need a database.
+
+TWO THINGS WORTH KEEPING from how this landed:
+  - the buyer UI distinguishes a claim from an instant wallet/Snap capture. Sharing
+    the `done` flag would have told buyers a transfer was "received" when it had only
+    been reported -- the same class of lie as the original endpoint;
+  - the e2e test was inverted rather than extended: it used to assert that a buyer
+    COULD pay, and now asserts they cannot. A test that only gains an approval step
+    would have kept passing if the buyer endpoint quietly kept confirming.
