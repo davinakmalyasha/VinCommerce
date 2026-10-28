@@ -379,7 +379,7 @@ export function OrderDetailPage() {
           <div key={it.id}>
             <div className="flex items-center gap-3">
               {it.image_url ? (
-                <img src={it.image_url} alt="" className="w-12 h-12 rounded-lg object-cover bg-gray-100" />
+                <img src={it.image_url} alt={it.product_name} className="w-12 h-12 rounded-lg object-cover bg-gray-100" />
               ) : (
                 <div className="w-12 h-12 rounded-lg bg-gray-100" />
               )}
@@ -428,7 +428,7 @@ export function OrderDetailPage() {
                       <div className="flex gap-2">
                         {reviewImages.map((img, i) => (
                           <div key={img} className="relative">
-                            <img src={img} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-200" />
+                            <img src={img} alt={`Foto ulasan ${i + 1}`} className="w-14 h-14 rounded-lg object-cover border border-gray-200" />
                             <button type="button"
                               onClick={() => setReviewImages((imgs) => imgs.filter((_, j) => j !== i))}
                               className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs"

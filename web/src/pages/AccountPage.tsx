@@ -90,7 +90,7 @@ function ProfileTab() {
       <h2 className="font-bold">Profil</h2>
       <div className="flex items-center gap-4">
         {avatarUrl ? (
-          <img src={avatarUrl} alt="" className="w-20 h-20 rounded-full object-cover bg-gray-100 border border-gray-200" />
+          <img src={avatarUrl} alt={name} className="w-20 h-20 rounded-full object-cover bg-gray-100 border border-gray-200" />
         ) : (
           <div className="w-20 h-20 rounded-full bg-amber-500 flex items-center justify-center text-2xl font-extrabold text-white">
             {name.slice(0, 1).toUpperCase()}

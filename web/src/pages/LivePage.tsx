@@ -84,7 +84,7 @@ function SessionGrid({ sessions, onPick }: { sessions: LiveSession[]; onPick: (i
         <button type="button" key={s.id} onClick={() => onPick(s.id)} className="text-left bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden hover:shadow-lg transition-shadow">
           <div className="aspect-video bg-gray-900 relative">
             {s.thumbnail_url ? (
-              <img src={s.thumbnail_url} alt="" className="w-full h-full object-cover opacity-80" />
+              <img src={s.thumbnail_url} alt={s.title} className="w-full h-full object-cover opacity-80" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-4xl">📺</div>
             )}
@@ -233,7 +233,7 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                   return (
                     <div key={p.variant_id} className="flex items-center gap-2 border rounded-xl p-2">
                       {p.image_url ? (
-                        <img src={p.image_url} alt="" className="w-12 h-12 rounded-lg object-cover" />
+                        <img src={p.image_url} alt={p.product_name} className="w-12 h-12 rounded-lg object-cover" />
                       ) : (
                         <div className="w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-800" />
                       )}

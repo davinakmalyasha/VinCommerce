@@ -384,7 +384,7 @@ export function ProductPage() {
                     i === activeImage ? 'border-amber-400' : 'border-transparent opacity-60'
                   }`}
                 >
-                  <img src={url} alt="" className="w-full h-full object-cover" />
+                  <img src={url} alt={product.name} className="w-full h-full object-cover" />
                 </button>
               ))}
             </div>
@@ -796,7 +796,7 @@ export function ProductPage() {
                     <img
                       key={i}
                       src={img}
-                      alt=""
+                      alt={`Foto ulasan ${r.title || product.name}`}
                       loading="lazy"
                       className="w-16 h-16 rounded-lg object-cover bg-gray-100 border border-gray-200"
                     />

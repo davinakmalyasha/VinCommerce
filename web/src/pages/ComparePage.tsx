@@ -69,7 +69,7 @@ export function ComparePage() {
                 <th key={p.id} className="p-3 min-w-52">
                   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-3">
                     {p.images?.[0]?.url && (
-                      <img src={p.images[0].url} alt="" className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
+                      <img src={p.images[0].url} alt={p.name} className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
                     )}
                     <Link to={`/product/${p.slug}`} className="font-medium text-sm hover:text-amber-600 mt-2 block line-clamp-2">
                       {p.name}

@@ -41,7 +41,7 @@ export function FlashSalePage() {
             <div key={it.variant_id} className="bg-white dark:bg-gray-900 border border-red-100 dark:border-gray-700 rounded-xl p-3 hover:shadow-md transition-all">
               <Link to={`/product/${it.product_slug}`}>
                 {it.image_url && (
-                  <img src={it.image_url} alt="" className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
+                  <img src={it.image_url} alt={it.product_name} className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
                 )}
                 <p className="text-sm mt-2 line-clamp-2">{it.product_name}</p>
               </Link>

@@ -49,7 +49,7 @@ export function FollowedStoresPage() {
               >
                 <div className="flex items-center gap-4">
                   {s.logo_url ? (
-                    <img src={s.logo_url} alt="" className="w-14 h-14 rounded-xl object-cover" />
+                    <img src={s.logo_url} alt={s.name} className="w-14 h-14 rounded-xl object-cover" />
                   ) : (
                     <div className="w-14 h-14 rounded-xl bg-amber-500 flex items-center justify-center text-xl font-extrabold text-white">
                       {s.name.slice(0, 1)}

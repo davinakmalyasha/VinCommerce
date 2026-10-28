@@ -51,7 +51,7 @@ export function StorePage() {
         style={store.banner_url ? { backgroundImage: `linear-gradient(rgba(17,24,39,.72), rgba(17,24,39,.72)), url(${store.banner_url})` } : undefined}
       >
         {store.logo_url ? (
-          <img src={store.logo_url} alt="" className="w-20 h-20 rounded-2xl object-cover" />
+          <img src={store.logo_url} alt={store.name} className="w-20 h-20 rounded-2xl object-cover" />
         ) : (
           <div className="w-20 h-20 rounded-2xl bg-amber-500 flex items-center justify-center text-2xl font-extrabold">
             {store.name.slice(0, 1)}

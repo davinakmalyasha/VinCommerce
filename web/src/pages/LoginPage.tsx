@@ -46,7 +46,7 @@ export function LoginPage() {
             />
           </div>
           <div>
-            <label htmlFor="login-password" className="block text-sm font-medium mb-1">Password</label>
+            <label htmlFor="login-password" className="block text-sm font-medium mb-1">Kata sandi</label>
             <input
               id="login-password"
               type="password"

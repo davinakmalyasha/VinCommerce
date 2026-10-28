@@ -265,7 +265,7 @@ export function Header() {
                 <NotificationBell />
                 {user.roles.includes('seller') || user.roles.includes('admin') ? (
                   <Link to="/seller" className="px-3 py-2 rounded-lg hover:bg-amber-600">
-                    Seller
+                    Penjual
                   </Link>
                 ) : null}
                 {user.roles.includes('admin') && (
@@ -280,7 +280,7 @@ export function Header() {
                 )}
                 <Link to="/account" className="px-3 py-2 rounded-lg hover:bg-amber-600 flex items-center gap-2 max-w-32 sm:max-w-none">
                   {user.avatar_url ? (
-                    <img src={user.avatar_url} alt="" className="w-6 h-6 rounded-full object-cover bg-white/20" />
+                    <img src={user.avatar_url} alt={user.full_name} className="w-6 h-6 rounded-full object-cover bg-white/20" />
                   ) : null}
                   <span className="truncate">{user.full_name.split(' ')[0]}</span>
                 </Link>
@@ -338,7 +338,7 @@ function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void
             {lines.map((l) => (
               <div key={l.variant_id} className="flex gap-3">
                 {l.image_url ? (
-                  <img src={l.image_url} alt="" loading="lazy" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
+                  <img src={l.image_url} alt={l.product_name} loading="lazy" className="w-16 h-16 rounded-lg object-cover bg-gray-100" />
                 ) : (
                   <div className="w-16 h-16 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
                     {l.product_name.slice(0, 8)}
@@ -364,7 +364,7 @@ function CartDrawer({ lines, onClose }: { lines: CartLine[]; onClose: () => void
               onClick={onClose}
               className="block text-center py-3 rounded-lg bg-amber-500 text-white font-medium hover:bg-amber-600"
             >
-              Checkout
+              Lanjut ke Pembayaran
             </Link>
             <Link
               to="/cart"

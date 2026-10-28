@@ -40,7 +40,7 @@ export function FileUpload({
   return (
     <div className="flex items-center gap-3 flex-wrap">
       {value && (
-        <img src={value} alt="" className="w-16 h-16 rounded-lg object-cover bg-gray-100 border border-gray-200" />
+        <img src={value} alt={label} className="w-16 h-16 rounded-lg object-cover bg-gray-100 border border-gray-200" />
       )}
       <label htmlFor={id} className="px-4 py-2 rounded-lg border border-gray-300 text-sm cursor-pointer hover:bg-gray-50">
         {uploading ? 'Mengunggah...' : value ? 'Ganti' : label}

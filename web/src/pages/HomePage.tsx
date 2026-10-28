@@ -83,7 +83,7 @@ export function HomePage() {
                 className="bg-white rounded-xl border border-red-100 p-3 hover:shadow-md transition-all"
               >
                 {it.image_url && (
-                  <img src={it.image_url} alt="" className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
+                  <img src={it.image_url} alt={it.product_name} className="w-full aspect-square object-cover rounded-lg bg-gray-100" />
                 )}
                 <p className="text-sm mt-2 line-clamp-2">{it.product_name}</p>
                 <p className="text-red-600 font-bold text-sm">

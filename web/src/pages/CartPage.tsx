@@ -343,7 +343,7 @@ function CartRow({ line: l, busy, checked, onToggle, onIncrease, onDecrease, onR
         className="accent-amber-500"
       />
       {l.image_url ? (
-        <img src={l.image_url} alt="" className="w-20 h-20 rounded-lg object-cover bg-gray-100" />
+        <img src={l.image_url} alt={l.product_name} className="w-20 h-20 rounded-lg object-cover bg-gray-100" />
       ) : (
         <div className="w-20 h-20 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
           {l.product_name.slice(0, 10)}

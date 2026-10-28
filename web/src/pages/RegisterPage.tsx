@@ -65,7 +65,7 @@ export function RegisterPage() {
             />
           </div>
           <div>
-            <label htmlFor="reg-password" className="block text-sm font-medium mb-1">Password</label>
+            <label htmlFor="reg-password" className="block text-sm font-medium mb-1">Kata sandi</label>
             <input
               id="reg-password"
               type="password"

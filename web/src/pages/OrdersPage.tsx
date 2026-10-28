@@ -66,7 +66,7 @@ export function OrdersPage() {
                 {o.items.map((it) => (
                   <div key={it.id} className="flex items-center gap-3">
                     {it.image_url ? (
-                      <img src={it.image_url} alt="" className="w-12 h-12 rounded-lg object-cover bg-gray-100" />
+                      <img src={it.image_url} alt={it.product_name} className="w-12 h-12 rounded-lg object-cover bg-gray-100" />
                     ) : (
                       <div className="w-12 h-12 rounded-lg bg-gray-100" />
                     )}
