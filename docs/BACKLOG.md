@@ -5,6 +5,21 @@ other thing a reader needs. The order is deliberate: **P0 blocks real
 money**, P1 is what is needed to be credible at scale, and P2 is
 correctness and operability.
 
+> **Open only (reviewer shortcut).** The rest of this file keeps the
+> before/after history; this table is what is still true.
+>
+> | # | Gap | Status |
+> |---|-----|--------|
+> | P0-1 | Return-refund credits wallet, not gateway | Open — needs approve/refund split |
+> | P0-2 | No wallet top-up (refund-only balance) | Open |
+> | P0-3 | PPN/NPWP/invoice sequence missing (footing only) | Open |
+> | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Open — needs decimal |
+> | P1-1 | No carrier adapter (only `manual`) | Open — no rate/tracking poll |
+> | P1-2 | Payouts group but never pay (CSV human step) | Open |
+> | P1-3 | Search English-stem, bestsellers not personalised | Open |
+> | P2-1 | No backup/PITR, no TLS terminator in-repo | Open — largest ops risk |
+> | P2-2 | Return evidence has no endpoint/UI | Open |
+
 * **[closed] Migrations `0032`-`00051` had never been executed.** They now apply
   cleanly against a scratch database, verified by `backend/scripts/migration-dryrun.py`.
 * **[closed] `Migrate()` replayed `00001` against an already-migrated database**, so the

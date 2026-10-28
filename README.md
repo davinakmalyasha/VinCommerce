@@ -123,7 +123,8 @@ time, so it must be set when the image is built, not when it is run.
 
 Without keys, payment happens outside the app: checkout → order placed → pay
 via your own bank transfer/e-wallet → enter the payment reference (number,
-amount, date) → the order becomes "paid" and the seller processes it. The
+amount, date) → a claim is recorded (202) and the order stays pending until
+an admin verifies it at Admin → Verifikasi Pembayaran. The
 sandbox gateway is reachable via the API **in development only**; the routes are
 not registered when `APP_ENV` is `staging` or `production`.
 
@@ -136,11 +137,11 @@ media/*  loyalty/*  referral/*  disputes/*  price-alerts/*  back-in-stock/*  bun
 flash-sales/*  recommendations/*  stores/*  help/*  search/suggestions  followed-stores  followed-stores/feed
 auth/2fa/backup-codes (GET, regenerate)  orders/{id}/external-payment  products/{id}/view  products/{id}/report
 seller/low-stock  seller/orders/export.csv
-stream/orders (SSE)  stream/chat (SSE)  health/*  /metrics  /docs (Swagger UI + OpenAPI)  /uploads/*
+stream/orders (SSE)  stream/chat (SSE)  health/*  /metrics  /api-docs (Swagger UI + OpenAPI)  /uploads/*
 /robots.txt  /sitemap.xml  /sw.js (PWA)
 ```
 
-Interactive API docs: **http://localhost:8080/docs** · AI: set `AI_API_KEY` in env for LLM mode (offline retrieval works without it) · Payment methods: `midtrans_snap` (Midtrans popup — QRIS/e-wallet/VA/cards; enable by setting `MIDTRANS_SERVER_KEY` + `VITE_MIDTRANS_CLIENT_KEY`, see `.env.example`), bank_transfer, e_wallet, wallet (saldo), cod
+Interactive API docs: **http://localhost:8080/api-docs** · AI: set `AI_API_KEY` in env for LLM mode (offline retrieval works without it) · Payment methods: `midtrans_snap` (Midtrans popup — QRIS/e-wallet/VA/cards; enable by setting `MIDTRANS_SERVER_KEY` + `VITE_MIDTRANS_CLIENT_KEY`, see `.env.example`), bank_transfer, e_wallet, wallet (saldo), cod
 
 ## Tests & CI
 
