@@ -1323,3 +1323,26 @@ TWO THINGS WORTH KEEPING from how this landed:
   - the e2e test was inverted rather than extended: it used to assert that a buyer
     COULD pay, and now asserts they cannot. A test that only gains an approval step
     would have kept passing if the buyer endpoint quietly kept confirming.
+
+## Coverage harness, step 3: the claim lifecycle, including the guards
+
+Run `40637271266` (`e875224`): CI 6/6, e2e 46/46, three integration tests PASS.
+
+`TestExternalPaymentClaimLifecycle` covers the flow end to end against Postgres, and
+deliberately includes the four steps a happy-path test would skip:
+
+  - a claim leaves the order pending (the security property);
+  - a second pending claim is CLAIM_PENDING, enforced by the partial unique index;
+  - rejection leaves the order pending and the claim recorded;
+  - a rejected claim cannot then be approved;
+  - rejection frees the order for corrected evidence, as a NEW claim;
+  - approval is what pays it;
+  - approval cannot happen twice.
+
+Steps 2, 4 and 7 depend on SQL no source-inspection test can verify: a partial unique
+index and an UPDATE guarded by `WHERE status = 'pending'`.
+
+THREE DB-BACKED TESTS NOW, all in one CI step after the migrate+seed step:
+money path (bundle, best-of, quote==charge), store queries (the two SQL regressions),
+and the claim lifecycle. Coverage overall is still 8.7% -- these exercise paths, not
+packages -- but the paths they cover are the ones that have actually broken.
