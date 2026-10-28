@@ -238,7 +238,7 @@ export async function clearCartLine(
 export async function loginViaUi(page: Page, who: { email: string; password: string }): Promise<void> {
   await page.goto('/login')
   await page.getByLabel('Email', { exact: true }).fill(who.email)
-  await page.getByLabel('Password', { exact: true }).fill(who.password)
+  await page.getByLabel('Kata sandi', { exact: true }).fill(who.password)
   await page.getByRole('button', { name: 'Masuk' }).click()
   await expect(page).toHaveURL('/', { timeout: 20_000 })
 }

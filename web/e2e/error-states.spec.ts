@@ -121,7 +121,7 @@ test.describe('error states', () => {
     // SPA is authenticated, then force only the list call to fail.
     await page.goto('/login')
     await page.getByLabel('Email', { exact: true }).fill('buyer.sample@vincommerce.com')
-    await page.getByLabel('Password', { exact: true }).fill('BuyerPass123!')
+    await page.getByLabel('Kata sandi', { exact: true }).fill('BuyerPass123!')
     await page.getByRole('button', { name: 'Masuk' }).click()
     await expect(page).toHaveURL('/', { timeout: 20_000 })
 
