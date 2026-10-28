@@ -406,12 +406,20 @@ jobs:
         # single build even when nothing changed; the OS package set is
         # already a GitHub runner image feature, and only the browser binaries
         # are actually missing. This runs apt only when the cache missed.
+        #
+        # The plain `install` below runs EVERY time on purpose: the cache's
+        # restore-keys fall back to the previous lockfile's browsers, and a
+        # Playwright bump then restores the OLD build while the runner needs the
+        # new one (chromium_headless_shell-1248 vs whatever 1.62 used). That is
+        # exactly how the 1.62 -> 1.64 bump failed every spec at launch with
+        # "Executable doesn't exist". `install` without --with-deps only
+        # downloads what is missing, so the cached case stays fast.
         run: |
           set -euo pipefail
           if [ ! -d "$HOME/.cache/ms-playwright" ] || [ -z "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]; then
             npx playwright install --with-deps chromium
           else
-            echo "Playwright browsers restored from cache; skipping --with-deps"
+            npx playwright install chromium
           fi
 
       # No manual "go run ./cmd/seed &" / "go run ./cmd/api &" / "npm run dev &"
