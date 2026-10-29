@@ -1362,14 +1362,14 @@ money path (bundle, best-of, quote==charge), store queries (the two SQL regressi
 and the claim lifecycle. Coverage overall is still 8.7% -- these exercise paths, not
 packages -- but the paths they cover are the ones that have actually broken.
 
-## Dependabot sweep: 9 merged, 9 deferred with reasons
+## Dependabot sweep: 10 merged, 8 deferred with reasons
 
-Run `40690594317` (`54fc464`): CI 6/6, e2e 46/46 on Playwright 1.64.
+Run `40836411296` (`1c98a15`): CI 6/6, e2e 46/46 on Playwright 1.64.
 
 MERGED (each verified by a full green CI run before the next):
 actions group, mailpit v1.29->v1.32, redis digest, oxlint 1.76->1.87,
 @types/node 24->26, go-x (crypto 0.54->0.58, oauth2, sys), chi 5.3->5.4,
-go-redis 9.21->9.23, playwright 1.62->1.64.
+go-redis 9.21->9.23, playwright 1.62->1.64, nginx 1.27->1.29-alpine.
 
 The playwright bump exposed a real CI defect and paid for itself: the browser
 cache's restore-keys fell back to the previous lockfile's build, the install
@@ -1383,9 +1383,8 @@ DEFERRED (each needs its own cycle, not a batch):
   server version; never batch with code changes.
 - node 24->25-alpine, golang 1.26->1.27-alpine, alpine 3.21->3.24: base images;
   the Dockerfiles pin digests and the web probe asserts health, so each needs
-  a dedicated image-build run.
-- nginx 1.27->1.29-alpine: edge config (security-headers, brotli probe) must be
-  re-proven by the probe dossier, not assumed.
+  a dedicated image-build run. (nginx 1.27->1.29-alpine has since merged green,
+  probe included.)
 - build-tooling group (typescript ~6->~7, vite, plugin-react, vitest): a TS
   major plus bundler minor; typecheck + build + unit tests decide, one run.
 - react group (3 updates): UI runtime; e2e decides.
