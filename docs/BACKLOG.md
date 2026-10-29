@@ -1362,9 +1362,9 @@ money path (bundle, best-of, quote==charge), store queries (the two SQL regressi
 and the claim lifecycle. Coverage overall is still 8.7% -- these exercise paths, not
 packages -- but the paths they cover are the ones that have actually broken.
 
-## Dependabot sweep: 13 merged, 5 deferred with reasons
+## Dependabot sweep: 17 merged, 1 deferred with reason
 
-Run `40848262330` (`3994937`): CI 6/6, e2e 46/46.
+Run `40876979809` (`e1113c0`): CI 6/6, e2e 46/46.
 
 MERGED (each verified by a full green CI run before the next):
 actions group, mailpit v1.29->v1.32, redis digest, oxlint 1.76->1.87,
@@ -1372,7 +1372,11 @@ actions group, mailpit v1.29->v1.32, redis digest, oxlint 1.76->1.87,
 go-redis 9.21->9.23, playwright 1.62->1.64, nginx 1.27->1.29-alpine,
 golang 1.26->1.27-alpine (builder, aligns with CI toolchain),
 alpine 3.21->3.24 (runtime),
-node 24->25-alpine (web builder, verified by web build + probe).
+node 24->25-alpine (web builder, verified by web build + probe),
+pgx 5.10->5.11, goose 3.27->3.29 (migrate+seed witness),
+react 19.2->19.3 group (e2e witness),
+build-tooling group (typescript ~6->~7, vite, plugin-react, vitest --
+typecheck + build + unit + e2e all green on the major).
 
 The playwright bump exposed a real CI defect and paid for itself: the browser
 cache's restore-keys fell back to the previous lockfile's build, the install
@@ -1381,13 +1385,9 @@ with "Executable doesn't exist ... chromium_headless_shell-1248". The install
 step now always runs `npx playwright install chromium` (downloads only what is
 missing) and keeps --with-deps for true cache misses.
 
-DEFERRED (each needs its own cycle, not a batch):
-- postgres 17->18: major, needs migration + seed verification against a new
-  server version; never batch with code changes. (All other base images done:
-  backend builder + runtime, web builder node 25, nginx.)
-- build-tooling group (typescript ~6->~7, vite, plugin-react, vitest): a TS
-  major plus bundler minor; typecheck + build + unit tests decide, one run.
-- react group (3 updates): UI runtime; e2e decides.
-- pgx 5.10->5.11, goose 3.27->3.29: touch go.mod/go.sum alongside already-merged
-  bumps; each needs rebase + the migrate+seed step as witness. A rebase was
-  requested for goose; merge when green, one at a time.
+DEFERRED (one item left):
+- postgres 17->18: server major, needs migration + seed verification against a
+  new server version; never batch with code changes. Everything else is merged:
+  all base images (backend builder + runtime, web builder node 25, nginx),
+  all Go modules (go-x, chi, go-redis, pgx, goose), all web tooling (oxlint,
+  types/node, playwright, react group, TS 7 build-tooling group), actions.
