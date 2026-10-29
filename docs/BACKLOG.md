@@ -1362,16 +1362,17 @@ money path (bundle, best-of, quote==charge), store queries (the two SQL regressi
 and the claim lifecycle. Coverage overall is still 8.7% -- these exercise paths, not
 packages -- but the paths they cover are the ones that have actually broken.
 
-## Dependabot sweep: 12 merged, 6 deferred with reasons
+## Dependabot sweep: 13 merged, 5 deferred with reasons
 
-Run `40843454542` (`d5456d5`): CI 6/6, e2e 46/46.
+Run `40848262330` (`3994937`): CI 6/6, e2e 46/46.
 
 MERGED (each verified by a full green CI run before the next):
 actions group, mailpit v1.29->v1.32, redis digest, oxlint 1.76->1.87,
 @types/node 24->26, go-x (crypto 0.54->0.58, oauth2, sys), chi 5.3->5.4,
 go-redis 9.21->9.23, playwright 1.62->1.64, nginx 1.27->1.29-alpine,
 golang 1.26->1.27-alpine (builder, aligns with CI toolchain),
-alpine 3.21->3.24 (runtime).
+alpine 3.21->3.24 (runtime),
+node 24->25-alpine (web builder, verified by web build + probe).
 
 The playwright bump exposed a real CI defect and paid for itself: the browser
 cache's restore-keys fell back to the previous lockfile's build, the install
@@ -1382,10 +1383,8 @@ missing) and keeps --with-deps for true cache misses.
 
 DEFERRED (each needs its own cycle, not a batch):
 - postgres 17->18: major, needs migration + seed verification against a new
-  server version; never batch with code changes.
-- node 24->25-alpine: base image for the web builder; needs the web build +
-  probe run. (Backend builder golang and runtime alpine have since merged
-  green; nginx 1.27->1.29-alpine likewise.)
+  server version; never batch with code changes. (All other base images done:
+  backend builder + runtime, web builder node 25, nginx.)
 - build-tooling group (typescript ~6->~7, vite, plugin-react, vitest): a TS
   major plus bundler minor; typecheck + build + unit tests decide, one run.
 - react group (3 updates): UI runtime; e2e decides.
