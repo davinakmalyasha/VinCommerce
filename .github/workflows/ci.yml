@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 50
     services:
       postgres:
-        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
@@ -353,7 +353,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
         env:
           POSTGRES_USER: vincom
           POSTGRES_PASSWORD: vincom_dev
