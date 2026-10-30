@@ -1362,9 +1362,9 @@ money path (bundle, best-of, quote==charge), store queries (the two SQL regressi
 and the claim lifecycle. Coverage overall is still 8.7% -- these exercise paths, not
 packages -- but the paths they cover are the ones that have actually broken.
 
-## Dependabot sweep: 17 merged, 1 deferred with reason
+## Dependabot sweep: 18 merged, 0 deferred
 
-Run `40876979809` (`e1113c0`): CI 6/6, e2e 46/46.
+Run `41126980543` (`0b8e282`): CI 6/6, e2e 46/46 on postgres 18.
 
 MERGED (each verified by a full green CI run before the next):
 actions group, mailpit v1.29->v1.32, redis digest, oxlint 1.76->1.87,
@@ -1376,7 +1376,9 @@ node 24->25-alpine (web builder, verified by web build + probe),
 pgx 5.10->5.11, goose 3.27->3.29 (migrate+seed witness),
 react 19.2->19.3 group (e2e witness),
 build-tooling group (typescript ~6->~7, vite, plugin-react, vitest --
-typecheck + build + unit + e2e all green on the major).
+typecheck + build + unit + e2e all green on the major),
+postgres 17->18 (compose + CI services together; migrate+seed and all three
+INTEGRATION_DB tests PASS on 18, 46/46 e2e).
 
 The playwright bump exposed a real CI defect and paid for itself: the browser
 cache's restore-keys fell back to the previous lockfile's build, the install
@@ -1385,9 +1387,7 @@ with "Executable doesn't exist ... chromium_headless_shell-1248". The install
 step now always runs `npx playwright install chromium` (downloads only what is
 missing) and keeps --with-deps for true cache misses.
 
-DEFERRED (one item left):
-- postgres 17->18: server major, needs migration + seed verification against a
-  new server version; never batch with code changes. Everything else is merged:
-  all base images (backend builder + runtime, web builder node 25, nginx),
-  all Go modules (go-x, chi, go-redis, pgx, goose), all web tooling (oxlint,
-  types/node, playwright, react group, TS 7 build-tooling group), actions.
+DEFERRED: none. The postgres major was the last item; it needed its own
+cycle (compose bump in `3e54ac6`, CI services aligned in `0b8e282`) and the
+full suite as witness. Merging the compose bump alone would have left CI on
+17 -- green but proving nothing about 18.
