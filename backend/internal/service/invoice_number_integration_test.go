@@ -2,7 +2,8 @@ package service
 
 import (
 	"context"
-	"strings"
+	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/vincommerce/backend/internal/repository"
@@ -45,8 +46,9 @@ func TestInvoiceNumberIsAssignedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first assignment: %v", err)
 	}
-	if !strings.HasPrefix(first, "INV-") || len(first) < 16 {
-		t.Fatalf("invoice number %q does not look like INV-YYYYMM-NNNNNN", first)
+	format := regexp.MustCompile(`^INV-(\d{4})-(\d{6})$`)
+	if !format.MatchString(first) {
+		t.Fatalf("invoice number %q does not look like INV-YYYY-NNNNNN", first)
 	}
 
 	// The second view must return the SAME number, not consume another.
@@ -64,5 +66,18 @@ func TestInvoiceNumberIsAssignedOnce(t *testing.T) {
 	}
 	if second == first {
 		t.Fatalf("two orders received the same invoice number %q", first)
+	}
+
+	// Same fiscal year, issued consecutively: the counter must advance by
+	// exactly one. A gap here is what an auditor asks about.
+	firstParts := format.FindStringSubmatch(first)
+	secondParts := format.FindStringSubmatch(second)
+	if firstParts[1] == secondParts[1] {
+		a, _ := strconv.Atoi(firstParts[2])
+		b, _ := strconv.Atoi(secondParts[2])
+		if b != a+1 {
+			t.Fatalf("consecutive invoices in %s are %q then %q (counter jumped)",
+				firstParts[1], first, second)
+		}
 	}
 }

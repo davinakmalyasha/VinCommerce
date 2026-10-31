@@ -1284,30 +1284,57 @@ func itoa(v int) string {
 
 // AssignInvoiceNumber issues the fiscal invoice number for an order, once.
 //
-// The UPDATE is the concurrency control: `invoice_number IS NULL` means a
-// second viewer either waits and then finds nothing to update, or reads the
-// number the first viewer committed. `nextval` is deliberately inside the
-// UPDATE -- a sequence value consumed by a transaction that then fails is a
-// gap, and gaps are what an operator reconciles tax documents against.
+// Per-year counter, serialized by an advisory lock held to COMMIT. The lock is
+// affordable because invoice issuance is low volume, and it removes the
+// read-then-write race without a retry loop. The counter is incremented only
+// AFTER the order is known to be unnumbered, so viewing the same invoice twice
+// does not consume a second number -- the property an auditor checks first.
 func (r *OrderRepository) AssignInvoiceNumber(ctx context.Context, orderID string) (string, error) {
-	var number string
-	err := r.pool.QueryRow(ctx, `
-		UPDATE orders
-		   SET invoice_number = 'INV-' || to_char(now(), 'YYYYMM') || '-' ||
-		                        lpad(nextval('invoice_number_seq')::text, 6, '0')
-		 WHERE id = $1::uuid AND invoice_number IS NULL
-		RETURNING invoice_number`, orderID).Scan(&number)
-	if err == nil {
-		return number, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
 		return "", err
 	}
-	if err := r.pool.QueryRow(ctx,
-		`SELECT invoice_number FROM orders WHERE id = $1::uuid`, orderID).Scan(&number); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", domain.ErrNotFound
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('invoice_number'))`); err != nil {
+		return "", err
+	}
+
+	var current *string
+	err = tx.QueryRow(ctx, `SELECT invoice_number FROM orders WHERE id = $1::uuid`, orderID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if current != nil && *current != "" {
+		if err := tx.Commit(ctx); err != nil {
+			return "", err
 		}
+		return *current, nil
+	}
+
+	var year int
+	if err := tx.QueryRow(ctx, `SELECT EXTRACT(YEAR FROM now())::int`).Scan(&year); err != nil {
+		return "", err
+	}
+	var next int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO invoice_counters (fiscal_year, last_number)
+		VALUES ($1, 1)
+		ON CONFLICT (fiscal_year) DO UPDATE
+		   SET last_number = invoice_counters.last_number + 1
+		RETURNING last_number`, year).Scan(&next); err != nil {
+		return "", err
+	}
+
+	number := fmt.Sprintf("INV-%04d-%06d", year, next)
+	if _, err := tx.Exec(ctx,
+		`UPDATE orders SET invoice_number = $2 WHERE id = $1::uuid`, orderID, number); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return number, nil
