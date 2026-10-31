@@ -189,6 +189,7 @@ test-covered.
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | Known gaps, ordered P0 (blocks real money) / P1 / P2 |
 | [`docs/CORRECTIONS.md`](docs/CORRECTIONS.md) | Claims this README previously made and had to retract |
 | [`docs/POSTMORTEM.md`](docs/POSTMORTEM.md) | One defect, end to end, and what it cost |
+| [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Backup/restore drill, what is NOT PITR, and the missing TLS terminator |
 | [`web/README.md`](web/README.md) | The storefront and seller console |
 
 ## Known gaps

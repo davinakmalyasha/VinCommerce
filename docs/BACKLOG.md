@@ -17,7 +17,7 @@ correctness and operability.
 > | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
 > | P1-3 | Search English-stem, bestsellers not personalised | Search config closed — `09a8351`; personalised bestsellers still open |
-> | P2-1 | No backup/PITR, no TLS terminator in-repo | Open — largest ops risk |
+> | P2-1 | No backup/PITR, no TLS terminator in-repo | Partly closed — backup+restore drill in CI; PITR and TLS still open |
 > | P2-2 | Return evidence had no UI and no validation | Closed — `9e250e6` |
 
 * **[closed] Migrations `0032`-`00051` had never been executed.** They now apply

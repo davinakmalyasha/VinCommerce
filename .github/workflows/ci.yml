@@ -651,3 +651,73 @@ jobs:
             exit 1
           fi
           echo "healthcheck gave up after ${elapsed}s, as designed"
+
+  # ── Backup / restore ─────────────────────────────────────────────────────
+  # A backup nobody has restored is a hypothesis. This job takes a real dump
+  # with the repository's own script, restores it into a scratch database with
+  # the repository's own drill, and fails on a row-count mismatch.
+  #
+  # Deliberately its own job with its own throwaway server: the drill DROPs and
+  # CREATEs a database, and doing that beside the seed data other jobs share is
+  # how a drill becomes an outage.
+  #
+  # The scripts run INSIDE the postgres:18 container so pg_dump/pg_restore match
+  # the server's major version. A runner's preinstalled client (often 16) cannot
+  # dump an 18 server, and that failure would look like a script bug.
+  db-backup-drill:
+    name: Backup + restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Start a throwaway PostgreSQL 18
+        run: |
+          set -euo pipefail
+          docker run -d --name pgdrill \
+            -e POSTGRES_USER=vincom \
+            -e POSTGRES_PASSWORD=vincom_dev \
+            -e POSTGRES_DB=vincom \
+            postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+          for _ in $(seq 1 30); do
+            if docker exec pgdrill pg_isready -U vincom >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "postgres did not become ready" >&2
+          docker logs pgdrill || true
+          exit 1
+      - name: Seed two tables to compare
+        run: |
+          set -euo pipefail
+          docker exec -e PGPASSWORD=vincom_dev pgdrill \
+            psql -U vincom -d vincom -v ON_ERROR_STOP=1 -c \
+            "CREATE TABLE products (id int PRIMARY KEY);
+             INSERT INTO products SELECT generate_series(1, 250);
+             CREATE TABLE orders (id int PRIMARY KEY);
+             INSERT INTO orders SELECT generate_series(1, 40);"
+
+      - name: Copy the scripts into the container
+        run: |
+          set -euo pipefail
+          docker cp scripts/db-backup.sh pgdrill:/tmp/db-backup.sh
+          docker cp scripts/db-restore-drill.sh pgdrill:/tmp/db-restore-drill.sh
+
+      - name: Take a backup
+        run: |
+          set -euo pipefail
+          docker exec \
+            -e PGPASSWORD=vincom_dev \
+            -e BACKUP_DIR=/tmp/backups \
+            pgdrill bash /tmp/db-backup.sh
+
+      - name: Restore into a scratch database and compare
+        run: |
+          set -euo pipefail
+          docker exec -e PGPASSWORD=vincom_dev pgdrill \
+            bash -lc 'bash /tmp/db-restore-drill.sh /tmp/backups/*.dump'
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f pgdrill || true
