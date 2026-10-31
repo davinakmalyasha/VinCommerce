@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { formatIDR, formatDate, orderStatusColors } from '../lib/format'
+import { EvidenceThumbs } from '../components/EvidenceThumbs'
 
 interface ReturnItem {
   id: string
@@ -12,6 +13,7 @@ interface ReturnItem {
   issue_type?: string
   reason: string
   description: string
+  evidence_urls?: string[]
   status: string
   resolution?: string
   seller_note?: string
@@ -99,6 +101,7 @@ export function MyReturnsPage() {
               <span className="text-gray-400">{r.reason}</span>
               {r.description ? ` — ${r.description}` : ''}
             </p>
+            <EvidenceThumbs urls={r.evidence_urls} label="Foto bukti yang kamu kirim" />
             {r.seller_note && <p className="text-sm"><span className="text-gray-400">Catatan penjual:</span> {r.seller_note}</p>}
             {r.admin_note && <p className="text-sm"><span className="text-gray-400">Keputusan admin:</span> {r.admin_note}</p>}
             {r.amount ? <p className="text-sm font-bold text-amber-600">{formatIDR(r.amount)}</p> : null}

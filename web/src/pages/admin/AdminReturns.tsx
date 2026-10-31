@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { formatDate } from '../../lib/format'
+import { EvidenceThumbs } from '../../components/EvidenceThumbs'
 
 interface ReturnItem {
   id: string
@@ -11,6 +12,7 @@ interface ReturnItem {
   seller_id: string
   reason: string
   description: string
+  evidence_urls?: string[]
   status: string
   resolution?: string
   amount?: number
@@ -67,6 +69,7 @@ export function AdminReturns() {
               Alasan: <span className="capitalize">{r.reason.replace('_', ' ')}</span> · {formatDate(r.requested_at)}
             </p>
             <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{r.description}</p>
+            <EvidenceThumbs urls={r.evidence_urls} />
             {r.status === 'approved' && (
               <button type="button"
                 onClick={() => refund.mutate(r.id)}

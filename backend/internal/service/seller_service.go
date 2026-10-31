@@ -40,7 +40,14 @@ type SellerService struct {
 
 	returnAutoApproveMax float64
 	presence             *cache.Store
+	// publicBaseURL is APP_BASE_URL, used to validate that return-claim
+	// evidence points at a file this service uploaded. Empty is safe: then
+	// only the relative `/uploads/...` form is accepted.
+	publicBaseURL string
 }
+
+// SetPublicBaseURL tells the seller service which host its uploads live on.
+func (s *SellerService) SetPublicBaseURL(baseURL string) { s.publicBaseURL = baseURL }
 
 // SetReturnAutoApprove enables instant approval for claims at or below the
 // given item value (0 disables).
@@ -1005,6 +1012,14 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 
 	status := domain.ReturnRequested
 	resolution := ""
+	// Evidence used to be stored exactly as the buyer sent it. Validate before
+	// the write, not at render time: the admin and seller screens will show
+	// these images, and a `javascript:` or off-platform URL there is a stored
+	// injection / tracking-pixel surface.
+	evidence, err := domain.NormalizeEvidenceURLs(in.EvidenceURLs, s.publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	// Auto-approve low-value claims (platform policy) to cut response latency.
 	// The resolution MUST be set here — otherwise the later refund step
 	// rejects with NO_REFUND and auto-approved claims dead-end forever.
@@ -1022,7 +1037,7 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 		IssueType:    in.IssueType,
 		Reason:       in.Reason,
 		Description:  strings.TrimSpace(in.Description),
-		EvidenceURLs: in.EvidenceURLs,
+		EvidenceURLs: evidence,
 		Status:       status,
 		Resolution:   resolution,
 	}

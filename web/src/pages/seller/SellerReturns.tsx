@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api, downloadFile } from '../../lib/api'
 import { formatDate } from '../../lib/format'
+import { EvidenceThumbs } from '../../components/EvidenceThumbs'
 
 interface ReturnItem {
   id: string
@@ -9,6 +10,7 @@ interface ReturnItem {
   item_name: string
   reason: string
   description: string
+  evidence_urls?: string[]
   status: string
   resolution?: string
   seller_note?: string
@@ -128,6 +130,7 @@ export function SellerReturns() {
                   Alasan: <span className="capitalize">{r.reason.replace('_', ' ')}</span> · {formatDate(r.requested_at)}
                 </p>
                 <p className="text-sm text-gray-600 mt-2">{r.description}</p>
+                <EvidenceThumbs urls={r.evidence_urls} />
                 {r.seller_note && (
                   <p className="text-xs text-blue-600 mt-1">Catatan Anda: {r.seller_note}</p>
                 )}

@@ -1,6 +1,12 @@
 package domain
 
-import "time"
+import (
+	"net/url"
+	"path"
+	"regexp"
+	"strings"
+	"time"
+)
 
 // Store statuses.
 const (
@@ -82,4 +88,69 @@ type ReturnRequest struct {
 
 	ItemName string  `json:"item_name,omitempty"`
 	Amount   float64 `json:"amount,omitempty"`
+}
+
+// MaxReturnEvidence caps how many photos a return claim may attach. Three is
+// what the review flow already allows, and each one costs upload quota.
+const MaxReturnEvidence = 3
+
+// uploadedFilePattern is the exact shape MediaService.Save mints: 16 random
+// bytes hex-encoded plus a raster extension. Anything else is not a file this
+// platform produced.
+var uploadedFilePattern = regexp.MustCompile(`^[a-f0-9]{32}\.(jpg|png|webp|gif)$`)
+
+// NormalizeEvidenceURLs validates the photos attached to a return claim.
+//
+// Before this existed the handler copied `evidence_urls` straight from the
+// request body into the database. Nothing rendered them yet, which is the only
+// reason it was not already an injection surface: the moment a seller or admin
+// screen showed them, any string a buyer sent -- `javascript:...`, a data: URI,
+// or a third-party tracking pixel -- would have been displayed on a staff page.
+// The rule is intentionally narrow: a URL must resolve to a file THIS service
+// uploaded, so the accepted forms are `/uploads/<hex>.<ext>` and an absolute
+// URL on publicBaseURL with the same path. `publicBaseURL` is the API's own
+// APP_BASE_URL, which is what the upload endpoint prefixes its result with.
+func NormalizeEvidenceURLs(raw []string, publicBaseURL string) ([]string, error) {
+	if len(raw) > MaxReturnEvidence {
+		return nil, E(KindInvalid, "TOO_MANY_EVIDENCE",
+			"at most 3 evidence photos are allowed")
+	}
+	base, err := url.Parse(strings.TrimSpace(publicBaseURL))
+	if err != nil {
+		base = &url.URL{}
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parsed, err := url.Parse(entry)
+		if err != nil {
+			return nil, E(KindInvalid, "BAD_EVIDENCE_URL", "evidence must be an uploaded image")
+		}
+		if parsed.Scheme != "" && parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, E(KindInvalid, "BAD_EVIDENCE_URL", "evidence must be an uploaded image")
+		}
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, E(KindInvalid, "BAD_EVIDENCE_URL", "evidence must be an uploaded image")
+		}
+		// An absolute URL must point at this platform. Without the host check
+		// `https://evil.example.com/uploads/<valid>.jpg` passed, and once these
+		// are rendered it is a tracking pixel on a staff page.
+		if parsed.Host != "" && (base.Host == "" || !strings.EqualFold(parsed.Host, base.Host)) {
+			return nil, E(KindInvalid, "BAD_EVIDENCE_URL", "evidence must be an uploaded image")
+		}
+		dir, name := path.Split(parsed.Path)
+		if dir != "/uploads/" || !uploadedFilePattern.MatchString(name) {
+			return nil, E(KindInvalid, "BAD_EVIDENCE_URL", "evidence must be an uploaded image")
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, entry)
+	}
+	return out, nil
 }

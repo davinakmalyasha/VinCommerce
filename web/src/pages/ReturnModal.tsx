@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { Modal } from '../components/Modal'
+import { FileUpload } from '../components/FileUpload'
 
 export function ReturnModal({
   orderId,
@@ -16,6 +17,16 @@ export function ReturnModal({
 }) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState({ issueType: 'return', reason: 'defective', description: '' })
+  const [evidence, setEvidence] = useState<string[]>([])
+
+  const setEvidenceAt = (index: number, url: string) => {
+    setEvidence((prev) => {
+      const next = [...prev]
+      if (url) next[index] = url
+      else next.splice(index, 1)
+      return next.filter(Boolean)
+    })
+  }
 
   const submit = useMutation({
     mutationFn: async () =>
@@ -25,6 +36,7 @@ export function ReturnModal({
         issue_type: form.issueType,
         reason: form.reason,
         description: form.description,
+        evidence_urls: evidence,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['returns'] })
@@ -94,6 +106,33 @@ export function ReturnModal({
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             className="w-full px-4 py-3 border rounded-xl text-sm outline-none dark:bg-gray-800"
           />
+        </div>
+        <div>
+          <p className="block text-sm font-medium mb-1">Foto bukti (opsional)</p>
+          <div className="space-y-2">
+            {evidence.map((url, index) => (
+              <FileUpload
+                key={index}
+                id={`return-evidence-${index}`}
+                label={`Foto bukti ${index + 1}`}
+                value={url}
+                onChange={(next) => setEvidenceAt(index, next)}
+              />
+            ))}
+            {evidence.length < 3 && (
+              <FileUpload
+                id={`return-evidence-${evidence.length}`}
+                label="Tambah foto bukti"
+                value=""
+                onChange={(url) => {
+                  if (url) setEvidence((prev) => [...prev, url])
+                }}
+              />
+            )}
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Maksimal 3 foto. Bukti mempercepat keputusan penjual.
+          </p>
         </div>
         {submit.isError && (
           <p id="return-error" role="alert" className="text-sm text-red-600">

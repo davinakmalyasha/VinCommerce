@@ -307,6 +307,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 
 	sellerSvc.SetSessions(r.Sessions)
 	sellerSvc.SetReturnAutoApprove(cfg.Payments.ReturnAutoApproveMax)
+	sellerSvc.SetPublicBaseURL(cfg.App.BaseURL)
 	sellerSvc.SetMailer(d.Mailer, cfg.App.WebURL)
 	sellerSvc.SetNotificationService(notificationSvc)
 
