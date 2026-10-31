@@ -12,7 +12,7 @@ correctness and operability.
 > |---|-----|--------|
 > | P0-1 | Return-refund credits wallet, not gateway | Open — needs approve/refund split |
 > | P0-2 | No wallet top-up (refund-only balance) | Closed — `833aa5c` |
-> | P0-3 | PPN/NPWP/invoice sequence missing (footing only) | Open |
+> | P0-3 | PPN/NPWP/invoice sequence | Partly closed — PPN breakdown + invoice number `0f88c5e`; NPWP capture still open |
 > | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Open — needs decimal |
 > | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
@@ -1450,3 +1450,17 @@ event_key)`, and advances the parcel through the existing guarded transition.
 An empty `CARRIER_WEBHOOK_SECRET` disables the route rather than accepting
 unsigned events. Still open and deliberately not claimed: label purchase and
 rate shopping for JNE/J&T/SiCepat, which need provider credentials.
+
+**PPN breakdown and invoice numbers (`0f88c5e`, P0-3, partial).** The invoice
+printed the order number in the fiscal position and showed no tax at all.
+`orders.invoice_number` is now issued once by `invoice_number_seq` through a
+guarded `WHERE invoice_number IS NULL` update (lazy, so a cancelled order
+never burns a number; a second view reads the committed one). `INVOICE_PPN_RATE`
+(default 0) prints DPP + PPN as an INCLUDED breakdown: prices are
+tax-inclusive, rounding is taken on the PPN leg so the two lines sum to the
+charged total exactly. Run `41203267540`: 6/6, `PASS:
+TestInvoiceNumberIsAssignedOnce`.
+
+Still open and not claimed: a seller NPWP field and its KYC capture, and a
+per-fiscal-year sequence reset. A column nobody fills would be worse than the
+gap.
