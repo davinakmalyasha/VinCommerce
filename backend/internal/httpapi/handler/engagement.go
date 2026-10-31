@@ -66,7 +66,11 @@ func (h *Engagement) FlashSale(w http.ResponseWriter, r *http.Request) {
 
 // Recommended handles GET /recommendations.
 func (h *Engagement) Recommended(w http.ResponseWriter, r *http.Request) {
-	items, err := h.svc.Recommended(r.Context(), intQuery(r.URL.Query().Get("limit"), 10))
+	userID := ""
+	if user := middleware.UserFrom(r.Context()); user != nil {
+		userID = user.ID
+	}
+	items, err := h.svc.Recommended(r.Context(), userID, intQuery(r.URL.Query().Get("limit"), 10))
 	if err != nil {
 		writeErr(w, r, err)
 		return

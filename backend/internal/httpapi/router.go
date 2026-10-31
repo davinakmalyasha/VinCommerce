@@ -478,7 +478,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		// refuses everything when CARRIER_WEBHOOK_SECRET is unset.
 		r.With(rateLimiter.Limit(120, time.Minute, ipKey)).
 			Post("/shipping/tracking/webhook/{carrier}", carrierH.Webhook)
-		r.Get("/recommendations", engagement.Recommended)
+		r.With(optionalAuthMw).Get("/recommendations", engagement.Recommended)
 
 		// livestream commerce
 		r.With(flagMw("live_commerce")).Get("/live", liveH.List)

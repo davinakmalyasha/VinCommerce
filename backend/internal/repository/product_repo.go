@@ -755,22 +755,60 @@ func (r *ProductRepository) VariantSeller(ctx context.Context, variantID string)
 	return sellerID, err
 }
 
-// Bestsellers returns top-selling products (recommendation baseline).
-func (r *ProductRepository) Bestsellers(ctx context.Context, limit int) ([]*domain.Product, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT p.id, p.seller_id, p.category_id, p.brand_id, p.name, p.slug, p.description,
-		       p.status, p.attributes, p.avg_rating, p.rating_count, p.sold_count,
-		       p.published_at, p.created_at, p.updated_at,
-		       COALESCE(c.name, ''), COALESCE(b.name, ''),
-		       (SELECT MIN(v.price) FROM product_variants v WHERE v.product_id = p.id AND v.is_active),
-		       NULL, NULL,
-		       (SELECT string_agg(i.url, ',' ORDER BY i.position) FROM product_images i WHERE i.product_id = p.id)
+// bestsellerProjection is shared by the global and personalised queries so a
+// column added to one cannot be forgotten in the other.
+const bestsellerProjection = `
+		p.id, p.seller_id, p.category_id, p.brand_id, p.name, p.slug, p.description,
+		p.status, p.attributes, p.avg_rating, p.rating_count, p.sold_count,
+		p.published_at, p.created_at, p.updated_at,
+		COALESCE(c.name, ''), COALESCE(b.name, ''),
+		(SELECT MIN(v.price) FROM product_variants v WHERE v.product_id = p.id AND v.is_active),
+		NULL, NULL,
+		(SELECT string_agg(i.url, ',' ORDER BY i.position) FROM product_images i WHERE i.product_id = p.id)`
+
+const bestsellerFrom = `
 		FROM products p
 		LEFT JOIN categories c ON c.id = p.category_id
-		LEFT JOIN brands b ON b.id = p.brand_id
-		WHERE p.status = 'active'
-		ORDER BY p.sold_count DESC, p.avg_rating DESC
-		LIMIT $1`, limit)
+		LEFT JOIN brands b ON b.id = p.brand_id`
+
+// Bestsellers returns top-selling products (recommendation baseline).
+func (r *ProductRepository) Bestsellers(ctx context.Context, limit int) ([]*domain.Product, error) {
+	return r.bestsellerQuery(ctx,
+		`SELECT`+bestsellerProjection+bestsellerFrom+`
+		 WHERE p.status = 'active'
+		 ORDER BY p.sold_count DESC, p.avg_rating DESC
+		 LIMIT $1`, limit)
+}
+
+// BestsellersForBuyer ranks the categories a buyer has actually ordered from
+// above everything else, then falls back to the same sales/rating order.
+//
+// A buyer with no order history produces an empty `bought` CTE, the boolean is
+// false for every row, and the query degrades to the global list -- no separate
+// branch, so the two can never disagree about what "active" or "ranked" means.
+//
+// Cancelled orders are excluded: a cancellation is not evidence of interest,
+// and counting it would keep recommending a category the buyer rejected.
+func (r *ProductRepository) BestsellersForBuyer(ctx context.Context, buyerID string, limit int) ([]*domain.Product, error) {
+	return r.bestsellerQuery(ctx, `
+		WITH bought AS (
+			SELECT DISTINCT p.category_id
+			  FROM orders o
+			  JOIN order_items oi ON oi.order_id = o.id
+			  JOIN products p ON p.id = oi.product_id
+			 WHERE o.buyer_id = $1::uuid
+			   AND o.status IN ('paid', 'packed', 'shipped', 'partially_shipped', 'delivered', 'completed')
+			   AND p.category_id IS NOT NULL
+		)
+		SELECT`+bestsellerProjection+bestsellerFrom+`
+		 WHERE p.status = 'active'
+		 ORDER BY (p.category_id IN (SELECT category_id FROM bought)) DESC,
+		          p.sold_count DESC, p.avg_rating DESC
+		 LIMIT $2`, buyerID, limit)
+}
+
+func (r *ProductRepository) bestsellerQuery(ctx context.Context, query string, args ...any) ([]*domain.Product, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

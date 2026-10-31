@@ -250,7 +250,7 @@ jobs:
           INTEGRATION_DB: "1"
           DB_PASSWORD: vincom_dev
         run: |
-          go test ./internal/service/ -count=1 -v             -run 'TestQuoteAppliesSeededBundle|TestStoreQueriesReturnRealData|TestExternalPaymentClaimLifecycle|TestWalletTopUpCreditsOnce|TestSearchStemsIndonesianText|TestCarrierWebhookAdvancesAParcel|TestInvoiceNumberIsAssignedOnce|TestReturnRefundGoesThroughTheGateway'
+          go test ./internal/service/ -count=1 -v             -run 'TestQuoteAppliesSeededBundle|TestStoreQueriesReturnRealData|TestExternalPaymentClaimLifecycle|TestWalletTopUpCreditsOnce|TestSearchStemsIndonesianText|TestCarrierWebhookAdvancesAParcel|TestInvoiceNumberIsAssignedOnce|TestReturnRefundGoesThroughTheGateway|TestRecommendationsPreferCategoriesTheBuyerBought'
 
   # ── Web ──────────────────────────────────────────────────────────────────
   web:

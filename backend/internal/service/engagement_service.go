@@ -153,19 +153,33 @@ func (s *EngagementService) FlashSaleItems(ctx context.Context, saleID string) (
 // Recommended returns bestsellers as the baseline recommendation feed.
 // Cache keys carry an epoch bumped by product mutations, so catalog changes
 // reflect immediately instead of lingering up to the TTL.
-func (s *EngagementService) Recommended(ctx context.Context, limit int) ([]*domain.Product, error) {
+// Recommended is the home-page rail. An anonymous visitor gets the global
+// bestsellers; a logged-in buyer gets categories they have actually ordered
+// from ranked first, then the same sales/rating order as a fallback.
+//
+// The cache key includes the buyer, because a shared key would hand one
+// person's personalised rail to everybody -- the same class of leak the
+// service worker had with cached API responses.
+func (s *EngagementService) Recommended(ctx context.Context, userID string, limit int) ([]*domain.Product, error) {
 	if limit < 1 || limit > 20 {
 		limit = 10
 	}
 	epoch := s.recEpoch(ctx)
 	key := fmt.Sprintf("cache:recommended:%d:%d", epoch, limit)
+	fetch := func() ([]*domain.Product, error) { return s.products.Bestsellers(ctx, limit) }
+	if userID != "" {
+		key = fmt.Sprintf("cache:recommended:user:%s:%d:%d", userID, epoch, limit)
+		fetch = func() ([]*domain.Product, error) {
+			return s.products.BestsellersForBuyer(ctx, userID, limit)
+		}
+	}
 	if s.cache != nil {
 		var cached []*domain.Product
 		if ok, err := s.cache.Get(ctx, key, &cached); err == nil && ok {
 			return cached, nil
 		}
 		v, err, _ := s.sf.Do(key, func() (any, error) {
-			items, err := s.products.Bestsellers(ctx, limit)
+			items, err := fetch()
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +191,7 @@ func (s *EngagementService) Recommended(ctx context.Context, limit int) ([]*doma
 		}
 		return v.([]*domain.Product), nil
 	}
-	return s.products.Bestsellers(ctx, limit)
+	return fetch()
 }
 
 const recEpochKey = "cache:rec_epoch"
