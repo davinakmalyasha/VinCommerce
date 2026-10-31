@@ -28,7 +28,7 @@ func TestReturnRefundGoesThroughTheGateway(t *testing.T) {
 		SELECT o.id::text, o.buyer_id::text, o.seller_id::text, oi.id::text, oi.total::float8
 		  FROM orders o
 		  JOIN order_items oi ON oi.order_id = o.id
-		 WHERE o.status IN ('delivered', 'completed')
+		 WHERE o.status <> 'cancelled'
 		   AND NOT EXISTS (SELECT 1 FROM payment_intents pi WHERE pi.order_id = o.id)
 		   AND NOT EXISTS (
 		         SELECT 1 FROM return_requests r
@@ -38,7 +38,11 @@ func TestReturnRefundGoesThroughTheGateway(t *testing.T) {
 		 LIMIT 1`).Scan(&orderID, &buyerID, &sellerID, &itemID, &itemTotal)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			t.Skip("no delivered order without an intent or live return to use as a fixture")
+			var orders, items, intents int
+			_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders`).Scan(&orders)
+			_ = pool.QueryRow(ctx, `SELECT count(*) FROM order_items`).Scan(&items)
+			_ = pool.QueryRow(ctx, `SELECT count(*) FROM payment_intents`).Scan(&intents)
+			t.Skipf("no refundable order fixture (orders=%d items=%d intents=%d)", orders, items, intents)
 		}
 		t.Fatalf("find fixture order: %v", err)
 	}
