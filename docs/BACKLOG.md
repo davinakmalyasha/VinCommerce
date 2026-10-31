@@ -1464,3 +1464,18 @@ TestInvoiceNumberIsAssignedOnce`.
 Still open and not claimed: a seller NPWP field and its KYC capture, and a
 per-fiscal-year sequence reset. A column nobody fills would be worse than the
 gap.
+
+**Backup and restore drill (P2-1, partial).** The largest ops risk was not a
+feature gap but an untested assumption: a database volume with no backup at
+all. `scripts/db-backup.sh` takes a custom-format dump, reads it back with
+`pg_restore --list`, writes a SHA-256, and prunes by retention.
+`scripts/db-restore-drill.sh` restores into a scratch database and compares
+row counts, never touching the source. A new CI job runs both against a
+throwaway PostgreSQL 18, with the client tools inside the same container so a
+runner's older preinstalled client cannot confuse a version mismatch with a
+script bug. Run `41209701897` (`34b670d`): 7/7 jobs, both tables restored with
+matching row counts.
+
+Still open: PITR (WAL archiving, base backups, retention, rehearsal) and the
+TLS terminator. `docs/RUNBOOK.md` states both plainly; HSTS on plain HTTP is a
+header browsers ignore.
