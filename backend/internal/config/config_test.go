@@ -215,3 +215,38 @@ func TestValidateRejectsSSLDisabledInProduction(t *testing.T) {
 		t.Fatal("production accepted DB_SSL_MODE=disable")
 	}
 }
+
+func TestSplitOriginsToleratesOperatorFormatting(t *testing.T) {
+	// Every entry here is a shape an operator actually writes into a .env
+	// file: padded with spaces, a trailing slash (an origin has no path),
+	// a line break from a multi-line value, and a stray trailing comma.
+	cfg := AppConfig{
+		CORSAllow: " https://shop.example.com ,\n\thttps://admin.example.com/,, https://shop.example.com",
+	}
+
+	got := cfg.SplitOrigins()
+	want := []string{"https://shop.example.com", "https://admin.example.com"}
+
+	if len(got) != len(want) {
+		t.Fatalf("SplitOrigins() = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SplitOrigins() = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestSplitOriginsEmptyConfigAllowsNothing(t *testing.T) {
+	got := AppConfig{CORSAllow: " , "}.SplitOrigins()
+	if len(got) != 0 {
+		t.Fatalf("SplitOrigins() = %q, want no origins (an empty entry must not become \"\")", got)
+	}
+}
+
+func TestSplitOriginsKeepsWildcard(t *testing.T) {
+	got := AppConfig{CORSAllow: "*"}.SplitOrigins()
+	if len(got) != 1 || got[0] != "*" {
+		t.Fatalf("SplitOrigins() = %q, want [\"*\"]", got)
+	}
+}

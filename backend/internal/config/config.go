@@ -129,8 +129,31 @@ type AppConfig struct {
 }
 
 // SplitOrigins returns the allowed CORS origins as a slice.
+//
+// It trims each entry and drops the empties. `strings.Split` alone left the
+// space in "https://a.com, https://b.com" attached to the second origin, and
+// a browser's Origin header never has a leading space -- so the second origin
+// silently failed to match. go-chi/cors compares the header literally; it
+// does not normalize. A trailing slash was the same trap: an origin is
+// scheme://host[:port] and never carries a path, so "https://a.com/" never
+// matched either. Both were configuration typos that produced a working
+// first origin and a mysteriously blocked second one, with no error anywhere.
 func (a AppConfig) SplitOrigins() []string {
-	return strings.Split(a.CORSAllow, ",")
+	parts := strings.Split(a.CORSAllow, ",")
+	origins := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		origin := strings.TrimSuffix(strings.TrimSpace(part), "/")
+		if origin == "" {
+			continue
+		}
+		if _, dup := seen[origin]; dup {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins
 }
 
 // SMTPConfig configures transactional email delivery.
