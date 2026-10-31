@@ -112,6 +112,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	cart := handler.NewCart(orderSvc)
 	checkout := handler.NewCheckout(orderSvc, deps.Redis.Client)
 	ordersH := handler.NewOrders(orderSvc, productSvc)
+	ordersH.SetInvoicePPNRate(cfg.App.InvoicePPNRate)
 	claimsH := handler.NewAdminClaims(orderSvc)
 	addressesH := handler.NewAddresses(orderSvc)
 	paymentsH := handler.NewPayments(paymentSvc)

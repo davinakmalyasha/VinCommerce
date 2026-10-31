@@ -42,7 +42,7 @@ var (
 
 func renderOrderInvoice(o *domain.Order) string {
 	rec := httptest.NewRecorder()
-	renderInvoice(rec, o)
+	renderInvoice(rec, o, invoiceOptions{Number: "INV-202601-000001", PPNRate: 0})
 	return rec.Body.String()
 }
 
@@ -174,5 +174,72 @@ func TestInvoicePrintsTheStoredTotalRatherThanRecomputingIt(t *testing.T) {
 	}
 	if total != 999999 {
 		t.Errorf("the invoice printed Rp%.0f, want the stored total Rp999999", total)
+	}
+}
+
+var (
+	dppRE = regexp.MustCompile(`DPP \(sebelum PPN\)</td><td style="text-align:right">Rp ([\d.,]+)</td>`)
+	ppnRE = regexp.MustCompile(`PPN ([\d.]+)% \(termasuk\)</td><td style="text-align:right">Rp ([\d.,]+)</td>`)
+)
+
+// PPN is printed as a BREAKDOWN of the inclusive total, so the two lines must
+// sum to the same total the buyer was charged -- not to a larger number.
+func TestInvoiceIncludedTaxFootsTheTotal(t *testing.T) {
+	for _, total := range []float64{111000, 100000, 250750, 999999} {
+		o := sampleOrder(total, 0, 0, 0)
+		o.TotalAmount = total
+
+		rec := httptest.NewRecorder()
+		renderInvoice(rec, o, invoiceOptions{Number: "INV-202601-000001", PPNRate: 0.11})
+		html := rec.Body.String()
+
+		dppMatch := dppRE.FindStringSubmatch(html)
+		ppnMatch := ppnRE.FindStringSubmatch(html)
+		if dppMatch == nil || ppnMatch == nil {
+			t.Fatalf("total %.0f: invoice printed no tax breakdown", total)
+		}
+		if ppnMatch[1] != "11" {
+			t.Errorf("tax rate printed as %s%%, want 11%%", ppnMatch[1])
+		}
+		dpp, ppn := parseMoney(dppMatch[1]), parseMoney(ppnMatch[2])
+		if sum := dpp + ppn; sum != total {
+			t.Errorf("total %.0f: DPP %.0f + PPN %.0f = %.0f, want the charged total",
+				total, dpp, ppn, sum)
+		}
+		_, _, _, _, printedTotal, _ := invoiceAmounts(html)
+		if printedTotal != total {
+			t.Errorf("total %.0f: invoice printed TOTAL %.0f", total, printedTotal)
+		}
+	}
+}
+
+func TestInvoiceOmitsTaxWhenTheRoundedTaxIsZero(t *testing.T) {
+	// Rp1 at 11%% rounds to Rp0 of PPN. Printing "Rp 0" looks like a waived
+	// charge; the same rule the insurance line follows.
+	o := sampleOrder(1, 0, 0, 0)
+	o.TotalAmount = 1
+	rec := httptest.NewRecorder()
+	renderInvoice(rec, o, invoiceOptions{Number: "INV-202601-000001", PPNRate: 0.11})
+	if dppRE.MatchString(rec.Body.String()) || ppnRE.MatchString(rec.Body.String()) {
+		t.Error("printed a zero-rupiah tax line")
+	}
+}
+
+func TestInvoiceOmitsTaxWhenNoRateIsConfigured(t *testing.T) {
+	html := renderOrderInvoice(sampleOrder(100000, 0, 15000, 0))
+	if dppRE.MatchString(html) || ppnRE.MatchString(html) {
+		t.Error("tax lines were printed with INVOICE_PPN_RATE unset")
+	}
+}
+
+func TestInvoicePrintsTheFiscalNumberAndTheOrderReference(t *testing.T) {
+	rec := httptest.NewRecorder()
+	renderInvoice(rec, sampleOrder(100000, 0, 0, 0), invoiceOptions{Number: "INV-202601-000042"})
+	html := rec.Body.String()
+	if !strings.Contains(html, "INV-202601-000042") {
+		t.Error("the invoice number is missing")
+	}
+	if !strings.Contains(html, "VC-20260101-0001") {
+		t.Error("the order number is missing; support needs both references")
 	}
 }

@@ -128,7 +128,13 @@ type AppConfig struct {
 	// CarrierWebhookSecret authenticates carrier tracking events. Empty
 	// (the default) disables the route rather than accepting unsigned events.
 	CarrierWebhookSecret string `env:"CARRIER_WEBHOOK_SECRET"`
-	UploadDir            string `env:"UPLOAD_DIR" envDefault:"./data/uploads"`
+	// InvoicePPNRate is the tax rate printed as an INCLUDED breakdown on the
+	// invoice (0.11 = 11%). Prices in this marketplace are tax-inclusive, so
+	// this never changes what the buyer pays: it splits the stored total into
+	// DPP + PPN. Zero (the default) prints no tax lines rather than printing a
+	// wrong statutory rate.
+	InvoicePPNRate float64 `env:"INVOICE_PPN_RATE" envDefault:"0"`
+	UploadDir      string  `env:"UPLOAD_DIR" envDefault:"./data/uploads"`
 }
 
 // SplitOrigins returns the allowed CORS origins as a slice.
@@ -321,6 +327,10 @@ func (c *Config) Validate() error {
 	// TestConfigPayoutLagBoundsMatchTheService.
 	if c.Payments.PayoutLagDays < 1 || c.Payments.PayoutLagDays > 90 {
 		return fmt.Errorf("PAYOUT_LAG_DAYS must be between 1 and 90, got %d", c.Payments.PayoutLagDays)
+	}
+
+	if c.App.InvoicePPNRate < 0 || c.App.InvoicePPNRate > 0.5 {
+		return fmt.Errorf("INVOICE_PPN_RATE must be between 0 and 0.5 (e.g. 0.11), got %v", c.App.InvoicePPNRate)
 	}
 
 	prod := env.IsProduction()

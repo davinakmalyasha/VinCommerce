@@ -1281,3 +1281,34 @@ func itoa(v int) string {
 	}
 	return string(buf[i:])
 }
+
+// AssignInvoiceNumber issues the fiscal invoice number for an order, once.
+//
+// The UPDATE is the concurrency control: `invoice_number IS NULL` means a
+// second viewer either waits and then finds nothing to update, or reads the
+// number the first viewer committed. `nextval` is deliberately inside the
+// UPDATE -- a sequence value consumed by a transaction that then fails is a
+// gap, and gaps are what an operator reconciles tax documents against.
+func (r *OrderRepository) AssignInvoiceNumber(ctx context.Context, orderID string) (string, error) {
+	var number string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE orders
+		   SET invoice_number = 'INV-' || to_char(now(), 'YYYYMM') || '-' ||
+		                        lpad(nextval('invoice_number_seq')::text, 6, '0')
+		 WHERE id = $1::uuid AND invoice_number IS NULL
+		RETURNING invoice_number`, orderID).Scan(&number)
+	if err == nil {
+		return number, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	if err := r.pool.QueryRow(ctx,
+		`SELECT invoice_number FROM orders WHERE id = $1::uuid`, orderID).Scan(&number); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", domain.ErrNotFound
+		}
+		return "", err
+	}
+	return number, nil
+}

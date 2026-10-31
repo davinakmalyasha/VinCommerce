@@ -1877,3 +1877,31 @@ func (s *OrderService) assertReturnBuyer(ctx context.Context, returnID, buyerID 
 	}
 	return nil
 }
+
+// EnsureInvoiceNumber issues (once) and returns an order's invoice number.
+func (s *OrderService) EnsureInvoiceNumber(ctx context.Context, orderID string) (string, error) {
+	return s.orders.AssignInvoiceNumber(ctx, orderID)
+}
+
+// SplitInclusiveTax splits a tax-INCLUSIVE total into DPP and PPN.
+//
+// Indonesian storefront prices are quoted including PPN, so the invoice must
+// derive the tax rather than add it: the buyer pays the stored total either
+// way. Rounding is applied to the TAX leg and the DPP is the remainder, so
+// dpp + tax is exactly the total the buyer was charged -- independently
+// rounding both would print a document whose lines differ from its own total
+// by a rupiah on some orders.
+func SplitInclusiveTax(total, rate float64) (dpp, tax float64) {
+	total = moneyRound(total)
+	if rate <= 0 || total <= 0 {
+		return total, 0
+	}
+	tax = moneyRound(total * rate / (1 + rate))
+	if tax < 0 {
+		tax = 0
+	}
+	if tax > total {
+		tax = total
+	}
+	return moneyRound(total - tax), tax
+}

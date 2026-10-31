@@ -491,7 +491,13 @@ func defaultString(s, def string) string {
 type Orders struct {
 	svc        *service.OrderService
 	productSvc *service.ProductService
+	// invoicePPNRate is the INCLUDED tax rate printed on the invoice; 0 prints
+	// no tax lines. Configured once at wiring time, never per request.
+	invoicePPNRate float64
 }
+
+// SetInvoicePPNRate configures the invoice tax breakdown.
+func (h *Orders) SetInvoicePPNRate(rate float64) { h.invoicePPNRate = rate }
 
 // NewOrders creates an Orders handler.
 func NewOrders(svc *service.OrderService, productSvc *service.ProductService) *Orders {
@@ -762,7 +768,14 @@ func (h *Orders) Invoice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, err)
 		return
 	}
-	renderInvoice(w, o)
+	// The number is assigned on first view. A failure to allocate must not deny
+	// the buyer a printable order record: fall back to the order number, which
+	// is what the document printed before a sequence existed.
+	number, err := h.svc.EnsureInvoiceNumber(r.Context(), o.ID)
+	if err != nil {
+		number = o.OrderNumber
+	}
+	renderInvoice(w, o, invoiceOptions{Number: number, PPNRate: h.invoicePPNRate})
 }
 
 // PackingSlip handles GET /orders/{id}/packing-slip — seller picking sheet.

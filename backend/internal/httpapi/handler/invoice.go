@@ -4,12 +4,21 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/vincommerce/backend/internal/domain"
+	"github.com/vincommerce/backend/internal/service"
 )
 
+// invoiceOptions are the facts that come from configuration rather than from
+// the order row: the fiscal number (assigned at first view) and the tax rate.
+type invoiceOptions struct {
+	Number  string
+	PPNRate float64
+}
+
 // renderInvoice serves a printable HTML invoice for an order.
-func renderInvoice(w http.ResponseWriter, o *domain.Order) {
+func renderInvoice(w http.ResponseWriter, o *domain.Order, opts invoiceOptions) {
 	var rows string
 	for _, it := range o.Items {
 		rows += fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%d</td><td style="text-align:right">%s</td><td style="text-align:right">%s</td></tr>`,
@@ -41,10 +50,23 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order) {
 			f2(rounded))
 	}
 
+	// PPN is a BREAKDOWN of the stored total, not an addition to it: Indonesian
+	// storefront prices are quoted tax-inclusive. Printing it as subtotal + tax
+	// would claim the buyer paid more than they did, so these lines are
+	// explicitly labelled as included and must sum to the TOTAL.
+	taxRows := ""
+	if dpp, tax := service.SplitInclusiveTax(o.TotalAmount, opts.PPNRate); opts.PPNRate > 0 && tax > 0 {
+		taxRows = fmt.Sprintf(
+			`  <tr><td colspan="3"></td><td style="text-align:right">DPP (sebelum PPN)</td><td style="text-align:right">Rp %s</td></tr>`+"\n"+
+				`  <tr><td colspan="3"></td><td style="text-align:right">PPN %s%% (termasuk)</td><td style="text-align:right">Rp %s</td></tr>`+"\n",
+			f2(dpp), pct(opts.PPNRate), f2(tax))
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, invoiceHTML,
-		o.OrderNumber, // title
-		o.OrderNumber, // header
+		opts.Number,   // title
+		opts.Number,   // header
+		o.OrderNumber, // the commerce reference, distinct from the fiscal number
 		o.PlacedAt.Format("02 Jan 2006 15:04"),
 		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["recipient"])),
 		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["address_line1"])),
@@ -57,6 +79,7 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order) {
 		f2(o.Subtotal), f2(o.DiscountAmount),
 		htmlEsc(o.ShippingMethod), f2(o.ShippingFee),
 		insuranceRow,
+		taxRows,
 		f2(o.TotalAmount),
 		htmlEsc(o.ShippingMethod), htmlEsc(o.TrackingNumber), htmlEsc(o.Carrier),
 	)
@@ -84,6 +107,11 @@ func htmlEsc(s string) string {
 
 func f2(v float64) string {
 	return fmt.Sprintf("%.0f", v)
+}
+
+// pct renders 0.11 as "11" and 0.1 as "10", without a trailing ".0".
+func pct(rate float64) string {
+	return strconv.FormatFloat(math.Round(rate*1000)/10, 'f', -1, 64)
 }
 
 // renderPackingSlip serves a dense, price-free picking/packing sheet.
@@ -142,7 +170,7 @@ const invoiceHTML = `<!DOCTYPE html>
 <div class="head">
   <div>
     <div class="brand">VinCommerce</div>
-    <div class="meta">Invoice %s · Marketplace escrow</div>
+    <div class="meta">Invoice %s · Pesanan %s · Marketplace escrow</div>
   </div>
   <div class="meta" style="text-align:right">Tanggal: %s</div>
 </div>
@@ -162,7 +190,7 @@ const invoiceHTML = `<!DOCTYPE html>
   <tr class="total-row"><td colspan="3"></td><td style="text-align:right">Subtotal</td><td style="text-align:right">Rp %s</td></tr>
   <tr><td colspan="3"></td><td style="text-align:right">Diskon</td><td style="text-align:right">− Rp %s</td></tr>
   <tr><td colspan="3"></td><td style="text-align:right">Ongkir (%s)</td><td style="text-align:right">Rp %s</td></tr>
-%s  <tr class="total-row"><td colspan="3"></td><td style="text-align:right">TOTAL</td><td style="text-align:right">Rp %s</td></tr>
+%s%s  <tr class="total-row"><td colspan="3"></td><td style="text-align:right">TOTAL</td><td style="text-align:right">Rp %s</td></tr>
 </table>
 
 <div class="meta">Kurir: %s · Nomor resi: %s (%s)</div>
