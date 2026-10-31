@@ -52,6 +52,12 @@ func TestWalletTopUpCreditsOnce(t *testing.T) {
 		}
 		return b
 	}
+	// `wallets` rows are created lazily by the first movement, and the seeded
+	// buyer has never moved money. Reading before creating is a test bug, not a
+	// product one -- the first CI run failed here with "no rows in result set".
+	if _, err := payRepo.Wallet(ctx, buyerID); err != nil {
+		t.Fatalf("ensure wallet: %v", err)
+	}
 	before := balanceOf()
 
 	payload := []byte(fmt.Sprintf(
