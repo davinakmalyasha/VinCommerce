@@ -110,6 +110,7 @@ type DomainServices struct {
 	Product      *service.ProductService
 	Order        *service.OrderService
 	Payment      *service.PaymentService
+	Shipment     *service.ShipmentService
 	Seller       *service.SellerService
 	Engagement   *service.EngagementService
 	Market       *service.MarketService
@@ -238,6 +239,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 	// answered with the manual carrier.
 	carrierRegistry := carrier.NewLabelRegistry(carrier.NewManual())
 	shipmentSvc := service.NewShipmentService(r.Orders, r.Shipments, carrierRegistry, r.Stores)
+	shipmentSvc.SetCarrierWebhookSecret(cfg.App.CarrierWebhookSecret)
 	sellerSvc.SetShipmentService(shipmentSvc)
 	// The BUYER needs the same service: the buyer creates a return parcel, the seller
 	// issues the label. One service instance for both, deliberately -- two instances
@@ -396,6 +398,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 			Product:      productSvc,
 			Order:        orderSvc,
 			Payment:      paymentSvc,
+			Shipment:     shipmentSvc,
 			Seller:       sellerSvc,
 			Engagement:   engagementSvc,
 			Market:       marketSvc,

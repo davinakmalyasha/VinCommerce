@@ -125,7 +125,10 @@ type AppConfig struct {
 	BaseURL   string `env:"APP_BASE_URL" envDefault:"http://localhost:8080"`
 	WebURL    string `env:"WEB_URL" envDefault:"http://localhost:5173"`
 	CORSAllow string `env:"CORS_ALLOW_ORIGINS" envDefault:"http://localhost:5173"`
-	UploadDir string `env:"UPLOAD_DIR" envDefault:"./data/uploads"`
+	// CarrierWebhookSecret authenticates carrier tracking events. Empty
+	// (the default) disables the route rather than accepting unsigned events.
+	CarrierWebhookSecret string `env:"CARRIER_WEBHOOK_SECRET"`
+	UploadDir            string `env:"UPLOAD_DIR" envDefault:"./data/uploads"`
 }
 
 // SplitOrigins returns the allowed CORS origins as a slice.

@@ -470,3 +470,64 @@ func (r *ShipmentRepository) ShipmentItems(
 	}
 	return out, rows.Err()
 }
+
+// ShipmentByTracking resolves a parcel from what a carrier reports.
+//
+// The tracking number is the only identifier a carrier knows. It is looked up
+// WITH the carrier name because two carriers may legitimately issue the same
+// string, and resolving the wrong parcel would move somebody else's shipment.
+func (r *ShipmentRepository) ShipmentByTracking(ctx context.Context, carrierName, tracking string) (*Shipment, error) {
+	return scanShipment(r.pool.QueryRow(ctx,
+		`SELECT `+shipmentColumns+` FROM shipments
+		  WHERE carrier = $1 AND tracking_number = $2`, carrierName, tracking))
+}
+
+// InsertTrackingEventTx records one carrier event and reports whether it was
+// new. `ON CONFLICT DO NOTHING` is the retry guard.
+func (r *ShipmentRepository) InsertTrackingEventTx(
+	ctx context.Context, q Querier, shipmentID, eventKey, carrierStatus, detail string,
+	occurredAt *time.Time, source string,
+) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		INSERT INTO shipment_tracking_events
+		       (shipment_id, event_key, carrier_status, detail, occurred_at, source)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+		ON CONFLICT (shipment_id, event_key) DO NOTHING`,
+		shipmentID, eventKey, carrierStatus, detail, occurredAt, source)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ApplyCarrierStatusTx moves a parcel to the status a carrier reported.
+//
+// Arrival goes through MarkShipmentDelivered so its guards -- delivered_at IS
+// NULL, and only from a status that can still arrive -- are the ones in force.
+// The other states are guarded on `delivered_at IS NULL`: a late "in transit"
+// must not rewind a delivered parcel, and a carrier's failure notice must not
+// cancel one already received.
+//
+// Zero rows is NOT an error here. A duplicate delivery callback, or a status
+// arriving after arrival, is an expected race, and failing it would make the
+// provider retry forever.
+func (r *ShipmentRepository) ApplyCarrierStatusTx(
+	ctx context.Context, q Querier, shipmentID, status string,
+) error {
+	if status == "delivered" {
+		if err := r.MarkShipmentDelivered(ctx, q, shipmentID); err != nil &&
+			!domain.Is(err, domain.KindConflict, "") {
+			return err
+		}
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+		UPDATE shipments
+		   SET status = $2,
+		       shipped_at = CASE WHEN $2 = 'in_transit' THEN COALESCE(shipped_at, now())
+		                         ELSE shipped_at END
+		 WHERE id = $1::uuid
+		   AND delivered_at IS NULL
+		   AND status <> 'cancelled'`, shipmentID, status)
+	return err
+}

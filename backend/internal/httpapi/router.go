@@ -145,6 +145,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	analyticsH := handler.NewAnalytics(analyticsSvc)
 	support := handler.NewSupport(supportSvc)
 	notificationsH := handler.NewNotifications(notificationSvc)
+	carrierH := handler.NewCarrierTracking(graph.Services.Shipment)
 
 	// middleware
 	rateLimiter := mw.NewRateLimiter(deps.Redis.Client)
@@ -471,6 +472,11 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(optionalAuthMw, rateLimiter.Limit(60, time.Minute, userKey)).
 			Get("/feed", engagement.Feed)
 		r.Get("/shipping/methods", adminOps.PublicShipping)
+		// Carrier/aggregator tracking events. No session exists on the carrier
+		// side, so the HMAC over the raw body is the authentication; the route
+		// refuses everything when CARRIER_WEBHOOK_SECRET is unset.
+		r.With(rateLimiter.Limit(120, time.Minute, ipKey)).
+			Post("/shipping/tracking/webhook/{carrier}", carrierH.Webhook)
 		r.Get("/recommendations", engagement.Recommended)
 
 		// livestream commerce

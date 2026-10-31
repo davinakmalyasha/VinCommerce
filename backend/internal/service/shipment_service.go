@@ -101,6 +101,9 @@ type ShipmentService struct {
 	// with no bearing on the gap this file closes, so the odd shape is inherited
 	// rather than fixed here.
 	returns *repository.StoreRepository
+	// carrierWebhookSecret authenticates carrier tracking events. Empty means
+	// the ingestion route is disabled, not that verification is skipped.
+	carrierWebhookSecret string
 }
 
 // NewShipmentService creates a ShipmentService.
