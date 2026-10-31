@@ -10,14 +10,14 @@ correctness and operability.
 >
 > | # | Gap | Status |
 > |---|-----|--------|
-> | P0-1 | Return-refund credits wallet, not gateway | Open — needs approve/refund split |
+> | P0-1 | Return-refund credits wallet, not gateway | Closed — `3223e9c` |
 > | P0-2 | No wallet top-up (refund-only balance) | Closed — `833aa5c` |
-> | P0-3 | PPN/NPWP/invoice sequence | Partly closed — PPN breakdown + invoice number `0f88c5e`; NPWP capture still open |
-> | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Open — needs decimal |
+> | P0-3 | PPN/NPWP/invoice sequence | Partly closed — PPN, invoice number and NPWP done (`0f88c5e`, `28ac4b8`); per-fiscal-year reset open |
+> | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Partly closed — DB rejects fractional rupiah `3ea601d`; Go still `float64` |
 > | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
-> | P1-3 | Search English-stem, bestsellers not personalised | Search config closed — `09a8351`; personalised bestsellers still open |
-> | P2-1 | No backup/PITR, no TLS terminator in-repo | Partly closed — backup+restore drill in CI; PITR and TLS still open |
+> | P1-3 | Search English-stem, bestsellers not personalised | Closed — `09a8351`, `6c1013f` |
+> | P2-1 | No backup/PITR, no TLS terminator in-repo | Partly closed — backup drill + TLS terminator verified; PITR still open |
 > | P2-2 | Return evidence had no UI and no validation | Closed — `9e250e6` |
 
 * **[closed] Migrations `0032`-`00051` had never been executed.** They now apply
@@ -1479,3 +1479,37 @@ matching row counts.
 Still open: PITR (WAL archiving, base backups, retention, rehearsal) and the
 TLS terminator. `docs/RUNBOOK.md` states both plainly; HSTS on plain HTTP is a
 header browsers ignore.
+
+## Parity follow-up 2: refunds, recommendations, NPWP, TLS, whole-rupiah
+
+**Return refunds through the gateway (`3223e9c`, P0-1, closed).**
+`approved -> refunding` is claimed and committed before the provider call, so
+no row lock spans the HTTP request. The call reuses the shared `RefundOrder`
+path (same cap, ledger legs, refunds row). Success resolves the claim; a
+recorded submitted/manual refund resolves it with the state in the note; a
+failure that wrote no row returns it to `approved`. Wallet/COD/manual-transfer
+keep the wallet path because those cannot be reversed at a provider. Run
+`41218424512`: `PASS: TestReturnRefundGoesThroughTheGateway` — a refunds row
+exists and the buyer's wallet balance is unchanged.
+
+**Personalised recommendations (`6c1013f`, P1-3, closed).** Bought categories
+rank first, then the same sales/rating order; an empty history degrades to the
+global rail in one query. Cache key includes the user. Run `41221093308`:
+`PASS: TestRecommendationsPreferCategoriesTheBuyerBought`.
+
+**Seller NPWP (`28ac4b8`, P0-3).** KYC accepts 15/16 digits (punctuation
+stripped), the invoice prints the number under the seller only when present.
+Run `41223655299`: 7/7.
+
+**Whole-rupiah storage guard (`3ea601d`, P0-4, partial).** The transactional
+money tables reject fractional rupiah with `col = trunc(col)`; catalogue
+prices are validated in the service instead, including on edit (which
+previously skipped price validation). Run `41232455779`:
+`PASS: TestStoredMoneyIsWholeRupiah` across 11 tables. The Go side is still
+`float64`; this is a guard, not the decimal refactor.
+
+**TLS terminator (`ef2c456`, fix `edbc3e9`, P2-1).** nginx 1.29 on 8443,
+TLS 1.2/1.3, HSTS, plain-HTTP 301, local `/healthz`. CI generates a
+self-signed certificate, boots the same config and asserts the handshake, the
+refusals and the redirect. Run `41230061769`: `TLS terminator probe` success.
+PITR is still absent.

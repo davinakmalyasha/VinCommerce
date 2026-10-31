@@ -201,10 +201,17 @@ you read anything else:
   this work. They now apply cleanly, verified by `backend/scripts/migration-dryrun.py`.
   See [`docs/CORRECTIONS.md`](docs/CORRECTIONS.md) for the six classes of defect that
   executing them found, and for the four defects in the harness that was used to check.
-- **Concurrency fixes are verified by source ordering, not by an observed
-  interleaving.** There is no integration suite and no database-backed test. The
-  reasoning about READ COMMITTED is from PostgreSQL semantics, not from this code
-  running twice at once.
-- **Measured statement coverage is about 8%.** `internal/repository` is near 1% and the
-  HTTP handlers below 1%. The money paths are guarded by source assertions and by the
-  mutation harness rather than by integration tests.
+- **Concurrency fixes are verified by outcome, not by an observed interleaving.**
+  There are now 12 `INTEGRATION_DB` tests (money path, bundles, claims, wallet
+  top-up, search stemming, carrier tracking, invoice numbering, return refunds,
+  recommendations, whole-rupiah storage), but each runs once. They prove the
+  result of a sequence is correct, not that two transactions interleave safely;
+  the reasoning about READ COMMITTED is still from PostgreSQL semantics.
+- **Measured statement coverage is about 8.7%.** `internal/repository` and the HTTP
+  handlers remain thin. The money paths are guarded by source assertions, the
+  mutation harness and the DB-backed tests above.
+- **Still open at the time of writing:** real carrier label/rate adapters (need
+  credentials), payout bank rails (need a provider), point-in-time recovery, a
+  per-fiscal-year invoice reset, and the `float64` to integer-minor-units
+  refactor. The database now rejects fractional rupiah, which is a guard, not
+  the refactor.
