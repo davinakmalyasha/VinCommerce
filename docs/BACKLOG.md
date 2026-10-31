@@ -11,12 +11,12 @@ correctness and operability.
 > | # | Gap | Status |
 > |---|-----|--------|
 > | P0-1 | Return-refund credits wallet, not gateway | Open — needs approve/refund split |
-> | P0-2 | No wallet top-up (refund-only balance) | Open |
+> | P0-2 | No wallet top-up (refund-only balance) | Closed — `833aa5c` |
 > | P0-3 | PPN/NPWP/invoice sequence missing (footing only) | Open |
 > | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Open — needs decimal |
-> | P1-1 | No carrier adapter (only `manual`) | Open — no rate/tracking poll |
+> | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
-> | P1-3 | Search English-stem, bestsellers not personalised | Open |
+> | P1-3 | Search English-stem, bestsellers not personalised | Search config closed — `09a8351`; personalised bestsellers still open |
 > | P2-1 | No backup/PITR, no TLS terminator in-repo | Open — largest ops risk |
 > | P2-2 | Return evidence had no UI and no validation | Closed — `9e250e6` |
 
@@ -1419,3 +1419,34 @@ the top; these four were small, verifiable defects rather than features:
 Run `41177815185` (`9e250e6`): CI 6/6, 46/46 e2e. The a11y commit rode in the
 same tree, so it is covered by that run; the offline and CORS commits each had
 their own green run before it.
+
+## Parity follow-up: wallet top-up, Indonesian search, carrier tracking
+
+Three slices from the Shopee/Tokopedia checklist, each verified by its own
+green CI run.
+
+**Wallet top-up (`833aa5c`, P0-2).** The wallet had no way in: every credit
+came from a refund, so "pay with wallet" was unreachable for an ordinary
+buyer. `POST /wallet/topups` creates a charge, the provider's signed webhook
+credits the balance exactly once (guarded `pending -> paid`), and the credit
+posts a journal against a new `user_wallet:<id>` liability. Paying an order
+with balance now journals the matching debit, and reconciliation sums
+seller_available + user_wallet instead of reporting every top-up as drift.
+Run `41188856185`: 6/6, the integration test delivers the paid webhook twice
+and proves one credit and one balanced journal.
+
+**Indonesian search (`09a8351`, P1-3).** Search stemmed Indonesian text with
+the english Snowball config, so "makanan" and "makan" were unrelated lexemes.
+Migration 00054 rebuilds the generated products column and the help-article
+index with `indonesian`, and the queries use the same config. Run
+`41186693835` PASS: `TestSearchStemsIndonesianText` asserts the stem works,
+english does not, and an ordinary "laptop" search still returns rows.
+
+**Carrier tracking (`424963f`, P1-1, partial).** `MarkShipmentDelivered` had
+no caller: there was no shipment webhook. `POST
+/shipping/tracking/webhook/{carrier}` accepts a normalized event signed with
+HMAC-SHA256 over the raw body, stores it with a unique `(shipment_id,
+event_key)`, and advances the parcel through the existing guarded transition.
+An empty `CARRIER_WEBHOOK_SECRET` disables the route rather than accepting
+unsigned events. Still open and deliberately not claimed: label purchase and
+rate shopping for JNE/J&T/SiCepat, which need provider credentials.
