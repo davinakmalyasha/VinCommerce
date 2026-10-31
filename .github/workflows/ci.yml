@@ -736,8 +736,11 @@ jobs:
 
       - name: Validate the compose override
         env:
-          JWT_SECRET: ci-check-tls-override-secret
-          REDIS_PASSWORD: ci-check-tls-redis
+          # Short sentinels: the repo's gitleaks rule flags 24+ char assignments,
+          # and this value never reaches a running service -- `config -q` only
+          # needs the `:?` guards satisfied.
+          JWT_SECRET: ci-check-3
+          REDIS_PASSWORD: ci-check-4
         run: |
           set -euo pipefail
           docker compose -f infra/compose/compose.full.yaml -f infra/compose/compose.tls.yaml config -q
@@ -782,7 +785,9 @@ jobs:
 
           curl -sSk --tlsv1.2 --tls-max 1.2 https://127.0.0.1:18443/healthz >/dev/null \
             || { echo "TLS 1.2 handshake failed"; exit 1; }
-          if curl -sSk --tlsv1.0 https://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+          # --tls-max is required: --tlsv1.0 alone sets a MINIMUM, so curl would
+          # negotiate TLS 1.3 and the check would pass against any server.
+          if curl -sSk --tlsv1.0 --tls-max 1.0 https://127.0.0.1:18443/healthz >/dev/null 2>&1; then
             echo "TLS 1.0 was accepted; the terminator is not enforcing a floor" >&2
             exit 1
           fi
