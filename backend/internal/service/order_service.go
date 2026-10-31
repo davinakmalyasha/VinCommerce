@@ -1905,3 +1905,42 @@ func SplitInclusiveTax(total, rate float64) (dpp, tax float64) {
 	}
 	return moneyRound(total - tax), tax
 }
+
+// SellerNPWP returns the seller's tax number for an invoice, or "" when none
+// was submitted. Errors degrade to an omitted invoice line: the document is
+// still printable, and inventing a number would be worse than the gap.
+func (s *OrderService) SellerNPWP(ctx context.Context, sellerID string) string {
+	if s.stores == nil {
+		return ""
+	}
+	npwp, err := s.stores.NPWPByOwner(ctx, sellerID)
+	if err != nil {
+		return ""
+	}
+	return npwp
+}
+
+// normalizeNPWP strips the punctuation people type (dots, dashes, spaces) and
+// validates the digit count. Indonesian NPWP is 15 digits; since 2024 a NIK
+// (16 digits) is also accepted as the tax identity.
+func normalizeNPWP(raw string) (string, error) {
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, raw)
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	if digits == "" {
+		// Letters only would otherwise become "no NPWP" and hide the typo.
+		return "", domain.E(domain.KindInvalid, "BAD_NPWP",
+			"NPWP must contain 15 or 16 digits")
+	}
+	if len(digits) != 15 && len(digits) != 16 {
+		return "", domain.E(domain.KindInvalid, "BAD_NPWP",
+			"NPWP must contain 15 or 16 digits")
+	}
+	return digits, nil
+}

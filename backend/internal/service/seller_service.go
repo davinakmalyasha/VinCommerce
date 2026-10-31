@@ -880,6 +880,11 @@ func (s *SellerService) SubmitKYC(ctx context.Context, userID string, k *domain.
 	k.ID = uuid.NewString()
 	k.StoreID = store.ID
 	k.Status = "pending"
+	npwp, err := normalizeNPWP(k.NPWP)
+	if err != nil {
+		return nil, err
+	}
+	k.NPWP = npwp
 	if err := s.stores.SaveKYC(ctx, k); err != nil {
 		return nil, err
 	}

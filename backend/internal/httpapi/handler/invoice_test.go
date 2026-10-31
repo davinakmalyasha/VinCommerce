@@ -243,3 +243,22 @@ func TestInvoicePrintsTheFiscalNumberAndTheOrderReference(t *testing.T) {
 		t.Error("the order number is missing; support needs both references")
 	}
 }
+
+// A faktur carries the seller's tax identity. When none was submitted the line
+// must be ABSENT, not "NPWP: -": a placeholder on a tax document reads as a
+// number that exists.
+func TestInvoicePrintsSellerNPWPOnlyWhenPresent(t *testing.T) {
+	o := sampleOrder(100000, 0, 0, 0)
+
+	rec := httptest.NewRecorder()
+	renderInvoice(rec, o, invoiceOptions{Number: "INV-202601-000001", SellerNPWP: "123456789012000"})
+	if html := rec.Body.String(); !strings.Contains(html, "NPWP: 123456789012000") {
+		t.Error("the invoice did not print the seller NPWP")
+	}
+
+	rec = httptest.NewRecorder()
+	renderInvoice(rec, o, invoiceOptions{Number: "INV-202601-000001"})
+	if html := rec.Body.String(); strings.Contains(html, "NPWP") {
+		t.Error("the invoice printed an NPWP line without a number")
+	}
+}

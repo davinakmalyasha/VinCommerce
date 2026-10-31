@@ -81,6 +81,7 @@ func (h *Seller) UpdateStore(w http.ResponseWriter, r *http.Request) {
 type kycRequest struct {
 	OwnerName     string `json:"owner_name"`
 	IDNumber      string `json:"id_number"`
+	NPWP          string `json:"npwp,omitempty"`
 	IDDocumentURL string `json:"id_document_url,omitempty"`
 	BankName      string `json:"bank_name"`
 	BankAccount   string `json:"bank_account"`
@@ -95,8 +96,9 @@ func (h *Seller) SubmitKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kyc, err := h.svc.SubmitKYC(r.Context(), user.ID, &domain.SellerKYC{
-		OwnerName: req.OwnerName, IDNumber: req.IDNumber, IDDocumentURL: req.IDDocumentURL,
-		BankName: req.BankName, BankAccount: req.BankAccount,
+		OwnerName: req.OwnerName, IDNumber: req.IDNumber, NPWP: req.NPWP,
+		IDDocumentURL: req.IDDocumentURL,
+		BankName:      req.BankName, BankAccount: req.BankAccount,
 	})
 	if err != nil {
 		writeErr(w, r, err)

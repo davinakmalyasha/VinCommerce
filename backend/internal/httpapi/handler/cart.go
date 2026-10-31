@@ -775,7 +775,11 @@ func (h *Orders) Invoice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		number = o.OrderNumber
 	}
-	renderInvoice(w, o, invoiceOptions{Number: number, PPNRate: h.invoicePPNRate})
+	renderInvoice(w, o, invoiceOptions{
+		Number:     number,
+		PPNRate:    h.invoicePPNRate,
+		SellerNPWP: h.svc.SellerNPWP(r.Context(), o.SellerID),
+	})
 }
 
 // PackingSlip handles GET /orders/{id}/packing-slip — seller picking sheet.

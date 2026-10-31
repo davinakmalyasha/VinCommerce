@@ -18,13 +18,13 @@ export function SellerSettings() {
     queryKey: ['my-kyc'],
     queryFn: async () => {
       try {
-        return (await api.get<{ kyc: { status: string; bank_name: string; bank_account: string } }>('/seller/kyc')).data.kyc
+        return (await api.get<{ kyc: { status: string; bank_name: string; bank_account: string; npwp?: string } }>('/seller/kyc')).data.kyc
       } catch {
         return null
       }
     },
   })
-  const [kycForm, setKycForm] = useState({ owner_name: '', id_number: '', bank_name: '', bank_account: '' })
+  const [kycForm, setKycForm] = useState({ owner_name: '', id_number: '', npwp: '', bank_name: '', bank_account: '' })
 
   const saveKyc = useMutation({
     mutationFn: async () => api.post('/seller/kyc', kycForm),
@@ -138,6 +138,20 @@ export function SellerSettings() {
               onChange={(e) => setKycForm({ ...kycForm, id_number: e.target.value })}
               className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
             />
+          </div>
+          <div>
+            <label htmlFor="kyc-npwp" className="block text-xs text-gray-500 mb-1">
+              NPWP (opsional)
+            </label>
+            <input
+              id="kyc-npwp"
+              inputMode="numeric"
+              placeholder="15 atau 16 digit"
+              value={kycForm.npwp}
+              onChange={(e) => setKycForm({ ...kycForm, npwp: e.target.value })}
+              className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+            />
+            <p className="text-xs text-gray-400 mt-1">Dicetak di invoice. Kosongkan bila belum punya.</p>
           </div>
           <div>
             <label htmlFor="kyc-bank" className="block text-xs text-gray-500 mb-1">Bank</label>

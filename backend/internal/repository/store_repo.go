@@ -400,14 +400,15 @@ func (r *StoreRepository) PendingStores(ctx context.Context) ([]*domain.Store, e
 // SaveKYC upserts the KYC record.
 func (r *StoreRepository) SaveKYC(ctx context.Context, k *domain.SellerKYC) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO seller_kyc (id, store_id, owner_name, id_number, id_document_url, bank_name, bank_account)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7)
+		INSERT INTO seller_kyc (id, store_id, owner_name, id_number, npwp, id_document_url, bank_name, bank_account)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8)
 		ON CONFLICT (store_id) DO UPDATE SET
 			owner_name = EXCLUDED.owner_name, id_number = EXCLUDED.id_number,
+			npwp = EXCLUDED.npwp,
 			id_document_url = EXCLUDED.id_document_url, bank_name = EXCLUDED.bank_name,
 			bank_account = EXCLUDED.bank_account, status = 'pending', admin_note = NULL,
 			updated_at = now()`,
-		k.ID, k.StoreID, k.OwnerName, k.IDNumber, k.IDDocumentURL, k.BankName, k.BankAccount)
+		k.ID, k.StoreID, k.OwnerName, k.IDNumber, k.NPWP, k.IDDocumentURL, k.BankName, k.BankAccount)
 	return err
 }
 
@@ -415,10 +416,10 @@ func (r *StoreRepository) SaveKYC(ctx context.Context, k *domain.SellerKYC) erro
 func (r *StoreRepository) KYCByStore(ctx context.Context, storeID string) (*domain.SellerKYC, error) {
 	var k domain.SellerKYC
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, store_id, owner_name, id_number, COALESCE(id_document_url,''),
+		SELECT id, store_id, owner_name, id_number, COALESCE(npwp,''), COALESCE(id_document_url,''),
 		       bank_name, bank_account, status, COALESCE(admin_note,''), reviewed_at, created_at
 		FROM seller_kyc WHERE store_id = $1`, storeID).
-		Scan(&k.ID, &k.StoreID, &k.OwnerName, &k.IDNumber, &k.IDDocumentURL,
+		Scan(&k.ID, &k.StoreID, &k.OwnerName, &k.IDNumber, &k.NPWP, &k.IDDocumentURL,
 			&k.BankName, &k.BankAccount, &k.Status, &k.AdminNote, &k.ReviewedAt, &k.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.E(domain.KindNotFound, "NO_KYC", "KYC not submitted")
@@ -499,7 +500,8 @@ FROM agg a WHERE st.id = a.store_id`)
 // PendingKYC lists KYC submissions awaiting review.
 func (r *StoreRepository) PendingKYC(ctx context.Context) ([]*StoreKYC, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT k.id, k.store_id, k.owner_name, k.id_number, COALESCE(k.id_document_url,''),
+		SELECT k.id, k.store_id, k.owner_name, k.id_number, COALESCE(k.npwp,''),
+		       COALESCE(k.id_document_url,''),
 		       k.bank_name, k.bank_account, k.status, COALESCE(k.admin_note,''), k.reviewed_at, k.created_at,
 		       s.name
 		FROM seller_kyc k
@@ -514,9 +516,9 @@ func (r *StoreRepository) PendingKYC(ctx context.Context) ([]*StoreKYC, error) {
 	list := []*StoreKYC{}
 	for rows.Next() {
 		var kc StoreKYC
-		if err := rows.Scan(&kc.ID, &kc.StoreID, &kc.OwnerName, &kc.IDNumber, &kc.IDDocumentURL,
-			&kc.BankName, &kc.BankAccount, &kc.Status, &kc.AdminNote, &kc.ReviewedAt, &kc.CreatedAt,
-			&kc.StoreName); err != nil {
+		if err := rows.Scan(&kc.ID, &kc.StoreID, &kc.OwnerName, &kc.IDNumber, &kc.NPWP,
+			&kc.IDDocumentURL, &kc.BankName, &kc.BankAccount, &kc.Status, &kc.AdminNote,
+			&kc.ReviewedAt, &kc.CreatedAt, &kc.StoreName); err != nil {
 			return nil, err
 		}
 		list = append(list, &kc)
@@ -782,4 +784,22 @@ func (r *StoreRepository) ReturnFacts(
 		return "", "", "", "", "", err
 	}
 	return orderID, itemID, buyerID, sellerID, status, nil
+}
+
+// NPWPByOwner returns the seller's tax number for an invoice, or "" when none
+// was submitted. Absence is not an error: an individual seller without a
+// registered NPWP is a legitimate case.
+func (r *StoreRepository) NPWPByOwner(ctx context.Context, ownerID string) (string, error) {
+	var npwp string
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(k.npwp, '')
+		  FROM stores s
+		  LEFT JOIN seller_kyc k ON k.store_id = s.id
+		 WHERE s.owner_id = $1::uuid
+		 ORDER BY k.created_at DESC NULLS LAST
+		 LIMIT 1`, ownerID).Scan(&npwp)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return npwp, err
 }

@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/service"
@@ -13,8 +14,9 @@ import (
 // invoiceOptions are the facts that come from configuration rather than from
 // the order row: the fiscal number (assigned at first view) and the tax rate.
 type invoiceOptions struct {
-	Number  string
-	PPNRate float64
+	Number     string
+	PPNRate    float64
+	SellerNPWP string
 }
 
 // renderInvoice serves a printable HTML invoice for an order.
@@ -50,6 +52,11 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order, opts invoiceOptions) 
 			f2(rounded))
 	}
 
+	sellerBlock := htmlEsc(o.SellerName)
+	if npwp := strings.TrimSpace(opts.SellerNPWP); npwp != "" {
+		sellerBlock += "<br>NPWP: " + htmlEsc(npwp)
+	}
+
 	// PPN is a BREAKDOWN of the stored total, not an addition to it: Indonesian
 	// storefront prices are quoted tax-inclusive. Printing it as subtotal + tax
 	// would claim the buyer paid more than they did, so these lines are
@@ -73,7 +80,7 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order, opts invoiceOptions) 
 		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["city"])),
 		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["province"])),
 		htmlEsc(fmt.Sprintf("%v", o.ShippingAddress["postal_code"])),
-		htmlEsc(o.SellerName),
+		sellerBlock,
 		o.PaymentStatus,
 		rows,
 		f2(o.Subtotal), f2(o.DiscountAmount),

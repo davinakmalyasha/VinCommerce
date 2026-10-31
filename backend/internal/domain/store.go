@@ -59,10 +59,13 @@ type Store struct {
 
 // SellerKYC is the identity verification record.
 type SellerKYC struct {
-	ID            string     `json:"id"`
-	StoreID       string     `json:"store_id"`
-	OwnerName     string     `json:"owner_name"`
-	IDNumber      string     `json:"id_number"`
+	ID        string `json:"id"`
+	StoreID   string `json:"store_id"`
+	OwnerName string `json:"owner_name"`
+	IDNumber  string `json:"id_number"`
+	// NPWP is optional: an individual seller without a registered tax number is
+	// valid, and the invoice omits the line rather than printing a placeholder.
+	NPWP          string     `json:"npwp,omitempty"`
 	IDDocumentURL string     `json:"id_document_url,omitempty"`
 	BankName      string     `json:"bank_name"`
 	BankAccount   string     `json:"bank_account"`
