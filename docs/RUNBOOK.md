@@ -62,7 +62,18 @@ compose setup as a demo and the scripts above as the copy mechanism.
 
 ## TLS
 
-Still absent. `web/nginx.conf` serves HTTP on 8080 and carries HSTS, but HSTS on
-plain HTTP is a header a browser ignores. A terminator (Caddy, nginx with
-certificates, or the platform load balancer) must sit in front and the origin
-must not be reachable directly. This is tracked as P2-1 in `docs/BACKLOG.md`.
+`infra/compose/compose.tls.yaml` adds a terminator: nginx 1.29 on 8443 with
+TLS 1.2/1.3, HSTS, nosniff, a plain-HTTP 301 to https, and a local
+`/healthz` for probing. It proxies to `web:8080` on the compose network; the
+web port stays loopback.
+
+```bash
+mkdir -p infra/tls/certs   # put fullchain.pem and privkey.pem here
+docker compose -f infra/compose/compose.full.yaml                -f infra/compose/compose.tls.yaml up -d
+```
+
+`infra/tls/certs/` is gitignored. Certificate renewal is NOT automated: that
+belongs to the certificate manager or a certbot sidecar, and a renewal hook
+that silently stops working is worse than none. CI generates a self-signed
+certificate, boots the same config, and asserts the TLS handshake, HSTS and
+the redirect -- see job `TLS terminator probe`.

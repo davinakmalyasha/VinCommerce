@@ -721,3 +721,80 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f pgdrill || true
+
+  # ── TLS terminator ───────────────────────────────────────────────────────
+  # The stack shipped HSTS on a plain-HTTP listener, where browsers ignore it,
+  # and no terminator at all. This proves the terminator's config actually
+  # negotiates TLS, sends HSTS, and redirects plain HTTP -- with a certificate
+  # generated for the probe, not a committed key.
+  tls-terminator:
+    name: TLS terminator probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Validate the compose override
+        env:
+          JWT_SECRET: ci-check-tls-override-secret
+          REDIS_PASSWORD: ci-check-tls-redis
+        run: |
+          set -euo pipefail
+          docker compose -f infra/compose/compose.full.yaml -f infra/compose/compose.tls.yaml config -q
+          echo "compose + tls override parses"
+
+      - name: Generate a throwaway self-signed certificate
+        run: |
+          set -euo pipefail
+          mkdir -p infra/tls/certs
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -keyout infra/tls/certs/privkey.pem \
+            -out infra/tls/certs/fullchain.pem \
+            -subj "/CN=localhost" >/dev/null 2>&1
+
+      - name: Start the terminator
+        run: |
+          set -euo pipefail
+          docker run -d --name tlsprobe \
+            -p 18443:8443 -p 18088:80 \
+            -v "$PWD/infra/tls/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            -v "$PWD/infra/tls/certs:/etc/nginx/certs:ro" \
+            nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+          for _ in $(seq 1 20); do
+            if curl -fsSk https://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the TLS listener never answered" >&2
+          docker logs tlsprobe || true
+          exit 1
+
+      - name: Assert HSTS, TLS version and the plain-HTTP redirect
+        run: |
+          set -euo pipefail
+          headers="$(curl -sSk -D - https://127.0.0.1:18443/healthz -o /dev/null)"
+
+          echo "$headers" | grep -qi '^strict-transport-security: max-age=31536000' \
+            || { echo "HSTS missing on the TLS listener"; echo "$headers"; exit 1; }
+          echo "$headers" | grep -qi '^x-content-type-options: nosniff' \
+            || { echo "nosniff missing"; echo "$headers"; exit 1; }
+
+          curl -sSk --tlsv1.2 --tls-max 1.2 https://127.0.0.1:18443/healthz >/dev/null \
+            || { echo "TLS 1.2 handshake failed"; exit 1; }
+          if curl -sSk --tlsv1.0 https://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+            echo "TLS 1.0 was accepted; the terminator is not enforcing a floor" >&2
+            exit 1
+          fi
+
+          redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:18088/healthz)"
+          case "$redirect" in
+            301\ https://*) echo "plain HTTP redirects: $redirect" ;;
+            *) echo "plain HTTP did not redirect to https: $redirect" >&2; exit 1 ;;
+          esac
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f tlsprobe || true
+          rm -rf infra/tls/certs

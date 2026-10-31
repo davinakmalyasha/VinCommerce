@@ -47,3 +47,7 @@ web/coverage/
 coverage/
 __pycache__/
 *.pyc
+
+# TLS material: private keys never belong in a repository. The terminator mounts
+# this directory; CI generates a throwaway certificate for its probe.
+infra/tls/certs/
