@@ -15,7 +15,12 @@
  * and the app shell. Everything else goes to the network.
  */
 
-const VERSION = 'v2'
+// v3: the offline shell's heading was the only English copy in an otherwise
+// Indonesian UI. The shell is precached, and a browser only re-installs a
+// service worker when sw.js itself changes -- editing offline.html alone
+// would leave every existing install serving the old file forever. The
+// version bump is what makes the fix reach them (and purges the old caches).
+const VERSION = 'v3'
 const ASSET_CACHE = `vincommerce-assets-${VERSION}`
 const SHELL_CACHE = `vincommerce-shell-${VERSION}`
 const KEEP = new Set([ASSET_CACHE, SHELL_CACHE])
