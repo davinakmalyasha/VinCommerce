@@ -100,6 +100,7 @@ export function SellerReturns() {
   const statusStyle: Record<string, string> = {
     requested: 'bg-amber-100 text-amber-700',
     approved: 'bg-blue-100 text-blue-700',
+    refunding: 'bg-indigo-100 text-indigo-700',
     rejected: 'bg-red-100 text-red-600',
     refunded: 'bg-green-100 text-green-700',
     closed: 'bg-gray-200 text-gray-600',

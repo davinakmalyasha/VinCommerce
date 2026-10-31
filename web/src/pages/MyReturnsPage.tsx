@@ -25,6 +25,7 @@ interface ReturnItem {
 const returnStatusLabels: Record<string, string> = {
   requested: 'Diajukan',
   approved: 'Disetujui — kirim barang',
+  refunding: 'Refund diproses',
   rejected: 'Ditolak',
   returned: 'Barang diterima penjual',
   refunded: 'Refund diterbitkan',

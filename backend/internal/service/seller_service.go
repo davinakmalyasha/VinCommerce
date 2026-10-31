@@ -1175,6 +1175,32 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 		return err
 	}
 
+	intent, ierr := s.payments.IntentByOrder(ctx, req.OrderID)
+	if ierr != nil {
+		// No intent at all: an externally-paid or legacy order. There is no
+		// captured money to reverse and no rate card to reverse, so the only
+		// correct action is to record that the return was approved and let an
+		// operator settle it out of band. Crediting a wallet for money the
+		// platform never received is how this path became a mint.
+		return domain.E(domain.KindConflict, "NO_PAYMENT_INTENT",
+			"this order has no payment record, so there is no money to reverse; "+
+				"settle the refund with the buyer out of band and mark the return resolved")
+	}
+	switch intent.Status {
+	case domain.IntentCaptured, domain.IntentReleased, domain.IntentPartiallyRefunded:
+		// refundable
+	default:
+		return domain.E(domain.KindConflict, "INTENT_STATE", "payment intent for this order is not refundable")
+	}
+
+	// A gateway-paid order is refunded THROUGH the gateway. The wallet path
+	// below is kept only for payment methods that cannot be reversed: stored
+	// balance (the money came from us), COD (the courier holds cash) and manual
+	// transfer (there is no provider transaction to reverse).
+	if refundRoutedThroughGateway(intent) {
+		return s.refundReturnThroughGateway(ctx, req, order, note)
+	}
+
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
 		return err
@@ -1194,71 +1220,162 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 		return domain.E(domain.KindConflict, "ALREADY_REFUNDED", "return was already refunded or is not refundable")
 	}
 
-	intent, ierr := s.payments.IntentByOrder(ctx, req.OrderID)
-	switch {
-	case ierr == nil && (intent.Status == domain.IntentCaptured ||
-		intent.Status == domain.IntentReleased ||
-		intent.Status == domain.IntentPartiallyRefunded):
-		// Delegate the money movement to the shared refund path so the cap, the
-		// leg derivation and the status transition are identical to every other
-		// refund. The return's own claim is already marked refunded above; if the
-		// refund fails, the whole transaction rolls back including that UPDATE, so
-		// the claim is not left in a state where it cannot be retried.
-		//
-		// This credits the wallet rather than calling the gateway, which is a
-		// KNOWN and DELIBERATE divergence from RefundOrder. A gateway call is
-		// network I/O and cannot sit inside this transaction: holding a row lock
-		// on the return claim and the payment intent across an HTTP call to
-		// Midtrans means a 15-second timeout stalls every other refund and every
-		// admin click that touches the order.
-		//
-		// The cost is real and stated plainly: a return refund credits platform
-		// balance rather than returning money to the buyer's card. Closing that
-		// means making the return approval and the refund two steps -- approve,
-		// commit, then refund through the gateway -- which is the right design but
-		// changes the admin flow and the return's state machine, so it is its own
-		// change rather than a quiet substitution here.
-		if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, req.Amount,
-			"return refund: "+returnID); err != nil {
-			return err
-		}
-	case ierr == nil:
-		return domain.E(domain.KindConflict, "INTENT_STATE", "payment intent for this order is not refundable")
-	default:
-		// No intent at all: an externally-paid or legacy order. There is no
-		// captured money to reverse and no rate card to reverse, so the only
-		// correct action is to record that the return was approved and let an
-		// operator settle it out of band. Crediting a wallet for money the
-		// platform never received is how this path became a mint.
-		//
-		// Refusing is the honest behaviour. A wallet credit here would be funded
-		// by nothing, and "refund the buyer" for an order paid outside the system
-		// is an operator's decision with a bank transfer attached, not a button.
-		return domain.E(domain.KindConflict, "NO_PAYMENT_INTENT",
-			"this order has no payment record, so there is no money to reverse; "+
-				"settle the refund with the buyer out of band and mark the return resolved")
+	// Delegate the money movement to the shared wallet-refund path so the cap,
+	// the leg derivation and the status transition are identical to every other
+	// refund. This is the non-reversible-method branch; gateway methods never
+	// reach it (see refundRoutedThroughGateway).
+	if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, req.Amount,
+		"return refund: "+returnID); err != nil {
+		return err
 	}
 
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: req.OrderID, FromStatus: order.Status, ToStatus: order.Status,
-		ActorID: nil, Note: fmt.Sprintf("return refund settled: %s", returnID),
+		ActorID: nil, Note: fmt.Sprintf("return refund settled to wallet: %s", returnID),
 	}); err != nil {
 		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// refundRoutedThroughGateway reports whether the original charge can be
+// reversed at the provider.
+//
+// Wallet balance, COD and manual transfer cannot: the first came from the
+// platform, the second is cash the courier holds, and the third has no provider
+// transaction behind it. Those keep the wallet-credit path. Everything else
+// (Midtrans-backed bank transfer, e-wallet, QRIS, card, retail outlet) must go
+// back through the provider, or the buyer is refunded in credit they cannot
+// withdraw -- and for Midtrans that is a terms-of-service breach.
+func refundRoutedThroughGateway(intent *domain.PaymentIntent) bool {
+	if intent == nil {
+		return false
+	}
+	switch intent.Gateway {
+	case "", "internal", "cod":
+		return false
+	}
+	switch intent.Method {
+	case domain.MethodWalletBalance, domain.MethodCOD, domain.MethodManualTransfer:
+		return false
+	}
+	return true
+}
+
+// refundReturnThroughGateway runs the two-step flow the old code's comment
+// promised: claim the return in a committed transaction, call the provider
+// OUTSIDE it, then resolve the claim from the result.
+//
+// The order matters. Holding the return row and the payment intent locked
+// across an HTTP call to Midtrans would stall every other refund and every
+// admin click that touches the order for the provider's timeout. The cost of
+// committing first is that a crash between the two steps leaves the return in
+// `refunding`, which is visible and retryable by an operator -- strictly better
+// than a refund the provider performed that no record describes.
+func (s *SellerService) refundReturnThroughGateway(
+	ctx context.Context, req *domain.ReturnRequest, order *domain.Order, note string,
+) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Querier().Exec(ctx,
+		`UPDATE return_requests SET status = 'refunding', admin_note = NULLIF($2, ''), updated_at = now()
+		 WHERE id = $1 AND status = 'approved' AND resolution = 'refund'`, req.ID, note)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "ALREADY_REFUNDED", "return was already refunded or is not refundable")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	s.emailBuyer(ctx, req.OrderID, "return_updated", "Refund selesai — VinCommerce",
-		map[string]any{"ReturnStatus": "refund", "ReturnNote": "Dana refund telah dikembalikan."})
-	if s.notifs != nil {
-		_ = s.notifs.Notify(ctx, req.BuyerID, "order", "Refund diproses",
-			"Refund untuk returanmu telah diproses.", map[string]any{"order_id": req.OrderID})
+	refundErr := s.paymentSvc.RefundOrder(ctx, req.OrderID,
+		"return refund: "+req.ID, true, req.Amount)
+
+	refunds, listErr := s.payments.RefundsForOrder(ctx, req.OrderID)
+	recorded := ""
+	if listErr == nil {
+		for _, r := range refunds {
+			if r.Reason == "return refund: "+req.ID {
+				recorded = r.Status
+				break
+			}
+		}
 	}
-	return nil
+
+	if refundErr != nil {
+		// A row that the cap counts means the refund is already in flight or
+		// needs an operator; the claim is resolved and the refunds queue is the
+		// source of truth for settlement. A failed row does NOT count, so the
+		// claim returns to `approved` and the admin can retry.
+		switch recorded {
+		case RefundStateSubmitted, RefundStateSucceeded, RefundStateManual:
+			return s.finalizeReturnRefund(ctx, req, order, withRefundState(note, recorded))
+		default:
+			if err := s.releaseReturnClaim(ctx, req.ID); err != nil {
+				return err
+			}
+			return refundErr
+		}
+	}
+
+	finalNote := note
+	if recorded != "" {
+		finalNote = withRefundState(note, recorded)
+	}
+	return s.finalizeReturnRefund(ctx, req, order, finalNote)
 }
 
-// AdminListStores lists pending stores for approval.
+func withRefundState(note, state string) string {
+	if note == "" {
+		return "refund status: " + state
+	}
+	return note + "; refund status: " + state
+}
+
+// releaseReturnClaim returns a claimed return to `approved` after a refund that
+// left no record. Zero rows is fine: somebody else resolved it meanwhile.
+func (s *SellerService) releaseReturnClaim(ctx context.Context, returnID string) error {
+	_, err := s.payments.Pool().Exec(ctx,
+		`UPDATE return_requests SET status = 'approved', updated_at = now()
+		 WHERE id = $1 AND status = 'refunding'`, returnID)
+	return err
+}
+
+// finalizeReturnRefund marks the claim resolved and leaves an order event.
+func (s *SellerService) finalizeReturnRefund(
+	ctx context.Context, req *domain.ReturnRequest, order *domain.Order, note string,
+) error {
+	tx, err := s.orders.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Querier().Exec(ctx,
+		`UPDATE return_requests SET status = 'refunded', admin_note = NULLIF($2, ''),
+		        resolved_at = now(), updated_at = now()
+		 WHERE id = $1 AND status = 'refunding'`, req.ID, note)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "RETURN_STATE",
+			"the return moved out of refunding while the provider was being called")
+	}
+	if err := tx.AddEvent(ctx, &domain.OrderEvent{
+		OrderID: req.OrderID, FromStatus: order.Status, ToStatus: order.Status,
+		ActorID: nil, Note: fmt.Sprintf("return refund issued through gateway: %s", req.ID),
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 func (s *SellerService) AdminListStores(ctx context.Context, pendingOnly bool) ([]*domain.Store, error) {
 	if pendingOnly {
 		return s.stores.PendingStores(ctx)

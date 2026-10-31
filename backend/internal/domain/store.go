@@ -20,6 +20,10 @@ const (
 const (
 	ReturnRequested = "requested"
 	ReturnApproved  = "approved"
+	// ReturnRefunding: the provider has been asked for a gateway refund and the
+	// answer is not back yet. Distinct from `refunded` because a provider call
+	// can fail, time out, or need an operator -- none of which is "done".
+	ReturnRefunding = "refunding"
 	ReturnRejected  = "rejected"
 	ReturnReturned  = "returned"
 	ReturnRefunded  = "refunded"
