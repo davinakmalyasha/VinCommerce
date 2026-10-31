@@ -41,6 +41,11 @@ const personalAccountPrefix = "seller_available:"
 // posts to -- and report clean, because both sides would be zero.
 const heldAccountPrefix = "seller_held:"
 
+// walletAccountPrefix mirrors the service-layer buyer-wallet namespace. Buyer
+// deposits are a different liability from seller earnings even though both live
+// in the same `wallets` row.
+const walletAccountPrefix = "user_wallet:"
+
 // personalAccountPrefixes is every namespace whose accounts are PER USER and
 // therefore must exist as `ledger_accounts` rows before anything can post to them.
 //
@@ -48,7 +53,7 @@ const heldAccountPrefix = "seller_held:"
 // foreign key to `ledger_accounts(code)`, so a posting to `seller_available:<uuid>`
 // for a seller who has no row fails -- and that failure is invisible from the
 // service, which is how escrow release ended up moving money with no journal.
-var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix}
+var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix, walletAccountPrefix}
 
 // PersonalAccountPrefixes exposes the personal namespaces so the service layer's
 // copy can be asserted against this one. Exported for the drift test, not for
@@ -80,6 +85,7 @@ func PersonalAccountUserID(code string) (string, bool) {
 const (
 	purposeAvailable = "available"
 	purposeHeld      = "held"
+	purposeWallet    = "wallet"
 )
 
 // EnsureAccountForCode creates a personal account named `code` if it does not
@@ -99,8 +105,11 @@ func (r *LedgerRepository) EnsureAccountForCode(ctx context.Context, q Querier, 
 		return nil
 	}
 	purpose := purposeAvailable
-	if strings.HasPrefix(code, heldAccountPrefix) {
+	switch {
+	case strings.HasPrefix(code, heldAccountPrefix):
 		purpose = purposeHeld
+	case strings.HasPrefix(code, walletAccountPrefix):
+		purpose = purposeWallet
 	}
 	_, err := q.Exec(ctx, `
 		INSERT INTO ledger_accounts (code, name, class, normal_side, is_system, currency, user_id, purpose)
@@ -483,22 +492,29 @@ func (r *LedgerRepository) unbalancedJournals(ctx context.Context, q Querier) ([
 // reconcileWallets compares each personal ledger account with the wallets row the
 // application reads for a user's spendable balance.
 func (r *LedgerRepository) reconcileWallets(ctx context.Context, q Querier) ([]domain.WalletDrift, error) {
+	// A user's spendable balance has TWO sources: seller earnings
+	// (`seller_available:<id>`) and money they topped up themselves
+	// (`user_wallet:<id>`). Comparing the wallet against only the first would
+	// report every top-up as drift -- the reconciliation would be crying wolf
+	// about the one movement it was extended to cover.
 	rows, err := q.Query(ctx, `
 		SELECT w.user_id,
 		       w.balance::float8,
-		       COALESCE(ab.balance, 0)::float8,
+		       (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))::float8,
 		       w.held_balance::float8,
 		       COALESCE(held.balance, 0)::float8
 		  FROM wallets w
 		  LEFT JOIN account_balances ab
 		         ON ab.account_code = $1 || w.user_id::text AND ab.currency = 'IDR'
+		  LEFT JOIN account_balances wb
+		         ON wb.account_code = $3 || w.user_id::text AND wb.currency = 'IDR'
 		  LEFT JOIN account_balances held
 		         ON held.account_code = $2 || w.user_id::text AND held.currency = 'IDR'
-		 WHERE abs(w.balance - COALESCE(ab.balance, 0)) > 0.004
+		 WHERE abs(w.balance - (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))) > 0.004
 		    OR abs(w.held_balance - COALESCE(held.balance, 0)) > 0.004
-		 ORDER BY abs(w.balance - COALESCE(ab.balance, 0)) DESC
+		 ORDER BY abs(w.balance - (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))) DESC
 		 LIMIT 100`,
-		personalAccountPrefix, "seller_held:")
+		personalAccountPrefix, "seller_held:", walletAccountPrefix)
 	if err != nil {
 		return nil, err
 	}

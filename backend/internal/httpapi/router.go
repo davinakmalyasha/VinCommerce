@@ -313,6 +313,7 @@ func NewRouter(deps Dependencies) http.Handler {
 					r.Use(authMw)
 					r.Post("/sandbox/orders/{orderId}/approve", paymentsH.SandboxApprove)
 					r.Post("/sandbox/orders/{orderId}/fail", paymentsH.SandboxFail)
+					r.Post("/sandbox/topups/{id}/approve", paymentsH.SandboxTopUpApprove)
 				})
 			}
 		})
@@ -320,6 +321,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Route("/wallet", func(r chi.Router) {
 			r.Use(authMw)
 			r.Get("/", wallet.Get)
+			r.Get("/topups", wallet.TopUps)
+			r.Post("/topups", wallet.CreateTopUp)
 			r.Get("/payouts", wallet.Payouts)
 			r.Post("/payouts", wallet.RequestPayout)
 		})

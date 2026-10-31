@@ -69,8 +69,21 @@ const personalAccountPrefix = AccSellerAvailable + ":"
 // sides were always zero and nothing ever posted here.
 const heldAccountPrefix = AccSellerHeld + ":"
 
+// walletAccountPrefix is the BUYER's own balance: `user_wallet:<user uuid>`.
+//
+// Buyer balance and seller earnings are stored in the same `wallets` row (a
+// seller can shop too), but they are different liabilities and the ledger must
+// not conflate them. Posting a top-up to seller_available would record a
+// deposit the platform owes back to a shopper as money it owes a seller, and
+// the payout path reads the wallet, not the ledger, so nothing would stop a
+// seller from withdrawing a buyer's deposit.
+const walletAccountPrefix = "user_wallet:"
+
 // PersonalAccount is the ledger account code for a user's spendable balance.
 func PersonalAccount(userID string) string { return personalAccountPrefix + userID }
+
+// WalletAccount is the ledger account code for a buyer's top-up balance.
+func WalletAccount(userID string) string { return walletAccountPrefix + userID }
 
 // SellerHeldAccount is the ledger account code for a user's HELD balance: money
 // earned and not yet withdrawable because a return, dispute or uncollected COD
@@ -79,7 +92,7 @@ func SellerHeldAccount(userID string) string { return heldAccountPrefix + userID
 
 // personalAccountPrefixes is every namespace that is PER USER, and therefore needs
 // an `ledger_accounts` row before anything can post to it.
-var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix}
+var personalAccountPrefixes = []string{personalAccountPrefix, heldAccountPrefix, walletAccountPrefix}
 
 // personalAccountUserID reports the user id encoded in an account code, and whether
 // the code names a personal account at all.
@@ -123,6 +136,10 @@ const (
 	// withdrawable" without a second query, and so a hold is visible as its own
 	// kind of event rather than looking like an unexplained adjustment.
 	TxTypeSellerHold = "seller_hold"
+	// TxTypeTopUp is cash arriving from the gateway into a buyer's wallet. It is
+	// distinct from TxTypePayment: no order exists yet, and the liability is the
+	// buyer's own balance rather than escrow held for a seller.
+	TxTypeTopUp = "topup"
 )
 
 // LedgerEntry is a journal line. It is an ALIAS of domain.LedgerEntry, not a

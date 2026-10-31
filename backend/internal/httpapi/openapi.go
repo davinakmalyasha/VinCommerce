@@ -221,6 +221,8 @@ func BuildOpenAPI(baseURL string) *OpenAPIDocument {
 	add("/payments/webhook/{gateway}", "post", "Payments", "Gateway webhook — sandbox HMAC (X-Webhook-Signature) or Midtrans SHA512 signature_key in body", false,
 		[]OpenAPIParameter{strParam("gateway", "path", "gateway name (sandbox|midtrans)", true)}, jsonResp("Received"))
 	add("/wallet", "get", "Payments", "Wallet balance + ledger", true, nil, jsonResp("Wallet"))
+	add("/wallet/topups", "get", "Payments", "My wallet top-ups", true, nil, jsonResp("TopUps"))
+	add("/wallet/topups", "post", "Payments", "Create a wallet top-up (whole rupiah, Rp 10.000–20.000.000). Returns snap_token/payment_url; the balance is credited by the gateway webhook.", true, nil, jsonResp("TopUp"))
 	add("/wallet/payouts", "post", "Payments", "Request a payout", true, nil, jsonResp("Payout"))
 	// Seller
 	add("/seller/store", "get", "Seller", "My store", true, nil, jsonResp("Store"))

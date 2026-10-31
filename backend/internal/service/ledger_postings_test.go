@@ -460,3 +460,44 @@ func TestRefundIdempotencyKeyUsesTheCumulativeTotal(t *testing.T) {
 		t.Errorf("a replay of the same refund produced a new key %q vs %q", replay, second)
 	}
 }
+
+// topUpJournal is the production function.
+func topUpJournal(userID string, amount float64) []LedgerEntry {
+	return topUpEntries(userID, amount)
+}
+
+func TestTopUpJournalDebitsTheGatewayAndCreditsTheBuyer(t *testing.T) {
+	j := topUpJournal("user-1", 50000)
+	if err := validateBalanced(j); err != nil {
+		t.Fatalf("top-up journal does not balance: %v", err)
+	}
+	if j[0].Account != AccGatewayClearing || j[0].Side != LedgerSideDebit {
+		t.Errorf("top-up must DEBIT gateway_clearing (cash arrived), got %s:%s",
+			j[0].Account, j[0].Side)
+	}
+	want := WalletAccount("user-1")
+	if j[1].Account != want || j[1].Side != LedgerSideCredit {
+		t.Errorf("top-up must CREDIT the buyer's wallet account %q, got %s:%s",
+			want, j[1].Account, j[1].Side)
+	}
+	// seller_available is a different liability. Posting a deposit there would
+	// make it withdrawable by a seller who never earned it.
+	if j[1].Account == PersonalAccount("user-1") {
+		t.Error("top-up posted to seller_available instead of user_wallet")
+	}
+}
+
+func TestWalletPaymentMovesStoredValueIntoEscrow(t *testing.T) {
+	j := walletPaymentEntries("user-1", 50000)
+	if err := validateBalanced(j); err != nil {
+		t.Fatalf("wallet payment journal does not balance: %v", err)
+	}
+	if j[0].Account != WalletAccount("user-1") || j[0].Side != LedgerSideDebit {
+		t.Errorf("wallet payment must DEBIT the buyer's wallet, got %s:%s",
+			j[0].Account, j[0].Side)
+	}
+	if j[1].Account != AccEscrowHeld || j[1].Side != LedgerSideCredit {
+		t.Errorf("wallet payment must CREDIT escrow_held, got %s:%s",
+			j[1].Account, j[1].Side)
+	}
+}

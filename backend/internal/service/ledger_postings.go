@@ -380,3 +380,32 @@ func (s *PaymentService) postRefundJournal(
 		}),
 	})
 }
+
+// topUpEntries builds the journal for a buyer's deposit.
+//
+// Cash arrived from the gateway (an asset we hold a claim on) and the platform
+// now owes that amount to the buyer (a liability). The previous state of this
+// system had no such posting because there was no top-up at all: wallet balance
+// could only appear from a refund, which moved money OUT of escrow rather than
+// in from outside.
+func topUpEntries(userID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(AccGatewayClearing, amount),
+		Credit(WalletAccount(userID), amount),
+	}
+}
+
+// walletPaymentEntries moves a buyer's own balance into escrow when they pay an
+// order with it.
+//
+// Without this the deposit would sit on the balance sheet forever: the wallet
+// row is debited by InitiatePayment, but no journal described where the liability
+// went. Debiting user_wallet and crediting escrow_held is the same event the
+// capture journal records for a gateway payment -- the money simply came from
+// the buyer's stored value instead of a card.
+func walletPaymentEntries(userID string, amount float64) []LedgerEntry {
+	return []LedgerEntry{
+		Debit(WalletAccount(userID), amount),
+		Credit(AccEscrowHeld, amount),
+	}
+}

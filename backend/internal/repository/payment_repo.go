@@ -1826,3 +1826,129 @@ func (r *PaymentRepository) PayoutBatchRemittance(
 	}
 	return out, rows.Err()
 }
+
+// CreateTopUp inserts a pending wallet top-up before the gateway is called.
+//
+// The row is committed first so a crash between "provider charged the buyer"
+// and "we recorded it" leaves something reconciliation can find, rather than a
+// charge the platform has no record of.
+func (r *PaymentRepository) CreateTopUp(ctx context.Context, t *domain.WalletTopUp) error {
+	return r.pool.QueryRow(ctx, `
+		INSERT INTO wallet_topups (id, user_id, amount, status, gateway, gateway_ref, snap_token, redirect_url)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''))
+		RETURNING created_at`,
+		t.ID, t.UserID, t.Amount, t.Status, t.Gateway, t.GatewayRef, t.SnapToken, t.RedirectURL).
+		Scan(&t.CreatedAt)
+}
+
+// SetTopUpGateway records what the provider returned for a pending top-up.
+func (r *PaymentRepository) SetTopUpGateway(ctx context.Context, id, gatewayRef, snapToken, redirectURL string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE wallet_topups
+		   SET gateway_ref = $2, snap_token = NULLIF($3, ''), redirect_url = NULLIF($4, ''),
+		       updated_at = now()
+		 WHERE id = $1`, id, gatewayRef, snapToken, redirectURL)
+	return err
+}
+
+// TopUpByGatewayRef resolves the reference a webhook carries.
+//
+// A webhook referring to neither an order intent nor a top-up is a 404 at the
+// handler rather than a silent success -- an unknown reference is exactly the
+// case where money must not move.
+func (r *PaymentRepository) TopUpByGatewayRef(ctx context.Context, gateway, ref string) (*domain.WalletTopUp, error) {
+	var t domain.WalletTopUp
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, user_id, amount, status, gateway, gateway_ref,
+		       COALESCE(snap_token, ''), COALESCE(redirect_url, ''), paid_at, created_at
+		  FROM wallet_topups WHERE gateway = $1 AND gateway_ref = $2`, gateway, ref).
+		Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// TopUpsByUser lists a buyer's deposits, newest first.
+func (r *PaymentRepository) TopUpsByUser(ctx context.Context, userID string, limit int) ([]*domain.WalletTopUp, error) {
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, user_id, amount, status, gateway, gateway_ref,
+		       COALESCE(snap_token, ''), COALESCE(redirect_url, ''), paid_at, created_at
+		  FROM wallet_topups WHERE user_id = $1
+		 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*domain.WalletTopUp{}
+	for rows.Next() {
+		var t domain.WalletTopUp
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &t)
+	}
+	return out, rows.Err()
+}
+
+// MarkTopUpPaidTx flips a pending top-up to paid and reports whether THIS call
+// did it.
+//
+// The guarded UPDATE is the duplicate-delivery guard. Midtrans retries a
+// webhook until it receives a 2xx, and without `AND status = 'pending'` a retry
+// would credit the wallet a second time. The boolean is what the caller uses to
+// decide whether to move money at all.
+func (r *PaymentRepository) MarkTopUpPaidTx(
+	ctx context.Context, q Querier, id string, amount float64,
+) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE wallet_topups
+		   SET status = 'paid', paid_at = now(), updated_at = now(), amount = $2
+		 WHERE id = $1 AND status = 'pending'`, id, amount)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetTopUpStatus moves a top-up between pending/failed/expired. Paid is only
+// written by MarkTopUpPaidTx, which has the duplicate guard.
+func (r *PaymentRepository) SetTopUpStatus(ctx context.Context, id, status string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE wallet_topups SET status = $2, updated_at = now() WHERE id = $1`, id, status)
+	return err
+}
+
+// FailTopUpIfPending marks a pending top-up failed. A paid row is untouched:
+// provider failure notifications can arrive after success, and downgrading one
+// would leave the wallet credited against a "failed" deposit.
+func (r *PaymentRepository) FailTopUpIfPending(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE wallet_topups SET status = 'failed', updated_at = now()
+		 WHERE id = $1 AND status = 'pending'`, id)
+	return err
+}
+
+// TopUpByID fetches a top-up by id.
+func (r *PaymentRepository) TopUpByID(ctx context.Context, id string) (*domain.WalletTopUp, error) {
+	var t domain.WalletTopUp
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, user_id, amount, status, gateway, gateway_ref,
+		       COALESCE(snap_token, ''), COALESCE(redirect_url, ''), paid_at, created_at
+		  FROM wallet_topups WHERE id = $1`, id).
+		Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return &t, err
+}

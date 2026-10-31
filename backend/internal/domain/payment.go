@@ -21,6 +21,7 @@ const (
 	TxReasonRefund        = "refund"
 	TxReasonPayout        = "payout"
 	TxReasonAdjustment    = "adjustment"
+	TxReasonTopUp         = "topup"
 )
 
 // Payment method names.
@@ -140,4 +141,34 @@ type Payout struct {
 	BankAccount string     `json:"bank_account,omitempty"`
 	RequestedAt time.Time  `json:"requested_at"`
 	ProcessedAt *time.Time `json:"processed_at,omitempty"`
+}
+
+// Wallet top-up statuses.
+const (
+	TopUpPending = "pending"
+	TopUpPaid    = "paid"
+	TopUpFailed  = "failed"
+	TopUpExpired = "expired"
+)
+
+// Top-up bounds. Whole rupiah, deliberately narrow: a Rp1 top-up costs more in
+// gateway fees than it adds, and an unbounded amount is a typo away from a
+// charge the buyer cannot afford.
+const (
+	MinTopUpAmount = 10_000
+	MaxTopUpAmount = 20_000_000
+)
+
+// WalletTopUp is a buyer's attempt to add balance through the gateway.
+type WalletTopUp struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	Amount      float64    `json:"amount"`
+	Status      string     `json:"status"`
+	Gateway     string     `json:"gateway"`
+	GatewayRef  string     `json:"gateway_ref,omitempty"`
+	SnapToken   string     `json:"snap_token,omitempty"`
+	RedirectURL string     `json:"payment_url,omitempty"`
+	PaidAt      *time.Time `json:"paid_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }

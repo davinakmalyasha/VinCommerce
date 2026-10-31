@@ -92,33 +92,26 @@ function preopenTab(): { navigate: (href: string) => void; discard: () => void }
 }
 
 /**
- * Initiates a Midtrans Snap payment for an order and opens the checkout popup.
- * Falls back to opening the redirect URL in a new tab when snap.js cannot load.
- * Returns the ACTUAL popup outcome — callers must not assume "paid".
- * The idempotency key is derived from orderId only, so retrying a failed
- * attempt reuses the same intent instead of creating duplicates.
+ * Opens a hosted checkout for an intent request and reports the ACTUAL outcome.
+ *
+ * The request promise is passed in rather than awaited by the caller so that
+ * `preopenTab()` still runs inside the click's user-gesture task. Two callers
+ * need this now -- an order and a wallet top-up -- and a copied popup path is
+ * how one of them gets a silently blocked window later.
  */
-export async function payWithSnap(orderId: string, cb: SnapCallbacks = {}): Promise<SnapResult> {
+async function presentCheckout(
+  intentRequest: Promise<IntentResponse>,
+  cb: SnapCallbacks,
+): Promise<SnapResult> {
   // Must run before the first await so it inherits the click's user gesture.
   const tab = preopenTab()
 
   let intent: IntentResponse
   try {
-    const { data } = await api.post<IntentResponse>(`/payments/orders/${orderId}/intent`, {
-      method: 'midtrans_snap',
-      idempotency_key: `snap-${orderId}`,
-    })
-    intent = data
+    intent = await intentRequest
   } catch (e) {
     tab.discard()
     throw e
-  }
-
-  const finish = (kind: 'success' | 'pending' | 'error') => {
-    api.get(`/orders/${orderId}`).catch(() => {})
-    if (kind === 'success') cb.onSuccess?.()
-    else if (kind === 'pending') cb.onPending?.()
-    else cb.onError?.()
   }
 
   try {
@@ -127,24 +120,23 @@ export async function payWithSnap(orderId: string, cb: SnapCallbacks = {}): Prom
       // Snap renders its own modal in this tab; the pre-opened tab is dead
       // weight, so close it before handing over.
       tab.discard()
-      const outcome = await new Promise<SnapResult>((resolve) => {
+      return await new Promise<SnapResult>((resolve) => {
         snap.pay(intent.snap_token!, {
           onSuccess: () => {
-            finish('success')
+            cb.onSuccess?.()
             resolve('paid')
           },
           onPending: () => {
-            finish('pending')
+            cb.onPending?.()
             resolve('pending')
           },
           onError: () => {
-            finish('error')
+            cb.onError?.()
             resolve('error')
           },
           onClose: () => resolve('closed'),
         })
       })
-      return outcome
     }
   } catch {
     // fall through to hosted-page redirect below
@@ -155,4 +147,49 @@ export async function payWithSnap(orderId: string, cb: SnapCallbacks = {}): Prom
   }
   tab.discard()
   throw new Error('Pembayaran Midtrans tidak tersedia')
+}
+
+/**
+ * Initiates a Midtrans Snap payment for an order and opens the checkout popup.
+ * Falls back to opening the redirect URL in a new tab when snap.js cannot load.
+ * Returns the ACTUAL popup outcome — callers must not assume "paid".
+ * The idempotency key is derived from orderId only, so retrying a failed
+ * attempt reuses the same intent instead of creating duplicates.
+ */
+export async function payWithSnap(orderId: string, cb: SnapCallbacks = {}): Promise<SnapResult> {
+  const finish = (kind: 'success' | 'pending' | 'error') => {
+    api.get(`/orders/${orderId}`).catch(() => {})
+    if (kind === 'success') cb.onSuccess?.()
+    else if (kind === 'pending') cb.onPending?.()
+    else cb.onError?.()
+  }
+
+  return presentCheckout(
+    api
+      .post<IntentResponse>(`/payments/orders/${orderId}/intent`, {
+        method: 'midtrans_snap',
+        idempotency_key: `snap-${orderId}`,
+      })
+      .then((r) => r.data),
+    {
+      onSuccess: () => finish('success'),
+      onPending: () => finish('pending'),
+      onError: () => finish('error'),
+      onClose: cb.onClose,
+    },
+  )
+}
+
+/**
+ * Opens the gateway checkout for a wallet top-up. The deposit is credited by
+ * the webhook, not by this popup: `onSuccess` means the provider accepted the
+ * payment, so the caller must refetch rather than assume the balance moved.
+ */
+export async function payTopUp(amount: number, cb: SnapCallbacks = {}): Promise<SnapResult> {
+  return presentCheckout(
+    api
+      .post<{ topup: IntentResponse }>('/wallet/topups', { amount })
+      .then((r) => r.data.topup),
+    cb,
+  )
 }

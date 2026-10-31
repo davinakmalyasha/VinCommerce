@@ -227,6 +227,23 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		if err := tx.SetStatusGuarded(ctx, order.ID, domain.OrderPending, domain.OrderPaid); err != nil {
 			return nil, nil, err
 		}
+		// The debit above removes stored value from the buyer. Without this
+		// journal the deposit credited by a top-up would sit on the balance
+		// sheet forever and reconciliation would find a wallet that no longer
+		// matches its liability.
+		if err := s.postLedgerStrict(ctx, tx.PgTx(), JournalSpec{
+			IdempotencyKey: "wallet-payment:" + order.ID,
+			TxType:         TxTypePayment,
+			RefType:        "order",
+			RefID:          order.ID,
+			Note:           "wallet balance payment",
+			Entries: withMeta(walletPaymentEntries(order.BuyerID, order.TotalAmount), map[string]any{
+				"order_id": order.ID,
+				"method":   "wallet",
+			}),
+		}); err != nil {
+			return nil, nil, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, nil, err
 		}
@@ -429,6 +446,14 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 
 	intent, err := s.payments.IntentByRef(ctx, gatewayName, ev.Reference)
 	if err != nil {
+		// A wallet top-up is not an order, so it has no intent. Rather than
+		// teaching every gateway payload to say which kind it is, the reference
+		// is resolved against the other table before the lookup is declared a
+		// miss. An unknown reference in BOTH is still a 404: that is the case
+		// where money must not move.
+		if domain.Is(err, domain.KindNotFound, "") {
+			return s.handleTopUpWebhook(ctx, gatewayName, ev)
+		}
 		return err
 	}
 

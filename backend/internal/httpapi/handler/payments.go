@@ -347,3 +347,58 @@ func validPayoutBatchStatus(s string) bool {
 	}
 	return false
 }
+
+// TopUps handles GET /wallet/topups.
+func (h *Wallet) TopUps(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	items, err := h.svc.MyTopUps(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"topups": items})
+}
+
+type topUpRequest struct {
+	Amount float64 `json:"amount"`
+}
+
+// CreateTopUp handles POST /wallet/topups.
+func (h *Wallet) CreateTopUp(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req topUpRequest
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	topUp, err := h.svc.CreateTopUp(r.Context(), service.CreateTopUpInput{
+		UserID: user.ID,
+		Email:  user.Email,
+		Amount: req.Amount,
+	})
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"topup": topUp})
+}
+
+// SandboxTopUpApprove completes a wallet top-up at the fake gateway.
+// Development only -- registered inside the non-production block.
+func (h *Payments) SandboxTopUpApprove(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	topUp, err := h.svc.TopUp(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	if topUp.UserID != user.ID && !user.HasRole(domain.RoleAdmin) {
+		writeErr(w, r, domain.E(domain.KindForbidden, "NOT_OWNED", "top-up does not belong to user"))
+		return
+	}
+	if err := h.svc.ApproveSandboxTopUp(r.Context(), topUp.ID); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paid": true, "topup_id": topUp.ID})
+}
