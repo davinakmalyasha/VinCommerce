@@ -887,7 +887,7 @@ func (r *ProductRepository) buildSearchWhere(f *domain.ProductFilter) (string, [
 		if f.Fuzzy {
 			where = append(where, fmt.Sprintf("similarity(p.name, $%d) > 0.2", len(args)))
 		} else {
-			where = append(where, fmt.Sprintf("p.search_vector @@ websearch_to_tsquery('english', $%d)", len(args)))
+			where = append(where, fmt.Sprintf("p.search_vector @@ websearch_to_tsquery('indonesian', $%d)", len(args)))
 		}
 	}
 	if f.CategoryID != "" {
@@ -939,7 +939,7 @@ func (r *ProductRepository) buildSearchOrder(f *domain.ProductFilter) string {
 		if f.Fuzzy {
 			orderBy = "similarity(p.name, $1) DESC, p.avg_rating DESC"
 		} else {
-			orderBy = "ts_rank(p.search_vector, websearch_to_tsquery('english', $1)) DESC, p.avg_rating DESC"
+			orderBy = "ts_rank(p.search_vector, websearch_to_tsquery('indonesian', $1)) DESC, p.avg_rating DESC"
 		}
 	}
 	switch f.Sort {

@@ -97,7 +97,7 @@ func (r *SupportRepository) Articles(ctx context.Context, section string, catego
 	}
 	if search != "" {
 		args = append(args, search)
-		where += ` AND to_tsvector('english', a.title || ' ' || a.excerpt || ' ' || a.content) @@ websearch_to_tsquery('english', $` + itoa(len(args)) + `)`
+		where += ` AND to_tsvector('indonesian', a.title || ' ' || a.excerpt || ' ' || a.content) @@ websearch_to_tsquery('indonesian', $` + itoa(len(args)) + `)`
 	}
 
 	rows, err := r.pool.Query(ctx, `
