@@ -18,7 +18,7 @@ correctness and operability.
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
 > | P1-3 | Search English-stem, bestsellers not personalised | Open |
 > | P2-1 | No backup/PITR, no TLS terminator in-repo | Open — largest ops risk |
-> | P2-2 | Return evidence has no endpoint/UI | Open |
+> | P2-2 | Return evidence had no UI and no validation | Closed — `9e250e6` |
 
 * **[closed] Migrations `0032`-`00051` had never been executed.** They now apply
   cleanly against a scratch database, verified by `backend/scripts/migration-dryrun.py`.
@@ -842,12 +842,17 @@ noise.
     Now WITH UI: session management, multi-address checkout (checkout sends
     `address_id` from the address book), the admin refund button, payout batches,
     and the parcel / return-label / arrival flows.
-    **[reclassified] Return evidence upload is NOT a missing UI — it has no
-    endpoint at all.** `return_requests.evidence_urls JSONB` exists since 00006, and
-    nothing reads or writes it: no route, no service method, no storage. Listing it
-    here alongside endpoints that merely lack a screen was wrong, and the difference
-    matters — this is a feature (an upload route, somewhere to put the bytes, the
-    ownership checks, and a UI), not a button somebody forgot to wire.
+    **[closed, and the entry itself was wrong] Return evidence.** This entry said
+    there was no endpoint at all. That was not true: `POST /returns` accepted
+    `evidence_urls`, `RequestReturn` passed it through and `CreateReturn` wrote the
+    JSONB column. What was missing was everything around it -- no UI sent the field,
+    no screen read it, and nothing validated it, so any string in the body reached
+    the database and would have been rendered on staff pages once a screen did read
+    it. `9e250e6` adds uploads (max 3) to the return modal, thumbnails on the buyer,
+    seller and admin cards, and a validator that accepts only
+    `/uploads/<32 hex>.(jpg|png|webp|gif)` on this platform. The first cut of that
+    validator allowed any host with that path; a unit test rejected
+    `https://evil.example/uploads/<hex>.jpg` and the host check was added.
     **[closed] Admin user-detail stats.** `GET /admin/users/{id}` returned order
     count, total spent, tickets, returns and wallet balance, and nothing fetched it
     — the list showed the account and never what it had done, which is what an
@@ -1391,3 +1396,26 @@ DEFERRED: none. The postgres major was the last item; it needed its own
 cycle (compose bump in `3e54ac6`, CI services aligned in `0b8e282`) and the
 full suite as witness. Merging the compose bump alone would have left CI on
 17 -- green but proving nothing about 18.
+
+## Parity audit follow-up: four defects fixed
+
+Audit run against a Shopee/Tokopedia parity checklist (buyer, seller, admin,
+cross-cutting, performance, security). The full gap list is the open table at
+the top; these four were small, verifiable defects rather than features:
+
+- `71d6d28` fix(i18n): the offline shell was the only screen with an English
+  heading in an `lang="id"` app. It shipped with a service-worker version bump
+  because a precached file alone never reaches an existing install -- browsers
+  only re-install a worker when `sw.js` changes.
+- `101f9cb` fix(config): `SplitOrigins` used `strings.Split`, so
+  `"https://a, https://b"` silently blocked the second origin (the space is
+  part of the value, and `Origin` never has one). Now trims, drops trailing
+  slashes, empties and duplicates.
+- `74a249f` fix(a11y): the three manual-transfer inputs had no accessible name
+  -- placeholders only, and the date field not even that.
+- `9e250e6` feat(returns): return photo evidence is captured (max 3), shown to
+  buyer/seller/admin, and validated server-side. P2-2 closed.
+
+Run `41177815185` (`9e250e6`): CI 6/6, 46/46 e2e. The a11y commit rode in the
+same tree, so it is covered by that run; the offline and CORS commits each had
+their own green run before it.
