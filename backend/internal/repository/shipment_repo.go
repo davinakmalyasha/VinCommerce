@@ -523,8 +523,8 @@ func (r *ShipmentRepository) ApplyCarrierStatusTx(
 	}
 	_, err := q.Exec(ctx, `
 		UPDATE shipments
-		   SET status = $2,
-		       shipped_at = CASE WHEN $2 = 'in_transit' THEN COALESCE(shipped_at, now())
+		   SET status = $2::varchar,
+		       shipped_at = CASE WHEN $2::varchar = 'in_transit' THEN COALESCE(shipped_at, now())
 		                         ELSE shipped_at END
 		 WHERE id = $1::uuid
 		   AND delivered_at IS NULL
