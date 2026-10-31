@@ -29,3 +29,29 @@ func TestNormalizeNPWPRejectsWrongLength(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateVariantMoneyRejectsFractionalRupiah(t *testing.T) {
+	cmp := 1500.5
+	cases := []struct {
+		name string
+		in   VariantInput
+		ok   bool
+	}{
+		{"whole", VariantInput{Price: 1500}, true},
+		{"fractional", VariantInput{Price: 1500.5}, false},
+		{"zero", VariantInput{Price: 0}, false},
+		{"negative", VariantInput{Price: -1}, false},
+		{"fractional compare-at", VariantInput{Price: 1500, CompareAtPrice: &cmp}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateVariantMoney(tc.in)
+			if tc.ok && err != nil {
+				t.Fatalf("validateVariantMoney(%+v) = %v", tc.in, err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("validateVariantMoney(%+v) accepted it", tc.in)
+			}
+		})
+	}
+}

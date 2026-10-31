@@ -503,8 +503,8 @@ func (s *SellerService) CreateProduct(ctx context.Context, in CreateProductInput
 		return nil, domain.E(domain.KindInvalid, "VARIANT_REQUIRED", "at least one variant is required")
 	}
 	for _, v := range in.Variants {
-		if v.Price <= 0 {
-			return nil, domain.E(domain.KindInvalid, "BAD_PRICE", "price must be positive")
+		if err := validateVariantMoney(v); err != nil {
+			return nil, err
 		}
 	}
 
@@ -523,6 +523,15 @@ func (s *SellerService) CreateProduct(ctx context.Context, in CreateProductInput
 		Status:      domain.ProductDraft,
 		Attributes:  in.Attributes,
 	}
+	for _, v := range in.Variants {
+		// UpdateProduct previously skipped price validation entirely, so a
+		// fractional or negative price could be written on edit even though
+		// create rejected it.
+		if err := validateVariantMoney(v); err != nil {
+			return nil, err
+		}
+	}
+
 	variants := make([]*domain.ProductVariant, 0, len(in.Variants))
 	for _, v := range in.Variants {
 		variants = append(variants, &domain.ProductVariant{
@@ -566,6 +575,15 @@ func (s *SellerService) UpdateProduct(ctx context.Context, sellerID, productID s
 	}
 	if existing.Attributes == nil {
 		existing.Attributes = map[string]string{}
+	}
+
+	for _, v := range in.Variants {
+		// UpdateProduct previously skipped price validation entirely, so a
+		// fractional or negative price could be written on edit even though
+		// create rejected it.
+		if err := validateVariantMoney(v); err != nil {
+			return nil, err
+		}
 	}
 
 	variants := make([]*domain.ProductVariant, 0, len(in.Variants))
@@ -1625,3 +1643,21 @@ func (s *SellerService) ImportProductsCSV(ctx context.Context, sellerID string, 
 }
 
 var _ = time.Second
+
+// validateVariantMoney enforces whole-rupiah seller prices.
+//
+// The database now refuses fractional money on the transactional tables; this
+// is the matching input check, so a bad price is a 400 with a field name
+// rather than a constraint violation from the order insert hours later.
+func validateVariantMoney(v VariantInput) error {
+	if v.Price <= 0 {
+		return domain.E(domain.KindInvalid, "BAD_PRICE", "price must be positive")
+	}
+	if !IsWholeIDR(v.Price) {
+		return domain.E(domain.KindInvalid, "BAD_PRICE", "price must be whole rupiah")
+	}
+	if v.CompareAtPrice != nil && *v.CompareAtPrice > 0 && !IsWholeIDR(*v.CompareAtPrice) {
+		return domain.E(domain.KindInvalid, "BAD_PRICE", "compare-at price must be whole rupiah")
+	}
+	return nil
+}
