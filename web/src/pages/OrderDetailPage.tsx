@@ -256,20 +256,39 @@ export function OrderDetailPage() {
                 </button>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {/* Placeholders are not labels: they disappear on input and
+                    screen readers treat an input with only a placeholder as
+                    unnamed. These three fields are the entire manual-transfer
+                    path, so an unnamed "date" control was unusable with a
+                    reader. `sr-only` keeps the visual design unchanged. */}
+                <label htmlFor="manual-pay-reference" className="sr-only">
+                  Nomor referensi / bukti transfer
+                </label>
                 <input
+                  id="manual-pay-reference"
+                  aria-required="true"
                   value={payForm.reference}
                   onChange={(e) => setPayForm({ ...payForm, reference: e.target.value })}
                   placeholder="No. referensi / bukti transfer"
                   className="px-3 py-2 border rounded-lg text-sm outline-none"
                 />
+                <label htmlFor="manual-pay-amount" className="sr-only">
+                  Jumlah transfer dalam rupiah
+                </label>
                 <input
+                  id="manual-pay-amount"
+                  aria-required="true"
                   type="number"
                   value={payForm.amount}
                   onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
                   placeholder={`Jumlah (Rp ${Math.round(data.total_amount).toLocaleString('id-ID')})`}
                   className="px-3 py-2 border rounded-lg text-sm outline-none"
                 />
+                <label htmlFor="manual-pay-date" className="sr-only">
+                  Tanggal transfer
+                </label>
                 <input
+                  id="manual-pay-date"
                   type="date"
                   value={payForm.paid_at}
                   onChange={(e) => setPayForm({ ...payForm, paid_at: e.target.value })}
