@@ -12,7 +12,7 @@ correctness and operability.
 > |---|-----|--------|
 > | P0-1 | Return-refund credits wallet, not gateway | Closed — `3223e9c` |
 > | P0-2 | No wallet top-up (refund-only balance) | Closed — `833aa5c` |
-> | P0-3 | PPN/NPWP/invoice sequence | Partly closed — PPN, invoice number and NPWP done (`0f88c5e`, `28ac4b8`); per-fiscal-year reset open |
+> | P0-3 | PPN/NPWP/invoice sequence | Closed — `0f88c5e`, `28ac4b8`, `41ff0a4` |
 > | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Partly closed — DB rejects fractional rupiah `3ea601d`; Go still `float64` |
 > | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
@@ -1461,9 +1461,11 @@ tax-inclusive, rounding is taken on the PPN leg so the two lines sum to the
 charged total exactly. Run `41203267540`: 6/6, `PASS:
 TestInvoiceNumberIsAssignedOnce`.
 
-Still open and not claimed: a seller NPWP field and its KYC capture, and a
-per-fiscal-year sequence reset. A column nobody fills would be worse than the
-gap.
+The NPWP capture followed (`28ac4b8`), and `41ff0a4` replaced the global
+sequence with a per-fiscal-year counter (`invoice_counters`, advisory-locked,
+INV-YYYY-NNNNNN). Run `41238054811`: `PASS:
+TestInvoiceNumberIsAssignedOnce` now also asserts the format and that two
+consecutive assignments in one year differ by exactly one. P0-3 is closed.
 
 **Backup and restore drill (P2-1, partial).** The largest ops risk was not a
 feature gap but an untested assumption: a database volume with no backup at
