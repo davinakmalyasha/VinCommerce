@@ -24,9 +24,10 @@ source_db="${DB_NAME:-vincom}"
 target_db="${RESTORE_DB:-${source_db}_restore_drill}"
 tables="${TABLES:-products,orders}"
 
-export PGPASSWORD="${DB_PASSWORD:-}"
+# Accept the standard PGPASSWORD as well as DB_PASSWORD.
+export PGPASSWORD="${DB_PASSWORD:-${PGPASSWORD:-}}"
 if [ -z "${PGPASSWORD}" ]; then
-  echo "db-restore-drill: DB_PASSWORD is empty; refusing to guess" >&2
+  echo "db-restore-drill: DB_PASSWORD/PGPASSWORD is empty; refusing to guess" >&2
   exit 2
 fi
 

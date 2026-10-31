@@ -26,10 +26,12 @@ name="${DB_NAME:-vincom}"
 dir="${BACKUP_DIR:-./backups}"
 retention="${RETENTION_DAYS:-7}"
 
-export PGPASSWORD="${DB_PASSWORD:-}"
+# Accept the standard PGPASSWORD as well as DB_PASSWORD: the CI drill runs
+# inside the postgres image, where the client tools read PGPASSWORD.
+export PGPASSWORD="${DB_PASSWORD:-${PGPASSWORD:-}}"
 
 if [ -z "${PGPASSWORD}" ]; then
-  echo "db-backup: DB_PASSWORD is empty; refusing to guess" >&2
+  echo "db-backup: DB_PASSWORD/PGPASSWORD is empty; refusing to guess" >&2
   exit 2
 fi
 
