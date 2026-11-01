@@ -13,7 +13,7 @@
 # or the operator's restore runbook. Those are decisions, not code.
 set -euo pipefail
 
-IMAGE="${PITR_IMAGE:-postgres:18}"
+IMAGE="${PITR_IMAGE:-postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722}"
 SRC=pitr-src
 DST=pitr-dst
 WORK="${PITR_WORK_DIR:-./.pitr}"
@@ -72,7 +72,7 @@ psql_src "CREATE TABLE events (id int PRIMARY KEY, note text NOT NULL);" >/dev/n
 psql_src "INSERT INTO events VALUES (1, 'before-backup');" >/dev/null
 
 echo "== base backup"
-docker exec -u postgres "$SRC" pg_basebackup -D /tmp/base -Fp -Xs -c fast >/dev/null
+docker exec -u postgres "$SRC" pg_basebackup -U vincom -D /tmp/base -Fp -Xs -c fast >/dev/null
 docker cp "$SRC:/tmp/base/." "$BASE/"
 
 echo "== write the row that only exists in WAL"
