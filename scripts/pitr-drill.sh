@@ -118,6 +118,22 @@ docker run -d --name "$DST" \
   "$IMAGE" >/dev/null
 wait_ready "$DST"
 
+# pg_isready answers while the server is still replaying. The assertions below
+# would then race the replay and read only the base-backup row. Wait for
+# promotion (recovery_target_action=promote) before counting.
+for _ in $(seq 1 120); do
+  in_recovery="$(psql_dst "SELECT pg_is_in_recovery();")"
+  if [ "$in_recovery" = "f" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ "${in_recovery:-t}" != "f" ]; then
+  echo "the restored instance never finished WAL replay" >&2
+  docker logs "$DST" 2>&1 | tail -40 >&2 || true
+  exit 1
+fi
+
 rows="$(psql_dst "SELECT count(*) FROM events;")"
 after="$(psql_dst "SELECT count(*) FROM events WHERE note = 'after-backup';")"
 if [ "$rows" != "2" ] || [ "$after" != "1" ]; then
