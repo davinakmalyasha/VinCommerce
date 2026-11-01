@@ -116,7 +116,7 @@ docker run -d --name "$DST" \
   -e POSTGRES_PASSWORD=vincom_dev \
   -e PGPASSWORD=vincom_dev \
   -p "$DST_PORT:5432" \
-  -v "$(cd "$BASE" && pwd):/var/lib/postgresql/data" \
+  -v "$(cd "$BASE" && pwd):/var/lib/postgresql/18/docker" \
   -v "$(cd "$ARCHIVE" && pwd):/archive" \
   "$IMAGE" >/dev/null
 wait_ready "$DST"
