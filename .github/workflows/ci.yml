@@ -803,3 +803,23 @@ jobs:
         run: |
           docker rm -f tlsprobe || true
           rm -rf infra/tls/certs
+
+  # ── Point-in-time recovery ────────────────────────────────────────────────
+  # The backup drill proves a logical dump restores. This proves the other
+  # half: a base backup plus ARCHIVED WAL replays a row written after the base
+  # backup. That row is only in the archive, so a pass cannot be a coincidence.
+  #
+  # No cloud account: the WAL archive is a throwaway host directory inside the
+  # job. Retention and off-host storage are decisions for a real deployment,
+  # and docs/RUNBOOK.md says so.
+  pitr-drill:
+    name: PITR replay drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Play base backup + archived WAL into a second instance
+        run: |
+          set -euo pipefail
+          bash scripts/pitr-drill.sh

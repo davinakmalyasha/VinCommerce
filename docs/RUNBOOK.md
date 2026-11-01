@@ -45,9 +45,18 @@ taken; every order between the dump and the incident is lost. Real PITR needs:
 4. a restore rehearsal against the SAME major version, on a machine that is not
    the database host.
 
-None of that is in this repository. `postgres` in `infra/compose` is a single
-container with a named volume; losing the host loses the volume. Treat the
-compose setup as a demo and the scripts above as the copy mechanism.
+The *mechanics* are proven, the *deployment decisions* are not.
+`scripts/pitr-drill.sh` boots a PostgreSQL 18 with `archive_mode=on`, takes a
+base backup, writes a row that the backup cannot contain, forces a WAL switch,
+then restores into a second instance and asserts that row is present. CI job
+`PITR replay drill` runs it. A pass means archive + replay work; it does not
+mean WAL is retained for seven days or stored off-host.
+
+`postgres` in `infra/compose` is a single container with a named volume;
+losing the host loses the volume. Treat the compose setup as a demo and the
+scripts above as the copy mechanism. Retention, off-host storage (object lock),
+and base-backup frequency remain operator decisions and are not configured
+here.
 
 ## Restore into production (outline)
 
