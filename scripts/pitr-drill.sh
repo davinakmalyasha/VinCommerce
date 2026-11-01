@@ -110,7 +110,10 @@ touch "$BASE/recovery.signal"
 docker run --rm --user root -v "$(cd "$BASE" && pwd):/data" --entrypoint chown \
   "$IMAGE" -R 999:999 /data
 
+# The official entrypoint demands a password even when PGDATA already exists;
+# it never initialises here, but it refuses to start without this.
 docker run -d --name "$DST" \
+  -e POSTGRES_PASSWORD=vincom_dev \
   -e PGPASSWORD=vincom_dev \
   -p "$DST_PORT:5432" \
   -v "$(cd "$BASE" && pwd):/var/lib/postgresql/data" \
