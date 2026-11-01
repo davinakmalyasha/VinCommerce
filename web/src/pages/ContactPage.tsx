@@ -66,8 +66,9 @@ export function ContactPage() {
         >
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-sm font-medium block mb-1">Subjek</label>
+              <label htmlFor="contact-subject" className="text-sm font-medium block mb-1">Subjek</label>
               <input
+                id="contact-subject"
                 required
                 value={form.subject}
                 onChange={(e) => setForm({ ...form, subject: e.target.value })}
@@ -76,8 +77,9 @@ export function ContactPage() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium block mb-1">Kategori</label>
+              <label htmlFor="contact-category" className="text-sm font-medium block mb-1">Kategori</label>
               <select
+                id="contact-category"
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
                 className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
@@ -91,8 +93,9 @@ export function ContactPage() {
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium block mb-1">Prioritas</label>
+              <label htmlFor="contact-priority" className="text-sm font-medium block mb-1">Prioritas</label>
               <select
+                id="contact-priority"
                 value={form.priority}
                 onChange={(e) => setForm({ ...form, priority: e.target.value })}
                 className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
@@ -104,8 +107,9 @@ export function ContactPage() {
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium block mb-1">Terkait pesanan (opsional)</label>
+              <label htmlFor="contact-order" className="text-sm font-medium block mb-1">Terkait pesanan (opsional)</label>
               <select
+                id="contact-order"
                 value={form.order_id}
                 onChange={(e) => setForm({ ...form, order_id: e.target.value })}
                 className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
@@ -120,8 +124,9 @@ export function ContactPage() {
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium block mb-1">Pesan</label>
+            <label htmlFor="contact-message" className="text-sm font-medium block mb-1">Pesan</label>
             <textarea
+              id="contact-message"
               required
               rows={5}
               value={form.message}

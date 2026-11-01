@@ -85,7 +85,9 @@ export function TicketDetailPage() {
 
       {ticket.status !== 'closed' && (
         <div className="bg-white border border-gray-200 rounded-xl p-5">
+          <label htmlFor="ticket-reply" className="sr-only">Balasan untuk tiket</label>
           <textarea
+            id="ticket-reply"
             rows={3}
             value={body}
             onChange={(e) => setBody(e.target.value)}
