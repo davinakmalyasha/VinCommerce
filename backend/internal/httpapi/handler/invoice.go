@@ -46,10 +46,10 @@ func renderInvoice(w http.ResponseWriter, o *domain.Order, opts invoiceOptions) 
 	// than no line -- it looks like a charge and invites the reader to wonder what
 	// was waived.
 	insuranceRow := ""
-	if rounded := math.Round(o.InsuranceFee); rounded > 0 {
+	if o.InsuranceFee > 0 {
 		insuranceRow = fmt.Sprintf(
 			`  <tr><td colspan="3"></td><td style="text-align:right">Asuransi pengiriman</td><td style="text-align:right">Rp %s</td></tr>`+"\n",
-			f2(rounded))
+			f2(o.InsuranceFee))
 	}
 
 	sellerBlock := htmlEsc(o.SellerName)
@@ -112,8 +112,11 @@ func htmlEsc(s string) string {
 	return string(out)
 }
 
-func f2(v float64) string {
-	return fmt.Sprintf("%.0f", v)
+// f2 prints a whole-rupiah amount. It takes IDR rather than float64 so a
+// fractional value cannot reach the renderer at all -- the old gating on
+// math.Round existed because the field could carry sen.
+func f2(v domain.IDR) string {
+	return v.String()
 }
 
 // pct renders 0.11 as "11" and 0.1 as "10", without a trailing ".0".

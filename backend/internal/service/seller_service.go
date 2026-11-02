@@ -1047,7 +1047,9 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	// Auto-approve low-value claims (platform policy) to cut response latency.
 	// The resolution MUST be set here — otherwise the later refund step
 	// rejects with NO_REFUND and auto-approved claims dead-end forever.
-	if s.returnAutoApproveMax > 0 && item.Total <= s.returnAutoApproveMax {
+	// The threshold is config (still float until that slice); the item total
+	// is IDR. A fractional threshold rounds once, here.
+	if s.returnAutoApproveMax > 0 && item.Total <= domain.IDRFromFloat(s.returnAutoApproveMax) {
 		status = domain.ReturnApproved
 		resolution = "refund"
 	}
@@ -1079,7 +1081,7 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	// Holding the whole order would freeze money the seller is entitled to keep.
 	if s.paymentSvc != nil {
 		if err := s.paymentSvc.HoldSellerFunds(ctx, item.SellerID, order.ID, req.ID,
-			HoldReturn, "return claim "+req.ID, item.Total); err != nil {
+			HoldReturn, "return claim "+req.ID, item.Total.Float()); err != nil {
 			// Loud. Proceeding without the hold is the exact condition this exists
 			// to prevent, and it fails silently from the buyer's point of view: the
 			// return is accepted, and then the refund is stuck on a balance that is

@@ -1,11 +1,15 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/vincommerce/backend/internal/domain"
+)
 
 func TestSplitInclusiveTax(t *testing.T) {
 	// DPP + tax must ALWAYS equal the charged total, for every rate and amount.
 	cases := []struct {
-		total float64
+		total domain.IDR
 		rate  float64
 	}{
 		{111000, 0.11}, {100000, 0.11}, {250750, 0.11}, {999999, 0.11},
@@ -14,14 +18,14 @@ func TestSplitInclusiveTax(t *testing.T) {
 	for _, tc := range cases {
 		dpp, tax := SplitInclusiveTax(tc.total, tc.rate)
 		if dpp < 0 || tax < 0 {
-			t.Errorf("total %.0f rate %v: negative split dpp=%.0f tax=%.0f", tc.total, tc.rate, dpp, tax)
+			t.Errorf("total %v rate %v: negative split dpp=%v tax=%v", tc.total, tc.rate, dpp, tax)
 		}
-		if sum := dpp + tax; sum != moneyRound(tc.total) {
-			t.Errorf("total %.0f rate %v: dpp %.0f + tax %.0f = %.0f",
+		if sum := dpp + tax; sum != tc.total {
+			t.Errorf("total %v rate %v: dpp %v + tax %v = %v",
 				tc.total, tc.rate, dpp, tax, sum)
 		}
-		if tc.rate == 0 && (dpp != moneyRound(tc.total) || tax != 0) {
-			t.Errorf("rate 0: dpp=%.0f tax=%.0f, want the full amount and no tax", dpp, tax)
+		if tc.rate == 0 && (dpp != tc.total || tax != 0) {
+			t.Errorf("rate 0: dpp=%v tax=%v, want the full amount and no tax", dpp, tax)
 		}
 	}
 }

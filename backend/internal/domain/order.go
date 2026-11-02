@@ -73,11 +73,11 @@ type Order struct {
 	SellerID        string         `json:"seller_id"`
 	Status          string         `json:"status"`
 	Currency        string         `json:"currency"`
-	Subtotal        float64        `json:"subtotal"`
-	DiscountAmount  float64        `json:"discount_amount"`
-	ShippingFee     float64        `json:"shipping_fee"`
-	InsuranceFee    float64        `json:"insurance_fee"`
-	TotalAmount     float64        `json:"total_amount"`
+	Subtotal        IDR            `json:"subtotal"`
+	DiscountAmount  IDR            `json:"discount_amount"`
+	ShippingFee     IDR            `json:"shipping_fee"`
+	InsuranceFee    IDR            `json:"insurance_fee"`
+	TotalAmount     IDR            `json:"total_amount"`
 	PaymentStatus   string         `json:"payment_status"`
 	CouponCode      string         `json:"coupon_code,omitempty"`
 	ShippingAddress map[string]any `json:"shipping_address"`
@@ -116,10 +116,10 @@ type OrderItem struct {
 	ProductName string    `json:"product_name"`
 	VariantName string    `json:"variant_name"`
 	SKU         string    `json:"sku"`
-	UnitPrice   float64   `json:"unit_price"`
+	UnitPrice   IDR       `json:"unit_price"`
 	Quantity    int       `json:"quantity"`
 	WeightGrams int       `json:"weight_grams"`
-	Total       float64   `json:"total"`
+	Total       IDR       `json:"total"`
 	ImageURL    string    `json:"image_url,omitempty"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -155,19 +155,19 @@ type CartItem struct {
 // CartLine is a cart item enriched with product data for display.
 type CartLine struct {
 	CartItem
-	ProductID   string  `json:"product_id"`
-	ProductSlug string  `json:"product_slug"`
-	ProductName string  `json:"product_name"`
-	VariantName string  `json:"variant_name"`
-	SKU         string  `json:"sku"`
-	ImageURL    string  `json:"image_url,omitempty"`
-	Price       float64 `json:"price"`
-	Subtotal    float64 `json:"subtotal"`
-	Stock       int     `json:"stock"`
-	SellerID    string  `json:"seller_id"`
-	SellerName  string  `json:"seller_name"`
-	WeightGrams int     `json:"weight_grams"`
-	IsActive    bool    `json:"is_active"`
+	ProductID   string `json:"product_id"`
+	ProductSlug string `json:"product_slug"`
+	ProductName string `json:"product_name"`
+	VariantName string `json:"variant_name"`
+	SKU         string `json:"sku"`
+	ImageURL    string `json:"image_url,omitempty"`
+	Price       IDR    `json:"price"`
+	Subtotal    IDR    `json:"subtotal"`
+	Stock       int    `json:"stock"`
+	SellerID    string `json:"seller_id"`
+	SellerName  string `json:"seller_name"`
+	WeightGrams int    `json:"weight_grams"`
+	IsActive    bool   `json:"is_active"`
 }
 
 // Address is a shipping destination.

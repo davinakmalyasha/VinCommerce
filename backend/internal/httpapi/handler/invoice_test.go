@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"math"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
@@ -46,17 +45,17 @@ func renderOrderInvoice(o *domain.Order) string {
 	return rec.Body.String()
 }
 
-func parseMoney(s string) float64 {
+func parseMoney(s string) domain.IDR {
 	// f2 formats with no separators, but the regex tolerates them so a future
 	// thousands separator does not silently break this test into always passing.
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.ReplaceAll(s, ".", "")
-	v, _ := strconv.ParseFloat(s, 64)
-	return v
+	v, _ := strconv.ParseInt(s, 10, 64)
+	return domain.IDR(v)
 }
 
 // invoiceAmounts extracts every labelled amount the invoice prints.
-func invoiceAmounts(html string) (subtotal, discount, shipping, insurance, total float64, found map[string]bool) {
+func invoiceAmounts(html string) (subtotal, discount, shipping, insurance, total domain.IDR, found map[string]bool) {
 	found = map[string]bool{}
 	if m := subtotalRE.FindStringSubmatch(html); m != nil {
 		subtotal, found["subtotal"] = parseMoney(m[1]), true
@@ -76,7 +75,7 @@ func invoiceAmounts(html string) (subtotal, discount, shipping, insurance, total
 	return
 }
 
-func sampleOrder(subtotal, discount, shipping, insurance float64) *domain.Order {
+func sampleOrder(subtotal, discount, shipping, insurance domain.IDR) *domain.Order {
 	return &domain.Order{
 		OrderNumber:   "VC-20260101-0001",
 		Status:        domain.OrderPaid,
@@ -87,7 +86,7 @@ func sampleOrder(subtotal, discount, shipping, insurance float64) *domain.Order 
 		DiscountAmount: discount,
 		ShippingFee:    shipping,
 		InsuranceFee:   insurance,
-		TotalAmount:    math.Round(subtotal - discount + shipping + insurance),
+		TotalAmount:    subtotal - discount + shipping + insurance,
 		SellerName:     "Toko uji",
 		ShippingMethod: "REG",
 		Carrier:        "JNE",
@@ -99,7 +98,7 @@ func TestInvoiceLinesFootTheTotal(t *testing.T) {
 	// must satisfy: subtotal − discount + shipping + insurance == total.
 	cases := []struct {
 		name                          string
-		subtotal, discount, ship, ins float64
+		subtotal, discount, ship, ins domain.IDR
 	}{
 		{"no insurance", 100000, 0, 15000, 0},
 		{"insurance only", 100000, 0, 15000, 3000},
@@ -124,17 +123,17 @@ func TestInvoiceLinesFootTheTotal(t *testing.T) {
 			// An insurance fee on the order MUST appear as a line. This is the
 			// specific regression: the fee was charged and stored and invisible.
 			if o.InsuranceFee > 0 && !found["insurance"] {
-				t.Errorf("the order carries a Rp%.0f insurance fee but the invoice "+
-					"prints no line for it, so the printed lines are Rp%.0f short of the total",
+				t.Errorf("the order carries a Rp%v insurance fee but the invoice "+
+					"prints no line for it, so the printed lines are Rp%v short of the total",
 					o.InsuranceFee, o.InsuranceFee)
 			}
 			if o.InsuranceFee == 0 && found["insurance"] {
 				t.Error("an insurance line was printed for an order with no insurance fee")
 			}
 
-			sum := math.Round(subtotal - discount + shipping + insurance)
+			sum := subtotal - discount + shipping + insurance
 			if sum != total {
-				t.Errorf("the printed lines sum to Rp%.0f but the invoice prints a total of Rp%.0f\n"+
+				t.Errorf("the printed lines sum to Rp%v but the invoice prints a total of Rp%v\n"+
 					"  subtotal %v − discount %v + shipping %v + insurance %v",
 					sum, total, subtotal, discount, shipping, insurance)
 			}
@@ -151,12 +150,13 @@ func TestInvoiceOmitsTheInsuranceLineWhenThereIsNoFee(t *testing.T) {
 	}
 }
 
-func TestInvoiceOmitsTheInsuranceLineForAFractionalFeeThatRoundsAway(t *testing.T) {
-	// A sub-rupiah fee is rounded away by the checkout, so printing "Rp 0" would
-	// be a lie about a charge that does not exist.
-	html := renderOrderInvoice(sampleOrder(100000, 0, 15000, 0.4))
-	if insuranceRE.MatchString(html) {
-		t.Error("printed an insurance line for a fee that rounds to zero")
+func TestInvoicePrintsTheInsuranceLineForASingleRupiah(t *testing.T) {
+	// The mirror of the zero-fee test: Rp1 is a real charge and must appear.
+	// (A fractional fee is unrepresentable now -- it fails to compile as an
+	// argument -- so there is no rounding-away case left to assert.)
+	html := renderOrderInvoice(sampleOrder(100000, 0, 15000, 1))
+	if !insuranceRE.MatchString(html) {
+		t.Error("no insurance line for a Rp1 fee")
 	}
 }
 
@@ -173,7 +173,7 @@ func TestInvoicePrintsTheStoredTotalRatherThanRecomputingIt(t *testing.T) {
 		t.Fatal("no total printed")
 	}
 	if total != 999999 {
-		t.Errorf("the invoice printed Rp%.0f, want the stored total Rp999999", total)
+		t.Errorf("the invoice printed Rp%v, want the stored total Rp999999", total)
 	}
 }
 
@@ -185,7 +185,7 @@ var (
 // PPN is printed as a BREAKDOWN of the inclusive total, so the two lines must
 // sum to the same total the buyer was charged -- not to a larger number.
 func TestInvoiceIncludedTaxFootsTheTotal(t *testing.T) {
-	for _, total := range []float64{111000, 100000, 250750, 999999} {
+	for _, total := range []domain.IDR{111000, 100000, 250750, 999999} {
 		o := sampleOrder(total, 0, 0, 0)
 		o.TotalAmount = total
 
@@ -196,19 +196,19 @@ func TestInvoiceIncludedTaxFootsTheTotal(t *testing.T) {
 		dppMatch := dppRE.FindStringSubmatch(html)
 		ppnMatch := ppnRE.FindStringSubmatch(html)
 		if dppMatch == nil || ppnMatch == nil {
-			t.Fatalf("total %.0f: invoice printed no tax breakdown", total)
+			t.Fatalf("total %v: invoice printed no tax breakdown", total)
 		}
 		if ppnMatch[1] != "11" {
 			t.Errorf("tax rate printed as %s%%, want 11%%", ppnMatch[1])
 		}
 		dpp, ppn := parseMoney(dppMatch[1]), parseMoney(ppnMatch[2])
 		if sum := dpp + ppn; sum != total {
-			t.Errorf("total %.0f: DPP %.0f + PPN %.0f = %.0f, want the charged total",
+			t.Errorf("total %v: DPP %v + PPN %v = %v, want the charged total",
 				total, dpp, ppn, sum)
 		}
 		_, _, _, _, printedTotal, _ := invoiceAmounts(html)
 		if printedTotal != total {
-			t.Errorf("total %.0f: invoice printed TOTAL %.0f", total, printedTotal)
+			t.Errorf("total %v: invoice printed TOTAL %v", total, printedTotal)
 		}
 	}
 }

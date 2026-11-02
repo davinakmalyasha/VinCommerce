@@ -673,7 +673,13 @@ func (h *Orders) ExternalPayment(w http.ResponseWriter, r *http.Request) {
 		}
 		paidAt = t
 	}
-	claimID, err := h.svc.SubmitExternalPaymentClaim(r.Context(), chi.URLParam(r, "id"), user.ID, req.Reference, req.Amount, paidAt)
+	// The reported amount is whole rupiah by contract; a fractional claim is
+	// rejected rather than rounded to the order total.
+	if !service.IsWholeIDR(req.Amount) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be whole rupiah"))
+		return
+	}
+	claimID, err := h.svc.SubmitExternalPaymentClaim(r.Context(), chi.URLParam(r, "id"), user.ID, req.Reference, domain.IDRFromFloat(req.Amount), paidAt)
 	if err != nil {
 		writeErr(w, r, err)
 		return

@@ -180,12 +180,12 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			return nil, nil, err
 		}
 		defer tx.Rollback(ctx)
-		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "debit", "order_payment", domain.IDRFromFloat(order.TotalAmount), order.ID); err != nil {
+		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "debit", "order_payment", order.TotalAmount, order.ID); err != nil {
 			return nil, nil, err
 		}
 		intent := &domain.PaymentIntent{
 			ID: uuid.NewString(), OrderID: order.ID, BuyerID: in.BuyerID,
-			Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
+			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "internal", Method: "wallet", IdempotencyKey: key,
 		}
 		if err := s.payments.CreateIntentTx(ctx, tx.PgTx(), intent); err != nil {
@@ -236,7 +236,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			RefType:        "order",
 			RefID:          order.ID,
 			Note:           "wallet balance payment",
-			Entries: withMeta(walletPaymentEntries(order.BuyerID, domain.IDRFromFloat(order.TotalAmount)), map[string]any{
+			Entries: withMeta(walletPaymentEntries(order.BuyerID, order.TotalAmount), map[string]any{
 				"order_id": order.ID,
 				"method":   "wallet",
 			}),
@@ -260,7 +260,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 	if in.Method == "cod" {
 		intent := &domain.PaymentIntent{
 			ID: uuid.NewString(), OrderID: order.ID, BuyerID: in.BuyerID,
-			Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
+			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "cod", Method: "cod", IdempotencyKey: key,
 		}
 		tx, err := s.orders.Begin(ctx)
@@ -304,7 +304,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 	gwPayment, err := gateway.CreatePayment(ctx, payments.CreatePaymentInput{
 		OrderID:     order.ID,
 		OrderNumber: order.OrderNumber,
-		Amount:      domain.IDRFromFloat(order.TotalAmount),
+		Amount:      order.TotalAmount,
 		Currency:    order.Currency,
 		Idempotency: key,
 		ReturnURL:   finishBase + "/orders/" + order.ID,
@@ -317,7 +317,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		ID:             uuid.NewString(),
 		OrderID:        order.ID,
 		BuyerID:        in.BuyerID,
-		Amount:         domain.IDRFromFloat(order.TotalAmount),
+		Amount:         order.TotalAmount,
 		Currency:       order.Currency,
 		Status:         domain.IntentInitiated,
 		Gateway:        gateway.Name(),
@@ -920,7 +920,7 @@ func (s *PaymentService) RecordExternalCapture(
 ) error {
 	intent := &domain.PaymentIntent{
 		ID: uuid.NewString(), OrderID: order.ID, BuyerID: order.BuyerID,
-		Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
+		Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
 		Gateway: "external", Method: domain.MethodManualTransfer,
 		IdempotencyKey: "external-" + order.ID,
 	}

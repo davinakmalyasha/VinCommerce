@@ -43,7 +43,7 @@ func (s *AIService) AskForUser(ctx context.Context, userID, question string) (*a
 		if err == nil && total > 0 {
 			context = "Konteks pesanan pengguna ini:\n"
 			for _, o := range orders {
-				context += fmt.Sprintf("- %s: status %s, total Rp %.0f, kurir %s\n",
+				context += fmt.Sprintf("- %s: status %s, total Rp %v, kurir %s\n",
 					o.OrderNumber, o.Status, o.TotalAmount, o.ShippingMethod)
 			}
 		}

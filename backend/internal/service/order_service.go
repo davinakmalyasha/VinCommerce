@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -457,10 +456,10 @@ func (s *OrderService) MergeCart(ctx context.Context, userID, guestCartID string
 // FreeShippingStatus describes one seller bundle's progress toward that
 // store's free-shipping threshold (cart upsell banner).
 type FreeShippingStatus struct {
-	SellerID  string   `json:"seller_id"`
-	Name      string   `json:"name"`
-	Subtotal  float64  `json:"subtotal"`
-	Threshold *float64 `json:"threshold,omitempty"`
+	SellerID  string     `json:"seller_id"`
+	Name      string     `json:"name"`
+	Subtotal  domain.IDR `json:"subtotal"`
+	Threshold *float64   `json:"threshold,omitempty"`
 }
 
 // FreeShippingStatus computes per-seller progress toward free shipping.
@@ -473,7 +472,7 @@ func (s *OrderService) FreeShippingStatus(ctx context.Context, userID, sessionKe
 	if err != nil {
 		return nil, err
 	}
-	bundles := map[string]float64{}
+	bundles := map[string]domain.IDR{}
 	names := map[string]string{}
 	for _, l := range lines {
 		bundles[l.SellerID] += l.Subtotal
@@ -503,15 +502,15 @@ func (s *OrderService) FreeShippingStatus(ctx context.Context, userID, sessionKe
 // Quote computes the checkout breakdown without placing the order.
 // AppliedBundle is one bundle that the quote charged.
 type AppliedBundle struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Discount float64 `json:"discount"`
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Discount domain.IDR `json:"discount"`
 }
 
 type Quote struct {
 	Lines          []*domain.CartLine `json:"lines"`
-	Subtotal       float64            `json:"subtotal"`
-	DiscountAmount float64            `json:"discount_amount"`
+	Subtotal       domain.IDR         `json:"subtotal"`
+	DiscountAmount domain.IDR         `json:"discount_amount"`
 	CouponCode     string             `json:"coupon_code,omitempty"`
 	// Bundles lists the bundles that were applied, with the name each one carries.
 	// IDs alone were not enough: the checkout summary renders "Diskon <coupon code>",
@@ -519,15 +518,15 @@ type Quote struct {
 	// saw a discount with no explanation.
 	Bundles  []AppliedBundle  `json:"bundles,omitempty"`
 	Shipping []*ShippingQuote `json:"shipping"`
-	Total    float64          `json:"total"`
+	Total    domain.IDR       `json:"total"`
 
-	InsuranceAvailable bool    `json:"insurance_available"`
-	InsuranceSelected  bool    `json:"insurance_selected"`
-	InsuranceFee       float64 `json:"insurance_fee"`
-	PointsDiscount     float64 `json:"points_discount,omitempty"`
-	PointsRedeemed     int     `json:"points_redeemed,omitempty"`
+	InsuranceAvailable bool       `json:"insurance_available"`
+	InsuranceSelected  bool       `json:"insurance_selected"`
+	InsuranceFee       domain.IDR `json:"insurance_fee"`
+	PointsDiscount     domain.IDR `json:"points_discount,omitempty"`
+	PointsRedeemed     int        `json:"points_redeemed,omitempty"`
 
-	discountBySeller map[string]float64
+	discountBySeller map[string]domain.IDR
 
 	// subtotalBySeller and gramsBySeller carry the per-bundle figures the quote
 	// computed, so PlaceOrder can build the sub-orders from the SAME numbers
@@ -545,32 +544,32 @@ type Quote struct {
 	// had already diverged on rounding. It is also why the weight bug was a
 	// money bug rather than a display bug: this is the loop whose result becomes
 	// `orders.total_amount`.
-	subtotalBySeller map[string]float64
+	subtotalBySeller map[string]domain.IDR
 	gramsBySeller    map[string][]int
 }
 
 // DiscountFor returns the discount allocated to one seller bundle.
-func (q *Quote) DiscountFor(sid string) float64 { return q.discountBySeller[sid] }
+func (q *Quote) DiscountFor(sid string) domain.IDR { return q.discountBySeller[sid] }
 
 // SubtotalFor returns the merchandise subtotal the quote computed for one
 // seller bundle. PlaceOrder must use this rather than re-summing the cart.
-func (q *Quote) SubtotalFor(sid string) float64 { return q.subtotalBySeller[sid] }
+func (q *Quote) SubtotalFor(sid string) domain.IDR { return q.subtotalBySeller[sid] }
 
 // BillableKgFor returns the billable weight the quote computed for one bundle.
 func (q *Quote) BillableKgFor(sid string) int { return billableKg(q.gramsBySeller[sid]) }
 
 // ShippingQuote is per-method fee for one seller bundle.
 type ShippingQuote struct {
-	MethodID     string  `json:"method_id"`
-	Code         string  `json:"code"`
-	Name         string  `json:"name"`
-	BaseFee      float64 `json:"base_fee"`
-	PerKgFee     float64 `json:"per_kg_fee"`
-	WeightKg     int     `json:"weight_kg"`
-	Fee          float64 `json:"fee"`
-	InsuranceFee float64 `json:"insurance_fee"`
-	MinDays      int     `json:"min_days"`
-	MaxDays      int     `json:"max_days"`
+	MethodID     string     `json:"method_id"`
+	Code         string     `json:"code"`
+	Name         string     `json:"name"`
+	BaseFee      domain.IDR `json:"base_fee"`
+	PerKgFee     domain.IDR `json:"per_kg_fee"`
+	WeightKg     int        `json:"weight_kg"`
+	Fee          domain.IDR `json:"fee"`
+	InsuranceFee domain.IDR `json:"insurance_fee"`
+	MinDays      int        `json:"min_days"`
+	MaxDays      int        `json:"max_days"`
 }
 
 // LoyaltyPointValueIDR is the rupiah value of one loyalty point at checkout.
@@ -586,7 +585,7 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		return nil, domain.E(domain.KindInvalid, "EMPTY_CART", "cart is empty")
 	}
 
-	subtotal := 0.0
+	var subtotal domain.IDR
 	for _, l := range lines {
 		if !l.IsActive {
 			return nil, domain.E(domain.KindConflict, "VARIANT_INACTIVE", l.ProductName+" is no longer available")
@@ -597,15 +596,17 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		}
 		// apply the active flash-sale price (if any) so the order matches the sale price
 		if s.wishlist != nil {
-			if sp, err := s.wishlist.FlashSalePriceFor(ctx, l.VariantID); err == nil && sp != nil && *sp < l.Price {
-				l.Price = *sp
-				l.Subtotal = *sp * float64(l.Quantity)
+			// FlashSalePriceFor still returns float (engagement slice); the
+			// comparison and assignment convert once, here.
+			if sp, err := s.wishlist.FlashSalePriceFor(ctx, l.VariantID); err == nil && sp != nil && domain.IDRFromFloat(*sp) < l.Price {
+				l.Price = domain.IDRFromFloat(*sp)
+				l.Subtotal = l.Price * domain.IDR(l.Quantity)
 			}
 		}
 		subtotal += l.Subtotal
 	}
 
-	quote := &Quote{Lines: lines, Subtotal: subtotal, discountBySeller: map[string]float64{}}
+	quote := &Quote{Lines: lines, Subtotal: subtotal, discountBySeller: map[string]domain.IDR{}}
 
 	// coupon: platform coupons apply globally; store coupons only to their seller's bundle
 	var coupon *domain.Coupon
@@ -636,7 +637,7 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 			return nil, err
 		}
 		cartBySeller := map[string]map[string]int{}
-		subtotalsBySeller := map[string]float64{}
+		subtotalsBySeller := map[string]domain.IDR{}
 		for _, l := range lines {
 			m := cartBySeller[l.SellerID]
 			if m == nil {
@@ -644,14 +645,13 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 				cartBySeller[l.SellerID] = m
 			}
 			m[l.VariantID] += l.Quantity
-			subtotalsBySeller[l.SellerID] = moneyRound(subtotalsBySeller[l.SellerID] + l.Subtotal)
+			subtotalsBySeller[l.SellerID] += l.Subtotal
 		}
 		matched := matchBundles(cartBySeller, all, subtotalsBySeller)
-		bundleTotal := 0.0
+		var bundleTotal domain.IDR
 		for _, m := range matched {
 			bundleTotal += m.discount
 		}
-		bundleTotal = moneyRound(bundleTotal)
 
 		// What the coupon is worth, for the comparison only. A store coupon is
 		// scoped to one seller, so it is compared against that seller's subtotal; a
@@ -690,10 +690,12 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 			return nil, domain.E(domain.KindConflict, "INSUFFICIENT_POINTS", "poin tidak cukup")
 		}
 		maxDiscount := subtotal - quote.DiscountAmount
-		d := float64(pointsToRedeem) * LoyaltyPointValueIDR
+		d := domain.IDR(pointsToRedeem) * LoyaltyPointValueIDR
 		if d > maxDiscount {
 			d = maxDiscount
-			pointsToRedeem = int(math.Ceil(d / LoyaltyPointValueIDR))
+			// Ceiling division in integers: a partial point's worth of discount
+			// still costs the whole point.
+			pointsToRedeem = int((d + LoyaltyPointValueIDR - 1) / LoyaltyPointValueIDR)
 		}
 		quote.PointsRedeemed = pointsToRedeem
 		quote.PointsDiscount = d
@@ -739,19 +741,19 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 	// last share went negative, which inflated that order's total AND tripped
 	// migration 00040's `CHECK (discount_amount >= 0 AND discount_amount <=
 	// subtotal)`, failing the whole multi-seller checkout with a 500.
-	bundleSubtotals := map[string]float64{}
+	bundleSubtotals := map[string]domain.IDR{}
 	bundleGrams := map[string][]int{}
 	for _, sid := range sellerIDs {
-		s2 := 0.0
+		var s2 domain.IDR
 		for _, l := range sellerBundles[sid] {
-			s2 += moneyRound(l.Subtotal)
+			s2 += l.Subtotal
 			bundleGrams[sid] = append(bundleGrams[sid], l.WeightGrams*l.Quantity)
 		}
 		bundleSubtotals[sid] = s2
 	}
 	quote.subtotalBySeller = bundleSubtotals
 	quote.gramsBySeller = bundleGrams
-	applyGlobalDiscount := func(amount float64) {
+	applyGlobalDiscount := func(amount domain.IDR) {
 		for sid, share := range allocateGlobal(amount, sellerIDs, bundleSubtotals) {
 			quote.discountBySeller[sid] += share
 		}
@@ -765,7 +767,7 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 	quote.InsuranceSelected = insurance && quote.InsuranceAvailable
 
 	for _, sid := range sellerIDs {
-		bundleSubtotal := 0.0
+		var bundleSubtotal domain.IDR
 		// Accumulate grams and convert once, at the end. The previous
 		// `weightKg += (l.WeightGrams * l.Quantity) / 1000` divided per line
 		// and summed, which truncated instead of rounding up AND made
@@ -778,8 +780,8 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		// store coupon discount scoped to this seller
 		if coupon != nil && coupon.SellerID != nil && *coupon.SellerID == sid {
 			d := couponDiscount(coupon, bundleSubtotal)
-			quote.DiscountAmount = moneyRound(quote.DiscountAmount + d)
-			total = moneyRound(total - d)
+			quote.DiscountAmount += d
+			total -= d
 			quote.discountBySeller[sid] += d
 		}
 		// free shipping threshold
@@ -787,26 +789,29 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		if err != nil {
 			return nil, err
 		}
-		if freeThreshold != nil && bundleSubtotal >= *freeThreshold {
+		// method fees are config floats until the catalogue slice; quoted
+		// fees are IDR from the first computation.
+		baseFee, perKgFee := domain.IDRFromFloat(method.BaseFee), domain.IDRFromFloat(method.PerKgFee)
+		if freeThreshold != nil && bundleSubtotal >= domain.IDRFromFloat(*freeThreshold) {
 			quote.Shipping = append(quote.Shipping, &ShippingQuote{
 				MethodID: method.ID, Code: method.Code, Name: method.Name,
-				BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
+				BaseFee: baseFee, PerKgFee: perKgFee,
 				WeightKg: weightKg, Fee: 0, MinDays: method.MinDays, MaxDays: method.MaxDays,
 			})
 		} else {
-			fee := shippingFee(method.BaseFee, method.PerKgFee, weightKg)
+			fee := shippingFee(baseFee, perKgFee, weightKg)
 			quote.Shipping = append(quote.Shipping, &ShippingQuote{
 				MethodID: method.ID, Code: method.Code, Name: method.Name,
-				BaseFee: method.BaseFee, PerKgFee: method.PerKgFee,
+				BaseFee: baseFee, PerKgFee: perKgFee,
 				WeightKg: weightKg, Fee: fee, MinDays: method.MinDays, MaxDays: method.MaxDays,
 			})
-			total = moneyRound(total + fee)
+			total += fee
 		}
 		if quote.InsuranceSelected {
 			sf := insuranceFee(bundleSubtotal, s.insurancePct)
 			quote.Shipping[len(quote.Shipping)-1].InsuranceFee = sf
-			quote.InsuranceFee = moneyRound(quote.InsuranceFee + sf)
-			total = moneyRound(total + sf)
+			quote.InsuranceFee += sf
+			total += sf
 		}
 	}
 	quote.Total = total
@@ -897,7 +902,7 @@ func validateDeliverableAddress(a *domain.Address) error {
 // PlacedOrder is the checkout result: one order per seller.
 type PlacedOrder struct {
 	Orders     []*domain.Order `json:"orders"`
-	GrandTotal float64         `json:"grand_total"`
+	GrandTotal domain.IDR      `json:"grand_total"`
 }
 
 // BuyNowInput places a single-variant order straight from a product page.
@@ -1017,7 +1022,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 			DiscountAmount:  discount,
 			ShippingFee:     shippingFee,
 			InsuranceFee:    insuranceFee,
-			TotalAmount:     RoundIDR(subtotal - discount + shippingFee + insuranceFee),
+			TotalAmount:     subtotal - discount + shippingFee + insuranceFee,
 			PaymentStatus:   domain.PaymentUnpaid,
 			CouponCode:      quote.CouponCode,
 			ShippingAddress: addressMap(orderAddress(address, in.AddressesBySeller, sid)),
@@ -1126,7 +1131,7 @@ func (s *OrderService) PlaceOrder(ctx context.Context, in PlaceOrderInput) (*Pla
 
 	for _, o := range placed.Orders {
 		s.emailFor(ctx, o.ID, "order_confirmed", "Pesanan dikonfirmasi — VinCommerce",
-			map[string]any{"Total": fmt.Sprintf("Rp %.0f", o.TotalAmount)})
+			map[string]any{"Total": fmt.Sprintf("Rp %v", o.TotalAmount)})
 	}
 	return placed, nil
 }
@@ -1156,7 +1161,7 @@ func (s *OrderService) Transition(ctx context.Context, orderID, from, to string,
 // externalClaimOrder validates the inputs a payment CLAIM makes about an order.
 // Shared by the buyer's submission and by the admin's approval, so the two can never
 // disagree about what a valid claim looks like.
-func (s *OrderService) externalClaimOrder(ctx context.Context, orderID, buyerID, reference string, amount float64) (*domain.Order, error) {
+func (s *OrderService) externalClaimOrder(ctx context.Context, orderID, buyerID, reference string, amount domain.IDR) (*domain.Order, error) {
 	o, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
 		return nil, err
@@ -1176,14 +1181,17 @@ func (s *OrderService) externalClaimOrder(ctx context.Context, orderID, buyerID,
 	if amount <= 0 {
 		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
 	}
-	if absDiff(amount, o.TotalAmount) > 1.0 {
+	// Exact equality: the tolerance this replaced let a buyer mark a
+	// Rp1,000,000 order paid by reporting 999,999. Both sides are IDR, so
+	// there is nothing left to forgive -- and nothing left to round.
+	if amount != o.TotalAmount {
 		return nil, domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
-			fmt.Sprintf("reported amount Rp %.2f does not match order total Rp %.2f", amount, o.TotalAmount))
+			fmt.Sprintf("reported amount Rp %v does not match order total Rp %v", amount, o.TotalAmount))
 	}
 	return o, nil
 }
 
-func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) error {
+func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buyerID, reference string, amount domain.IDR, paidAt time.Time) error {
 	o, err := s.externalClaimOrder(ctx, orderID, buyerID, reference, amount)
 	if err != nil {
 		return err
@@ -1240,7 +1248,7 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 			"Pembayaran untuk pesanan "+o.OrderNumber+" sudah kami catat", map[string]any{"order_id": orderID})
 	}
 	s.emailFor(ctx, orderID, "order_paid", "Pembayaran diterima — VinCommerce",
-		map[string]any{"Total": fmt.Sprintf("Rp %.0f", o.TotalAmount)})
+		map[string]any{"Total": fmt.Sprintf("Rp %v", o.TotalAmount)})
 	return nil
 }
 
@@ -1249,7 +1257,7 @@ func (s *OrderService) ConfirmExternalPayment(ctx context.Context, orderID, buye
 // The endpoint used to mark the order paid on this call: a reference string and an
 // amount equal to the total were treated as proof that money had arrived. This is the
 // claim; ApproveExternalPaymentClaim is the decision.
-func (s *OrderService) SubmitExternalPaymentClaim(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) (string, error) {
+func (s *OrderService) SubmitExternalPaymentClaim(ctx context.Context, orderID, buyerID, reference string, amount domain.IDR, paidAt time.Time) (string, error) {
 	if s.claims == nil {
 		return "", domain.E(domain.KindConflict, "CLAIMS_UNAVAILABLE",
 			"payment verification is not configured")
@@ -1698,7 +1706,7 @@ func (s *OrderService) Events(ctx context.Context, orderID string) ([]*domain.Or
 
 // --- helpers ---
 
-func (s *OrderService) validCoupon(ctx context.Context, userID, code string, subtotal float64) (*domain.Coupon, bool, error) {
+func (s *OrderService) validCoupon(ctx context.Context, userID, code string, subtotal domain.IDR) (*domain.Coupon, bool, error) {
 	coupon, err := s.orders.CouponByCode(ctx, code)
 	if err != nil {
 		return nil, false, err
@@ -1710,9 +1718,9 @@ func (s *OrderService) validCoupon(ctx context.Context, userID, code string, sub
 	if now.Before(coupon.ValidFrom) || (coupon.ValidUntil != nil && now.After(*coupon.ValidUntil)) {
 		return nil, false, domain.E(domain.KindConflict, "COUPON_EXPIRED", "coupon is expired")
 	}
-	if subtotal < coupon.MinSubtotal {
+	if subtotal < domain.IDRFromFloat(coupon.MinSubtotal) {
 		return nil, false, domain.E(domain.KindConflict, "COUPON_MIN_NOT_MET",
-			fmt.Sprintf("minimum subtotal of %.0f required", coupon.MinSubtotal))
+			fmt.Sprintf("minimum subtotal of %v required", domain.IDRFromFloat(coupon.MinSubtotal)))
 	}
 	if coupon.UsageLimit > 0 && coupon.UsedCount >= coupon.UsageLimit {
 		return nil, false, domain.E(domain.KindConflict, "COUPON_EXHAUSTED", "coupon usage limit reached")
@@ -1741,15 +1749,19 @@ func (s *OrderService) validCoupon(ctx context.Context, userID, code string, sub
 // other discount source (loyalty points): without it the sum of the two
 // allocations exceeds the subtotal and migration 00040's
 // `CHECK (discount_amount <= subtotal)` rejects the order.
-func couponDiscount(c *domain.Coupon, subtotal float64) float64 {
-	var d float64
+func couponDiscount(c *domain.Coupon, subtotal domain.IDR) domain.IDR {
+	// The coupon VALUE keeps mixed semantics (a percent rate or a fixed
+	// amount, by Type), so it stays float on the struct and is converted at
+	// use: percents through Pct, fixed amounts rounded once. MaxDiscount is
+	// the same story. The returned discount is always whole rupiah.
+	var d domain.IDR
 	if c.Type == "percent" {
-		d = subtotal * c.Value / 100
+		d = subtotal.Pct(c.Value)
 	} else {
-		d = c.Value
+		d = domain.IDRFromFloat(c.Value)
 	}
-	if c.MaxDiscount != nil && d > *c.MaxDiscount {
-		d = *c.MaxDiscount
+	if c.MaxDiscount != nil && d > domain.IDRFromFloat(*c.MaxDiscount) {
+		d = domain.IDRFromFloat(*c.MaxDiscount)
 	}
 	if d > subtotal {
 		d = subtotal
@@ -1757,7 +1769,7 @@ func couponDiscount(c *domain.Coupon, subtotal float64) float64 {
 	if d < 0 {
 		d = 0
 	}
-	return RoundIDR(d)
+	return d
 }
 
 func addressMap(a *domain.Address) map[string]any {
@@ -1891,19 +1903,18 @@ func (s *OrderService) EnsureInvoiceNumber(ctx context.Context, orderID string) 
 // dpp + tax is exactly the total the buyer was charged -- independently
 // rounding both would print a document whose lines differ from its own total
 // by a rupiah on some orders.
-func SplitInclusiveTax(total, rate float64) (dpp, tax float64) {
-	total = moneyRound(total)
+func SplitInclusiveTax(total domain.IDR, rate float64) (dpp, tax domain.IDR) {
 	if rate <= 0 || total <= 0 {
 		return total, 0
 	}
-	tax = moneyRound(total * rate / (1 + rate))
+	tax = total.Pct(rate / (1 + rate) * 100)
 	if tax < 0 {
 		tax = 0
 	}
 	if tax > total {
 		tax = total
 	}
-	return moneyRound(total - tax), tax
+	return total - tax, tax
 }
 
 // SellerNPWP returns the seller's tax number for an invoice, or "" when none

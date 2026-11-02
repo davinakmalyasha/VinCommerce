@@ -3,6 +3,8 @@ package service
 import (
 	"math"
 	"sort"
+
+	"github.com/vincommerce/backend/internal/domain"
 )
 
 // This file holds the money arithmetic of the checkout engine as pure
@@ -104,36 +106,38 @@ func absDiff(a, b float64) float64 { return math.Abs(a - b) }
 // so the whole multi-seller checkout fails.
 //
 // A nil map for sellerIDs is a no-op rather than a division by zero.
-func allocateGlobal(amount float64, sellerIDs []string, bundleSubtotals map[string]float64) map[string]float64 {
-	shares := map[string]float64{}
+func allocateGlobal(amount domain.IDR, sellerIDs []string, bundleSubtotals map[string]domain.IDR) map[string]domain.IDR {
+	shares := map[string]domain.IDR{}
 	if amount <= 0 || len(sellerIDs) == 0 {
 		return shares
 	}
 
-	// Exact proportional allocation as a float, then floor.
-	exact := make([]float64, len(sellerIDs))
-	var sumAll float64
+	// Floors in integers: share = amount*sub/sumAll truncated. The ordering
+	// key below still uses a float ratio, but only to RANK remainders -- the
+	// values distributed are integers, so the ranking cannot corrupt a value.
+	// (amount*sub can overflow int64 only past ~9e18 of amount-times-subtotal,
+	// orders of magnitude beyond NUMERIC(14,2).)
+	var sumAll domain.IDR
 	for _, sid := range sellerIDs {
 		sumAll += bundleSubtotals[sid]
 	}
 	if sumAll <= 0 {
 		return shares
 	}
-	for i, sid := range sellerIDs {
-		exact[i] = amount * bundleSubtotals[sid] / sumAll
-	}
-	// Floor each share, accumulate the shortfall in whole rupiah.
-	var assigned float64
+	floors := make([]domain.IDR, len(sellerIDs))
+	fracs := make([]float64, len(sellerIDs))
+	var assigned domain.IDR
 	type share struct {
 		idx   int
 		frac  float64
-		total float64
+		total domain.IDR
 	}
 	order := make([]share, 0, len(sellerIDs))
-	for i := range exact {
-		f := math.Floor(exact[i])
-		assigned += f
-		order = append(order, share{idx: i, frac: exact[i] - f, total: f})
+	for i, sid := range sellerIDs {
+		floors[i] = amount * bundleSubtotals[sid] / sumAll
+		fracs[i] = float64(amount*bundleSubtotals[sid]%sumAll) / float64(sumAll)
+		assigned += floors[i]
+		order = append(order, share{idx: i, frac: fracs[i], total: floors[i]})
 	}
 	// Descending fractional part; ties resolved by index so the result is stable
 	// across runs regardless of Go's map iteration order (sellerIDs is sorted by
@@ -148,25 +152,17 @@ func allocateGlobal(amount float64, sellerIDs []string, bundleSubtotals map[stri
 	// Hand out the leftover rupiah, one per bundle, largest remainder first.
 	// The loop is bounded: there can be at most len(sellerIDs)-1 leftover units,
 	// and it stops early if it has distributed them all.
-	leftover := int(math.Round(amount - assigned))
+	//
+	// Floors of non-negative shares sum to at most `amount`, so leftover cannot
+	// go negative -- the clamping branch the float version needed for its
+	// accumulated up-rounding has no input left. It is gone rather than kept
+	// "defensively": dead handling for an impossible case is where the next
+	// reader stops trusting the live branches.
+	leftover := amount - assigned
 	if leftover > 0 {
 		for i := 0; i < len(order) && leftover > 0; i++ {
 			order[i].total++
 			leftover--
-		}
-	} else if leftover < 0 {
-		// Cannot happen when amount >= 0 and subtotals >= 0 (the floors cannot
-		// exceed the exact shares, whose sum is `amount`). Clamped rather than
-		// asserted because a negative share is a money bug and must not be able
-		// to become a negative order total at runtime.
-		for i := len(order) - 1; leftover < 0; i-- {
-			if i < 0 {
-				break
-			}
-			if order[i].total > 0 {
-				order[i].total--
-				leftover++
-			}
 		}
 	}
 
@@ -180,7 +176,7 @@ func allocateGlobal(amount float64, sellerIDs []string, bundleSubtotals map[stri
 	// TestAllocateGlobalNeverExceedsItsOwnSubtotal caught this on its first run,
 	// which is the argument for writing the property before trusting the
 	// implementation.
-	byIndex := make([]float64, len(order))
+	byIndex := make([]domain.IDR, len(order))
 	for _, s := range order {
 		byIndex[s.idx] = s.total
 	}
@@ -233,11 +229,11 @@ func billableKg(gramsPerLine []int) int {
 // Kept as its own function so the free-shipping threshold, the base fee and the
 // per-kilogram rate are applied in one reviewed place, and so the fee is
 // rounded to whole rupiah like every other money value.
-func shippingFee(baseFee, perKgFee float64, kg int) float64 {
+func shippingFee(baseFee, perKgFee domain.IDR, kg int) domain.IDR {
 	if kg < 0 {
 		kg = 0
 	}
-	return moneyRound(baseFee + float64(kg)*perKgFee)
+	return baseFee + domain.IDR(kg)*perKgFee
 }
 
 // insuranceFee is the optional shipping-insurance charge for a subtotal.
@@ -248,9 +244,9 @@ func shippingFee(baseFee, perKgFee float64, kg int) float64 {
 // small enough that the division is correctly rounded. It diverges the moment
 // the rate exceeds 100, and it is confusing enough that the next person to
 // touch it would introduce the bug. Written the correct way round.
-func insuranceFee(subtotal, pct float64) float64 {
+func insuranceFee(subtotal domain.IDR, pct float64) domain.IDR {
 	if pct <= 0 || subtotal <= 0 {
 		return 0
 	}
-	return moneyRound(subtotal * pct / 100)
+	return subtotal.Pct(pct)
 }

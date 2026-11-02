@@ -48,7 +48,7 @@ const rupiah = 1.0 // IDR has no sen
 func TestAllocateGlobalSharesAreNeverNegative(t *testing.T) {
 	const n = 16
 	sellerIDs := make([]string, n)
-	subtotals := make(map[string]float64, n)
+	subtotals := make(map[string]domain.IDR, n)
 	for i := 0; i < n; i++ {
 		// Zero-padded so lexicographic sort order is the numeric order, matching
 		// how the caller sorts before passing the slice.
@@ -65,7 +65,7 @@ func TestAllocateGlobalSharesAreNeverNegative(t *testing.T) {
 				"sub-order total and trips 00040's orders_discount_bounded CHECK", sid, shares[sid])
 		}
 	}
-	var sum float64
+	var sum domain.IDR
 	for _, sid := range sellerIDs {
 		sum += shares[sid]
 	}
@@ -81,21 +81,21 @@ func TestAllocateGlobalNeverExceedsItsOwnSubtotal(t *testing.T) {
 	for iter := 0; iter < 50_000; iter++ {
 		n := 1 + rng.IntN(40)
 		sellerIDs := make([]string, n)
-		subtotals := make(map[string]float64, n)
-		var total float64
+		subtotals := make(map[string]domain.IDR, n)
+		var total domain.IDR
 		for j := 0; j < n; j++ {
 			sellerIDs[j] = fmt.Sprintf("s%03d", j)
 			// A wide spread, including tiny bundles beside huge ones -- the shape
 			// that makes per-share rounding dominate.
-			subtotals[sellerIDs[j]] = float64(1+rng.IntN(1_000_000)) * 10
+			subtotals[sellerIDs[j]] = domain.IDR(1+rng.IntN(1_000_000)) * 10
 			total += subtotals[sellerIDs[j]]
 		}
 		// The platform discount is itself bounded by the grand subtotal upstream
 		// (couponDiscount clamps to the subtotal), so amount <= total holds.
-		amount := math.Trunc(total * rng.Float64())
+		amount := domain.IDR(float64(total) * rng.Float64())
 
 		shares := allocateGlobal(amount, sellerIDs, subtotals)
-		var sum float64
+		var sum domain.IDR
 		for _, sid := range sellerIDs {
 			sum += shares[sid]
 			if shares[sid] < 0 {
@@ -121,7 +121,7 @@ func TestAllocateGlobalNeverExceedsItsOwnSubtotal(t *testing.T) {
 // impossible to reconcile after the fact.
 func TestAllocateGlobalIsDeterministic(t *testing.T) {
 	sellerIDs := []string{"c", "a", "b", "d", "e"}
-	subtotals := map[string]float64{"a": 3, "b": 7, "c": 1, "d": 11, "e": 2}
+	subtotals := map[string]domain.IDR{"a": 3, "b": 7, "c": 1, "d": 11, "e": 2}
 	first := allocateGlobal(13, sellerIDs, subtotals)
 	for i := 0; i < 200; i++ {
 		got := allocateGlobal(13, sellerIDs, subtotals)
@@ -138,7 +138,7 @@ func TestAllocateGlobalIsDeterministic(t *testing.T) {
 // by zero that only shows up in production.
 func TestAllocateGlobalDegenerateInputs(t *testing.T) {
 	t.Run("zero amount allocates nothing", func(t *testing.T) {
-		got := allocateGlobal(0, []string{"a", "b"}, map[string]float64{"a": 10, "b": 20})
+		got := allocateGlobal(0, []string{"a", "b"}, map[string]domain.IDR{"a": 10, "b": 20})
 		if len(got) != 0 {
 			t.Errorf("got %v, want an empty map", got)
 		}
@@ -149,19 +149,19 @@ func TestAllocateGlobalDegenerateInputs(t *testing.T) {
 		}
 	})
 	t.Run("all-zero subtotals is not a division by zero", func(t *testing.T) {
-		got := allocateGlobal(100, []string{"a", "b"}, map[string]float64{"a": 0, "b": 0})
+		got := allocateGlobal(100, []string{"a", "b"}, map[string]domain.IDR{"a": 0, "b": 0})
 		if len(got) != 0 {
 			t.Errorf("got %v, want an empty map (the sumAll<=0 guard)", got)
 		}
 	})
 	t.Run("one seller takes the whole amount", func(t *testing.T) {
-		got := allocateGlobal(37, []string{"a"}, map[string]float64{"a": 500})
+		got := allocateGlobal(37, []string{"a"}, map[string]domain.IDR{"a": 500})
 		if got["a"] != 37 {
 			t.Errorf("got Rp%v, want Rp37", got["a"])
 		}
 	})
 	t.Run("a bundle not in sellerIDs is ignored", func(t *testing.T) {
-		got := allocateGlobal(10, []string{"a"}, map[string]float64{"a": 5, "b": 95})
+		got := allocateGlobal(10, []string{"a"}, map[string]domain.IDR{"a": 5, "b": 95})
 		if _, ok := got["b"]; ok {
 			t.Error("allocated to a bundle the caller did not ask for")
 		}
@@ -190,53 +190,56 @@ func FuzzAllocateGlobal(f *testing.F) {
 		if math.IsNaN(amount) || math.IsInf(amount, 0) {
 			t.Skip("non-finite amounts are rejected at the config layer")
 		}
+		// Fractional amounts are unrepresentable in IDR: skip, the way the old
+		// code skipped asserting conservation for them.
+		if amount != math.Trunc(amount) {
+			t.Skip("fractional amounts cannot reach allocateGlobal")
+		}
 		if len(shape) == 0 {
 			t.Skip("need at least one bundle")
 		}
 		if len(shape) > 64 {
 			shape = shape[:64]
 		}
+		total := domain.IDRFromFloat(amount)
 		sellerIDs := make([]string, len(shape))
-		subtotals := make(map[string]float64, len(shape))
+		subtotals := make(map[string]domain.IDR, len(shape))
 		for i, b := range shape {
 			// A spread across four orders of magnitude, including 0 and 1, which
 			// are the values that make the rounding worst.
-			subtotal := 0.0
+			var subtotal domain.IDR
 			switch b % 4 {
 			case 0:
 				subtotal = 0
 			case 1:
 				subtotal = 1
 			case 2:
-				subtotal = float64(b) * 10
+				subtotal = domain.IDR(b) * 10
 			default:
-				subtotal = float64(b) * 1_000
+				subtotal = domain.IDR(b) * 1_000
 			}
 			sellerIDs[i] = fmt.Sprintf("s%04d", i)
 			subtotals[sellerIDs[i]] = subtotal
 		}
 
-		shares := allocateGlobal(amount, sellerIDs, subtotals)
-		var sum float64
+		shares := allocateGlobal(total, sellerIDs, subtotals)
+		var sum domain.IDR
 		for i, sid := range sellerIDs {
 			if shares[sid] < 0 {
-				t.Fatalf("negative share Rp%.4f for bundle %d (amount=%v, %d bundles, shape %v)",
-					shares[sid], i, amount, len(sellerIDs), shape)
+				t.Fatalf("negative share Rp%v for bundle %d (amount=%v, %d bundles, shape %v)",
+					shares[sid], i, total, len(sellerIDs), shape)
 			}
 			sum += shares[sid]
 		}
-		// The allocation preserves a whole-rupiah amount exactly. A fuzzer will
-		// happily produce fractional amounts, which no caller ever passes here
-		// (every value reaching this function is already moneyRound'd), so the
-		// conservation invariant is only asserted where it is meaningful.
-		if amount > 0 && amount == math.Trunc(amount) {
-			var sumAll float64
+		// The allocation preserves a whole-rupiah amount exactly.
+		if total > 0 {
+			var sumAll domain.IDR
 			for _, sid := range sellerIDs {
 				sumAll += subtotals[sid]
 			}
-			if sumAll > 0 && sum != amount {
-				t.Fatalf("sum Rp%.4f != amount Rp%.4f with %d bundles (shape %v)",
-					sum, amount, len(sellerIDs), shape)
+			if sumAll > 0 && sum != total {
+				t.Fatalf("sum Rp%v != amount Rp%v with %d bundles (shape %v)",
+					sum, total, len(sellerIDs), shape)
 			}
 		}
 	})
@@ -481,11 +484,11 @@ func TestCommissionUsesTheSharedRoundingRule(t *testing.T) {
 
 // ─── 5. shipping and insurance ──────────────────────────────────────────────
 
-func TestShippingFeeRoundsToWholeRupiah(t *testing.T) {
+func TestShippingFeeIsExactInWholeRupiah(t *testing.T) {
 	cases := []struct {
-		base, perKg float64
+		base, perKg domain.IDR
 		kg          int
-		want        float64
+		want        domain.IDR
 	}{
 		{9000, 6000, 0, 9000},   // 300g bulb: base only
 		{9000, 6000, 1, 15000},  // 1kg
@@ -497,9 +500,6 @@ func TestShippingFeeRoundsToWholeRupiah(t *testing.T) {
 		got := shippingFee(tc.base, tc.perKg, tc.kg)
 		if got != tc.want {
 			t.Errorf("shippingFee(%v, %v, %d) = Rp%v, want Rp%v", tc.base, tc.perKg, tc.kg, got, tc.want)
-		}
-		if !IsWholeIDR(got) {
-			t.Errorf("shippingFee produced a fractional rupiah: %v", got)
 		}
 	}
 }
@@ -520,18 +520,15 @@ func TestInsuranceFeeRoundsTheChargeNotTheRate(t *testing.T) {
 	const pct = 0.3
 	rng := rand.New(rand.NewPCG(31, 37))
 	for iter := 0; iter < 50_000; iter++ {
-		subtotal := float64(rng.IntN(100_000_000))
+		subtotal := domain.IDR(rng.IntN(100_000_000))
 		got := insuranceFee(subtotal, pct)
-		want := moneyRound(subtotal * pct / 100)
+		want := subtotal.Pct(pct)
 		if got != want {
 			t.Fatalf("insuranceFee(Rp%v, %v) = Rp%v, want Rp%v", subtotal, pct, got, want)
 		}
-		if !IsWholeIDR(got) {
-			t.Fatalf("insuranceFee produced a fractional rupiah: %v", got)
-		}
 	}
 	// A rate above 100 is where the old form visibly diverges.
-	if old, correct := math.Round(10_000*150.5)/100, insuranceFee(10_000, 150.5); old != correct {
+	if old, correct := domain.IDR(math.Round(10_000*150.5)/100), insuranceFee(10_000, 150.5); old != correct {
 		t.Logf("the old form gives %v and the correct form gives %v -- the divergence is real", old, correct)
 	}
 	if insuranceFee(0, 0.3) != 0 {
@@ -554,26 +551,25 @@ func TestQuoteSubtotalMatchesSumOfLines(t *testing.T) {
 	for iter := 0; iter < 20_000; iter++ {
 		n := 1 + rng.IntN(20)
 		ids := make([]string, n)
-		subtotals := make(map[string]float64, n)
-		expected := 0.0
+		subtotals := make(map[string]domain.IDR, n)
+		var expected domain.IDR
 		for j := 0; j < n; j++ {
 			ids[j] = fmt.Sprintf("s%02d", j)
-			var bundle float64
+			var bundle domain.IDR
 			lines := 1 + rng.IntN(5)
 			for k := 0; k < lines; k++ {
-				bundle += float64(rng.IntN(5_000_000))
+				bundle += domain.IDR(rng.IntN(5_000_000))
 			}
-			bundle = moneyRound(bundle)
 			subtotals[ids[j]] = bundle
 			expected += bundle
 		}
 		sort.Strings(ids)
 		q := &Quote{
-			discountBySeller: map[string]float64{},
+			discountBySeller: map[string]domain.IDR{},
 			subtotalBySeller: subtotals,
 			gramsBySeller:    map[string][]int{},
 		}
-		var viaQuote float64
+		var viaQuote domain.IDR
 		for _, sid := range ids {
 			viaQuote += q.SubtotalFor(sid)
 		}

@@ -124,7 +124,7 @@ func (h *Analytics) SellerOrdersCSV(w http.ResponseWriter, r *http.Request) {
 		_ = cw.Write([]string{
 			escapeCSVCell(o.OrderNumber), escapeCSVCell(o.Status), escapeCSVCell(o.PaymentStatus),
 			escapeCSVCell(o.SellerName), // carries buyer-controlled full_name
-			strconv.FormatFloat(o.TotalAmount, 'f', 2, 64),
+			strconv.FormatInt(int64(o.TotalAmount), 10),
 			escapeCSVCell(o.ExternalPaymentRef),
 			o.PlacedAt.Format("2006-01-02 15:04"),
 		})

@@ -18,7 +18,7 @@ type ExternalPaymentClaim struct {
 	OrderID    string     `json:"order_id"`
 	BuyerID    string     `json:"buyer_id"`
 	Reference  string     `json:"reference"`
-	Amount     float64    `json:"amount"`
+	Amount     domain.IDR `json:"amount"`
 	PaidAt     time.Time  `json:"paid_at"`
 	Status     string     `json:"status"`
 	ReviewedBy *string    `json:"reviewed_by,omitempty"`
@@ -27,9 +27,9 @@ type ExternalPaymentClaim struct {
 	CreatedAt  time.Time  `json:"created_at"`
 
 	// Display fields for the admin queue, joined from the order and the buyer.
-	OrderNumber string  `json:"order_number"`
-	OrderTotal  float64 `json:"order_total"`
-	BuyerEmail  string  `json:"buyer_email"`
+	OrderNumber string     `json:"order_number"`
+	OrderTotal  domain.IDR `json:"order_total"`
+	BuyerEmail  string     `json:"buyer_email"`
 }
 
 // PaymentClaimRepository stores off-platform payment claims.
@@ -44,12 +44,12 @@ func NewPaymentClaimRepository(pool *db.Pool) *PaymentClaimRepository {
 
 // Create records a pending claim. The partial unique index makes a second open claim
 // for the same order a conflict rather than a second pending row.
-func (r *PaymentClaimRepository) Create(ctx context.Context, orderID, buyerID, reference string, amount float64, paidAt time.Time) (string, error) {
+func (r *PaymentClaimRepository) Create(ctx context.Context, orderID, buyerID, reference string, amount domain.IDR, paidAt time.Time) (string, error) {
 	var id string
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO external_payment_claims (order_id, buyer_id, reference, amount, paid_at)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id`, orderID, buyerID, reference, amount, paidAt).Scan(&id)
+		RETURNING id`, orderID, buyerID, reference, int64(amount), paidAt).Scan(&id)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -127,9 +127,11 @@ type claimScanner interface {
 
 func scanClaim(s claimScanner) (*ExternalPaymentClaim, error) {
 	var c ExternalPaymentClaim
-	err := s.Scan(&c.ID, &c.OrderID, &c.BuyerID, &c.Reference, &c.Amount, &c.PaidAt,
+	var amount, total int64
+	err := s.Scan(&c.ID, &c.OrderID, &c.BuyerID, &c.Reference, &amount, &c.PaidAt,
 		&c.Status, &c.ReviewedBy, &c.ReviewedAt, &c.Note, &c.CreatedAt,
-		&c.OrderNumber, &c.OrderTotal, &c.BuyerEmail)
+		&c.OrderNumber, &total, &c.BuyerEmail)
+	c.Amount, c.OrderTotal = domain.IDR(amount), domain.IDR(total)
 	if err != nil {
 		return nil, err
 	}

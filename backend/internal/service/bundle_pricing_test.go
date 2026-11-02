@@ -6,7 +6,7 @@ import (
 	"github.com/vincommerce/backend/internal/domain"
 )
 
-func cartLine(sellerID, variantID string, qty int, subtotal float64) *domain.CartLine {
+func cartLine(sellerID, variantID string, qty int, subtotal domain.IDR) *domain.CartLine {
 	return &domain.CartLine{
 		CartItem: domain.CartItem{VariantID: variantID, Quantity: qty},
 		SellerID: sellerID,
@@ -26,9 +26,9 @@ func items(pairs ...any) []domain.BundleItem {
 	return out
 }
 
-func cartOf(lines ...*domain.CartLine) (map[string]map[string]int, map[string]float64) {
+func cartOf(lines ...*domain.CartLine) (map[string]map[string]int, map[string]domain.IDR) {
 	bySeller := map[string]map[string]int{}
-	subtotals := map[string]float64{}
+	subtotals := map[string]domain.IDR{}
 	for _, l := range lines {
 		m := bySeller[l.SellerID]
 		if m == nil {

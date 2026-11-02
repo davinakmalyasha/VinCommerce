@@ -5,7 +5,7 @@ import "github.com/vincommerce/backend/internal/domain"
 // matchedBundle is one bundle that applies to a cart, with the discount it yields.
 type matchedBundle struct {
 	bundle   *domain.Bundle
-	discount float64
+	discount domain.IDR
 }
 
 // matchBundles finds, per seller, the active bundle whose items EXACTLY match that
@@ -23,7 +23,7 @@ type matchedBundle struct {
 func matchBundles(
 	cartBySeller map[string]map[string]int,
 	bundles []*domain.Bundle,
-	subtotals map[string]float64,
+	subtotals map[string]domain.IDR,
 ) map[string]matchedBundle {
 	out := map[string]matchedBundle{}
 	for _, b := range bundles {
@@ -49,7 +49,9 @@ func matchBundles(
 		if !matches {
 			continue
 		}
-		discount := moneyRound(subtotals[b.SellerID] - b.Price)
+		// b.Price is a catalogue price (still float until that slice); the
+		// subtotal is already IDR, so the conversion happens on the price.
+		discount := subtotals[b.SellerID] - domain.IDRFromFloat(b.Price)
 		if discount <= 0 {
 			continue
 		}
