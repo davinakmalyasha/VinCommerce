@@ -9,8 +9,9 @@ import (
 
 func TestCommissionSplit(t *testing.T) {
 	cases := []struct {
-		pct, fixed, amount  float64
-		wantFee, wantSeller float64
+		pct                 float64
+		fixed, amount       domain.IDR
+		wantFee, wantSeller domain.IDR
 	}{
 		// 2% of 10599 is 211.98. These expectations used to say 211.98, which
 		// ENCODED THE BUG: a fractional-rupiah leg cannot be charged to a gateway,

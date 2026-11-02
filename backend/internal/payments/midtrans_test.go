@@ -316,9 +316,11 @@ func TestCreatePayment(t *testing.T) {
 	gw, err := g.CreatePayment(context.Background(), CreatePaymentInput{
 		OrderID:     "0f0e-uuid",
 		OrderNumber: "VC-20260101-0003",
-		Amount:      149999.6, // rounds up to integer IDR
-		Currency:    "IDR",
-		ReturnURL:   "http://localhost:5173/orders/0f0e-uuid",
+		// Whole rupiah in, integer gross out: a fractional charge is now a
+		// compile error at this call site rather than a rounding case.
+		Amount:    150000,
+		Currency:  "IDR",
+		ReturnURL: "http://localhost:5173/orders/0f0e-uuid",
 	})
 	if err != nil {
 		t.Fatalf("CreatePayment: %v", err)

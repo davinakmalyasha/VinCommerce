@@ -416,7 +416,7 @@ func main() {
 			// refunded -- the exact defect 03a100b fixed, reintroduced here.
 			label: "M6: the commission reversal is dropped",
 			file:  capFile,
-			old:   "\trefundFee = moneyRound(fee * (amount / charge))",
+			old:   "\trefundFee = fee.Pct(100 * float64(amount) / float64(charge))",
 			new:   "\trefundFee = 0",
 		},
 		{
@@ -452,14 +452,14 @@ func main() {
 		{
 			label: "M10: the provider key drops the gateway, so gateways collide",
 			file:  capFile,
-			old:   "\treturn fmt.Sprintf(\"provider:%s:%s:%.0f\", ev.Gateway, ref, ev.Amount)",
-			new:   "\treturn fmt.Sprintf(\"provider:%s:%.0f\", ref, ev.Amount)",
+			old:   "\treturn fmt.Sprintf(\"provider:%s:%s:%d\", ev.Gateway, ref, ev.Amount)",
+			new:   "\treturn fmt.Sprintf(\"provider:%s:%d\", ref, ev.Amount)",
 		},
 		{
-			label: "M11: the provider key stops rounding to whole rupiah",
+			label: "M11: the provider key drops the amount, so different refunds collide",
 			file:  capFile,
-			old:   "\treturn fmt.Sprintf(\"provider:%s:%s:%.0f\", ev.Gateway, ref, ev.Amount)",
-			new:   "\treturn fmt.Sprintf(\"provider:%s:%s:%f\", ev.Gateway, ref, ev.Amount)",
+			old:   "\treturn fmt.Sprintf(\"provider:%s:%s:%d\", ev.Gateway, ref, ev.Amount)",
+			new:   "\treturn fmt.Sprintf(\"provider:%s:%s\", ev.Gateway, ref)",
 		},
 		{
 			label: "M12: a whitespace reference is treated as a real one",

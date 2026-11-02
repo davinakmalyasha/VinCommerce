@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vincommerce/backend/internal/domain"
 )
 
 // MidtransGateway implements Gateway against Midtrans Snap
@@ -198,11 +200,6 @@ func (g *MidtransGateway) Refund(ctx context.Context, in RefundInput) (*RefundRe
 		return nil, fmt.Errorf("midtrans: refund amount must be positive, got %v", in.Amount)
 	}
 	amount := idrAmount(in.Amount)
-	if amount <= 0 {
-		// A sub-rupiah amount rounds to zero. Posting it would be a 400, and
-		// silently dropping it would be worse.
-		return nil, fmt.Errorf("midtrans: refund amount Rp%v rounds to zero", in.Amount)
-	}
 
 	body, err := json.Marshal(snapRefundRequest{
 		Amount: strconv.FormatInt(amount, 10),
@@ -348,9 +345,11 @@ func (g *MidtransGateway) RefundStatus(ctx context.Context, reference string) ([
 
 	refunds := make([]GatewayRefund, 0, len(out.Refunds))
 	for _, r := range out.Refunds {
-		amount, err := strconv.ParseFloat(r.RefundAmount, 64)
-		if err != nil {
-			// One unparseable amount must not hide the other refunds; skip it and
+		// A fractional or unparseable amount is skipped rather than rounded, so
+		// a bad value cannot become money.
+		amount, err := parseWholeRupiah(r.RefundAmount)
+		if err != nil || amount <= 0 {
+			// One bad amount must not hide the other refunds; skip it and
 			// let the caller's reconciliation notice a refund is missing rather
 			// than failing the entire lookup.
 			continue
@@ -498,14 +497,19 @@ func (g *MidtransGateway) ParseWebhook(payload []byte) (*GatewayEvent, error) {
 	// A malformed gross_amount silently became 0.0, which the handler then
 	// rejected as AMOUNT_REQUIRED. Fails closed, but the swallowed error made
 	// gateway misbehaviour undiagnosable — surface it instead.
-	amount, err := strconv.ParseFloat(n.GrossAmount, 64)
-	if err != nil {
-		return nil, fmt.Errorf("webhook gross_amount %q: %w", n.GrossAmount, err)
+	//
+	// Midtrans sends decimal strings ("25000.00"), so this parses float and then
+	// requires a whole value: a fractional gross is a malformed notification,
+	// not a value, and rounding it here would bless money the provider did not
+	// send.
+	amount, err := parseWholeRupiah(n.GrossAmount)
+	if err != nil || amount <= 0 {
+		return nil, fmt.Errorf("webhook gross_amount %q is not a positive whole-rupiah value", n.GrossAmount)
 	}
 	ev := &GatewayEvent{
 		Type:      mapStatus(n.TransactionStatus, n.FraudStatus),
 		Reference: n.OrderID,
-		Amount:    amount,
+		Amount:    domain.IDR(amount),
 		Currency:  "IDR",
 		Raw: map[string]any{
 			"transaction_id":     n.TransactionID,
@@ -536,12 +540,12 @@ func (g *MidtransGateway) ParseWebhook(payload []byte) (*GatewayEvent, error) {
 		ev.Raw["refund_id"] = n.RefundID
 
 		if n.RefundAmount != "" {
-			refunded, err := strconv.ParseFloat(n.RefundAmount, 64)
-			if err != nil {
+			refunded, err := parseWholeRupiah(n.RefundAmount)
+			if err != nil || refunded <= 0 {
 				// Surfaced rather than defaulted. Defaulting to 0 would take the
 				// `REFUND_AMOUNT_REQUIRED` path in the service, which is safe but
 				// reports a missing amount for what is actually an unparseable one.
-				return nil, fmt.Errorf("webhook refund_amount %q: %w", n.RefundAmount, err)
+				return nil, fmt.Errorf("webhook refund_amount %q is not a positive whole-rupiah value", n.RefundAmount)
 			}
 			ev.Amount = refunded
 		} else if ev.Type == EventPartiallyRefunded {
@@ -606,7 +610,26 @@ func mapStatus(status, fraud string) string {
 }
 
 // idrAmount rounds a float amount to integer IDR rupiah.
-func idrAmount(amount float64) int64 { return int64(math.Round(amount)) }
+// idrAmount converts a whole-rupiah amount to the int64 the provider API
+// speaks. It takes IDR rather than float64 so a fractional value cannot reach
+// this boundary at all -- the old signature rounded here, which meant every
+// caller could pass sen and the rounding hid it.
+func idrAmount(amount domain.IDR) int64 { return int64(amount) }
+
+// parseWholeRupiah parses a provider amount string that may carry a decimal
+// point ("25000.00" is what Midtrans actually sends) and requires a whole
+// value. The error names the input: a skipped or rejected amount must be
+// diagnosable from the log line alone.
+func parseWholeRupiah(raw string) (domain.IDR, error) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0, err
+	}
+	if v != math.Trunc(v) {
+		return 0, fmt.Errorf("fractional rupiah %q", raw)
+	}
+	return domain.IDRFromFloat(v), nil
+}
 
 func truncateString(s string, max int) string {
 	if len(s) <= max {

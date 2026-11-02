@@ -50,7 +50,7 @@ type PaymentIntent struct {
 	ID               string     `json:"id"`
 	OrderID          string     `json:"order_id"`
 	BuyerID          string     `json:"buyer_id"`
-	Amount           float64    `json:"amount"`
+	Amount           IDR        `json:"amount"`
 	Currency         string     `json:"currency"`
 	Status           string     `json:"status"`
 	Gateway          string     `json:"gateway"`
@@ -67,8 +67,8 @@ type PaymentIntent struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 	Inserted         bool       `json:"-"`
 
-	FeeAmount    float64 `json:"fee_amount"`
-	SellerAmount float64 `json:"seller_amount"`
+	FeeAmount    IDR `json:"fee_amount"`
+	SellerAmount IDR `json:"seller_amount"`
 
 	// CommissionComputed distinguishes "the split has not been derived yet"
 	// from "the split was derived and the fee is genuinely zero".
@@ -89,7 +89,7 @@ type PaymentIntent struct {
 	// were in force when the charge was created. A refund reverses the fee that
 	// was actually taken, not the fee that today's settings would produce.
 	CommissionRatePct   float64 `json:"commission_rate_pct"`
-	CommissionRateFixed float64 `json:"commission_rate_fixed"`
+	CommissionRateFixed IDR     `json:"commission_rate_fixed"`
 
 	// CommissionSnapshotPresent says the two rates above are a real snapshot,
 	// rather than the `NOT NULL DEFAULT 0` that an intent predating migration

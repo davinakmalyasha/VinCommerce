@@ -305,8 +305,8 @@ func payoutFailedEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 //
 // Extracted as a function so the property is testable and so all three call sites
 // (refund, write-off) cannot drift into keying differently.
-func refundKey(intentID string, remaining, amount float64) string {
-	return fmt.Sprintf("refund:%s:%.0f", intentID, moneyRound(remaining+amount))
+func refundKey(intentID string, remaining, amount domain.IDR) string {
+	return fmt.Sprintf("refund:%s:%d", intentID, remaining+amount)
 }
 
 // postRefundJournal writes the journal for a refund.
@@ -349,8 +349,8 @@ func (s *PaymentService) postRefundJournal(
 			RefID:          order.ID,
 			Note:           "refund written off: " + reason,
 			Entries: withMeta([]LedgerEntry{
-				Debit(AccRefundWriteoff, domain.IDRFromFloat(plan.Amount)),
-				Credit(AccGatewayClearing, domain.IDRFromFloat(plan.Amount)),
+				Debit(AccRefundWriteoff, plan.Amount),
+				Credit(AccGatewayClearing, plan.Amount),
 			}, map[string]any{
 				"order_id": order.ID, "reason": reason, "written_off": true,
 			}),
@@ -362,7 +362,7 @@ func (s *PaymentService) postRefundJournal(
 	// refundEntries debits it by the refund amount, which is that remaining
 	// balance. So the not-released branch leaves escrow back at zero rather than
 	// carrying a residual.
-	entries := refundEntries(order.SellerID, domain.IDRFromFloat(plan.Amount), domain.IDRFromFloat(plan.RefundSeller), domain.IDRFromFloat(plan.RefundFee), plan.WasReleased)
+	entries := refundEntries(order.SellerID, plan.Amount, plan.RefundSeller, plan.RefundFee, plan.WasReleased)
 
 	s.postLedger(ctx, q, JournalSpec{
 		IdempotencyKey: refundKey(intent.ID, plan.Remaining, plan.Amount),

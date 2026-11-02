@@ -79,7 +79,7 @@ func (s *PaymentService) CreateTopUp(ctx context.Context, in CreateTopUpInput) (
 	gwPayment, err := gw.CreatePayment(ctx, payments.CreatePaymentInput{
 		OrderID:     id,
 		OrderNumber: "TU-" + strings.ReplaceAll(id, "-", ""),
-		Amount:      amount.Float(),
+		Amount:      amount,
 		Currency:    "IDR",
 		BuyerEmail:  in.Email,
 		Idempotency: "topup-" + id,
@@ -123,10 +123,11 @@ func (s *PaymentService) handleTopUpWebhook(
 			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
 				"webhook did not include a payable amount")
 		}
-		if absDiff(ev.Amount, topUp.Amount.Float()) > 0.01 {
+		// Exact equality, like the order webhook: both sides are whole rupiah.
+		if ev.Amount != topUp.Amount {
 			return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
-				fmt.Sprintf("top-up webhook amount %.2f does not match %.2f",
-					ev.Amount, topUp.Amount.Float()))
+				fmt.Sprintf("top-up webhook amount %v does not match %v",
+					ev.Amount, topUp.Amount))
 		}
 		return s.captureTopUp(ctx, topUp)
 	case payments.EventFailed:

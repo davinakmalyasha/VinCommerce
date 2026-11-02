@@ -38,7 +38,7 @@ import (
 // fakeRefundRow is one row of the `refunds` table.
 type fakeRefundRow struct {
 	id     string
-	amount float64
+	amount domain.IDR
 	status string
 }
 
@@ -122,7 +122,7 @@ func (db *fakeRefundsDB) capRow(sql string, args []any) pgx.Row {
 		excluded = bound
 	}
 
-	total := 0.0
+	var total domain.IDR
 	for _, r := range db.rows {
 		switch r.status {
 		case RefundStateSubmitted, RefundStateSucceeded, RefundStateManual:
@@ -134,7 +134,7 @@ func (db *fakeRefundsDB) capRow(sql string, args []any) pgx.Row {
 		}
 		total += r.amount
 	}
-	return scanRow(func(dest ...any) error { return scanFloat(dest, total) })
+	return scanRow(func(dest ...any) error { return scanCapTotal(dest, total) })
 }
 
 // lastCapQuery returns the cumulative-cap statement, or fails.
@@ -154,15 +154,15 @@ type scanRow func(dest ...any) error
 
 func (f scanRow) Scan(dest ...any) error { return f(dest...) }
 
-func scanFloat(dest []any, v float64) error {
+func scanCapTotal(dest []any, v domain.IDR) error {
 	if len(dest) != 1 {
 		return fmt.Errorf("expected one destination for the cap, got %d", len(dest))
 	}
-	p, ok := dest[0].(*float64)
+	p, ok := dest[0].(*int64)
 	if !ok {
-		return fmt.Errorf("the cap scanned into %T, want *float64", dest[0])
+		return fmt.Errorf("the cap scanned into %T, want *int64", dest[0])
 	}
-	*p = v
+	*p = int64(v)
 	return nil
 }
 
@@ -208,12 +208,12 @@ func TestAFullRefundIsNotChargedForItsOwnRow(t *testing.T) {
 			"never receives and the platform never books", err)
 	}
 	if plan.Amount != 100000 {
-		t.Errorf("amount = Rp%.0f, want the full Rp100,000", plan.Amount)
+		t.Errorf("amount = Rp%v, want the full Rp100,000", plan.Amount)
 	}
 	// Remaining is what was available BEFORE this refund, so a full refund of an
 	// untouched charge leaves it equal to the charge.
 	if plan.Remaining != 100000 {
-		t.Errorf("remaining = Rp%.0f, want the full Rp100,000 available before the refund",
+		t.Errorf("remaining = Rp%v, want the full Rp100,000 available before the refund",
 			plan.Remaining)
 	}
 	if plan.Partial {
@@ -506,7 +506,7 @@ func TestAnInFlightRefundStillCountsAgainstEveryOtherRefund(t *testing.T) {
 	// Rp30,000 of r1 is still counted, which is the whole point of excluding by
 	// id rather than by state. Were r1 dropped as well, the total would be zero.
 	if plan.Remaining != 70000 {
-		t.Errorf("remaining = Rp%.0f, want Rp70,000; r1's in-flight Rp30,000 must "+
+		t.Errorf("remaining = Rp%v, want Rp70,000; r1's in-flight Rp30,000 must "+
 			"still count against a different refund", plan.Remaining)
 	}
 	if plan.Partial {
@@ -529,7 +529,7 @@ func TestACapWithNoRowOfItsOwnExcludesNothing(t *testing.T) {
 		t.Fatalf("the reserve step's own cap read was refused: %v", err)
 	}
 	if plan.Amount != 70000 {
-		t.Errorf("amount = Rp%.0f, want the whole remaining Rp70,000", plan.Amount)
+		t.Errorf("amount = Rp%v, want the whole remaining Rp70,000", plan.Amount)
 	}
 	arg := db.lastCapQuery(t).args[1]
 	if arg != nil {

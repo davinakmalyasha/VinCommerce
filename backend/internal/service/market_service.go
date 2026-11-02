@@ -119,7 +119,7 @@ func (s *MarketService) SpinWheel(ctx context.Context, userID string) (*SpinResu
 		case "percent":
 			label = fmt.Sprintf("%v%% off — %s", trimFloat(coupon.Value), coupon.Code)
 		case "fixed":
-			label = fmt.Sprintf("Rp %.0f off — %s", coupon.Value, coupon.Code)
+			label = fmt.Sprintf("Rp %v off — %s", coupon.Value, coupon.Code)
 		}
 		return &SpinResult{Type: "coupon", Label: label, Coupon: coupon}, nil
 	}
@@ -448,7 +448,7 @@ func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subje
 		order, oerr := s.payments.IntentByOrder(ctx, orderID)
 		if oerr == nil {
 			if err := s.payments.HoldSellerFunds(ctx, sellerID, orderID, d.ID,
-				HoldDispute, "dispute opened", order.Amount); err != nil {
+				HoldDispute, "dispute opened", order.Amount.Float()); err != nil {
 				return nil, err
 			}
 		}

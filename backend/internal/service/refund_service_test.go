@@ -504,15 +504,15 @@ func TestGatewayRefundIdempotencyKeyIsStablePerRefund(t *testing.T) {
 	}
 }
 
-// The key must use whole rupiah. plan.Amount can carry a sen from a proportional
-// split, and "refund:intent-1:49999.5" is a different key from "refund:intent-1:50000"
-// for what the provider will treat as the same refund.
+// The key must use whole rupiah. plan.Amount used to be able to carry a sen
+// from a proportional split, and "refund:intent-1:49999.5" was a different key
+// from "refund:intent-1:50000" for what the provider treats as the same
+// refund. Amounts are IDR now, so a fractional key is unrepresentable; this
+// asserts the key embeds the integer amount instead.
 func TestGatewayRefundIdempotencyKeyUsesWholeRupiah(t *testing.T) {
 	intent := &domain.PaymentIntent{ID: "i1", GatewayRef: "tx-1"}
-	rounded := gatewayRefundInput(intent, &refundPlan{Amount: 50000}, "r").IdempotencyKey
-	withSen := gatewayRefundInput(intent, &refundPlan{Amount: 50000.4}, "r").IdempotencyKey
-	if rounded != withSen {
-		t.Errorf("a sub-rupiah difference produced a different key:\n  %q\n  %q",
-			rounded, withSen)
+	key := gatewayRefundInput(intent, &refundPlan{Amount: 50000}, "r").IdempotencyKey
+	if key != "refund:i1:50000" {
+		t.Errorf("key = %q, want refund:i1:50000", key)
 	}
 }

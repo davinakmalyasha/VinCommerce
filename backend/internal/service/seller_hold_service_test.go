@@ -138,7 +138,9 @@ func TestTheCODHoldRunsInsideTheEscrowRelease(t *testing.T) {
 		n = len(release) - holdAt
 	}
 	holdCall := release[holdAt : holdAt+n]
-	if !strings.Contains(holdCall, "sellerAmount)") {
+	// The .Float() is the transition wrap: holds still take float until their
+	// own slice migrates. What matters here is the VALUE held -- the net.
+	if !strings.Contains(holdCall, "sellerAmount.Float())") {
 		t.Errorf("the COD hold is not the seller's net:\n%s\n"+
 			"holding the gross would freeze the platform's own commission and make "+
 			"a bad COD look like a worse one", holdCall)

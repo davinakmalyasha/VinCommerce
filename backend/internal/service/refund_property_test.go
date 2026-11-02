@@ -59,7 +59,7 @@ func simulateRefunds(charge float64, requests []refundRequest) (paidOut float64,
 		}
 		if amount > remaining {
 			return paidOut, fmt.Errorf(
-				"REFUND_EXCEEDS_REMAINING: Rp%.0f > Rp%.0f remaining", amount, remaining)
+				"REFUND_EXCEEDS_REMAINING: Rp%v > Rp%v remaining", amount, remaining)
 		}
 		ledger = moneyRound(ledger + amount)
 		paidOut += amount
@@ -98,13 +98,13 @@ func TestRefundCapIsNeverExceeded(t *testing.T) {
 			// than is left. What must never happen is a refusal AFTER money was
 			// already paid out beyond the charge.
 			if paid > charge {
-				t.Fatalf("charge Rp%.0f: paid Rp%.0f then refused %v -- an over-refund "+
+				t.Fatalf("charge Rp%v: paid Rp%v then refused %v -- an over-refund "+
 					"partially succeeded", charge, paid, err)
 			}
 			continue
 		}
 		if paid > charge {
-			t.Fatalf("charge Rp%.0f: accepted refunds totalling Rp%.0f -- MONEY MINTED "+
+			t.Fatalf("charge Rp%v: accepted refunds totalling Rp%v -- MONEY MINTED "+
 				"(requests %+v)", charge, paid, reqs)
 		}
 		// A sequence whose LAST request asked for the whole remainder must have
@@ -113,8 +113,8 @@ func TestRefundCapIsNeverExceeded(t *testing.T) {
 		// unconditionally would be asserting a property the code does not (and
 		// should not) have.
 		if lastWasFullRemainder && paid != charge {
-			t.Errorf("charge Rp%.0f: the final request asked for the whole remainder but only "+
-				"Rp%.0f was paid (requests %+v) -- the ledger and the payments disagree",
+			t.Errorf("charge Rp%v: the final request asked for the whole remainder but only "+
+				"Rp%v was paid (requests %+v) -- the ledger and the payments disagree",
 				charge, paid, reqs)
 		}
 	}
@@ -144,15 +144,15 @@ func TestRefundLegsSumToTheRefundAmount(t *testing.T) {
 			refundFee = moneyRound(amount - refundSeller)
 		}
 		if refundFee+refundSeller != amount {
-			t.Fatalf("amount Rp%.0f of a Rp%.0f charge with a Rp%.0f fee: legs are "+
-				"Rp%.0f + Rp%.0f, which does not sum to the refund -- money created or destroyed",
+			t.Fatalf("amount Rp%v of a Rp%v charge with a Rp%v fee: legs are "+
+				"Rp%v + Rp%v, which does not sum to the refund -- money created or destroyed",
 				amount, charged, fee, refundFee, refundSeller)
 		}
 		if refundFee < 0 || refundSeller < 0 {
-			t.Fatalf("negative leg: fee Rp%.0f seller Rp%.0f", refundFee, refundSeller)
+			t.Fatalf("negative leg: fee Rp%v seller Rp%v", refundFee, refundSeller)
 		}
 		if refundFee > fee {
-			t.Fatalf("reversing Rp%.0f of commission when only Rp%.0f was taken",
+			t.Fatalf("reversing Rp%v of commission when only Rp%v was taken",
 				refundFee, fee)
 		}
 	}
@@ -171,7 +171,7 @@ func TestSequentialPartialRefundsReconstructTheCharge(t *testing.T) {
 		t.Fatalf("unexpected refusal: %v", err)
 	}
 	if paid != charge {
-		t.Fatalf("paid Rp%.0f of a Rp%.0f charge", paid, charge)
+		t.Fatalf("paid Rp%v of a Rp%v charge", paid, charge)
 	}
 
 	// The third request asks for more than is left and MUST be refused.
@@ -199,10 +199,10 @@ func TestRoundTripOfWholeRupiah(t *testing.T) {
 		half := moneyRound(v / 2)
 		other := moneyRound(v - half)
 		if other+half != v {
-			t.Fatalf("splitting Rp%.0f into Rp%.0f + Rp%.0f lost money", v, other, half)
+			t.Fatalf("splitting Rp%v into Rp%v + Rp%v lost money", v, other, half)
 		}
 		if math.Abs(other+half-v) > 0 {
-			t.Fatalf("splitting Rp%.0f did not reconstruct it exactly", v)
+			t.Fatalf("splitting Rp%v did not reconstruct it exactly", v)
 		}
 	}
 }

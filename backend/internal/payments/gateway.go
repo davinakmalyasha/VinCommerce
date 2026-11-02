@@ -7,7 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
+
+	"github.com/vincommerce/backend/internal/domain"
 )
 
 func jsonUnmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
@@ -55,9 +58,11 @@ type RefundStatusProvider interface {
 // GatewayRefund is one refund as the provider reports it.
 type GatewayRefund struct {
 	ProviderRef string
-	Amount      float64
-	Status      string // see the RefundStatus* constants
-	Reason      string
+	// Whole rupiah: providers settle in minor units, and a fractional refund
+	// amount is a parse error at the boundary, not a value.
+	Amount domain.IDR
+	Status string // see the RefundStatus* constants
+	Reason string
 	// RequestedAt is the provider's timestamp, which is not our requested_at: a
 	// refund can sit queued for a day. Recording both is what makes a slow refund
 	// diagnosable.
@@ -74,7 +79,7 @@ type GatewayRefund struct {
 type RefundInput struct {
 	// Reference is the provider's charge identifier (Midtrans transaction_id).
 	Reference string
-	Amount    float64 // partial refunds are legitimate and repeatable
+	Amount    domain.IDR // partial refunds are legitimate and repeatable
 	Currency  string
 	Reason    string
 	// IdempotencyKey makes a retry safe. Required: the callers are a webhook
@@ -130,7 +135,7 @@ func (g *SandboxGateway) RefundStatus(ctx context.Context, reference string) ([]
 type CreatePaymentInput struct {
 	OrderID     string
 	OrderNumber string
-	Amount      float64
+	Amount      domain.IDR
 	Currency    string
 	BuyerEmail  string
 	Idempotency string
@@ -161,7 +166,7 @@ type GatewayEvent struct {
 	// Amount is the amount the notification is about. For a partial refund
 	// this is the REFUNDED amount, not the original charge, so the handler
 	// must not treat it as the order total.
-	Amount   float64
+	Amount   domain.IDR
 	Currency string
 	Raw      map[string]any
 }
@@ -247,10 +252,15 @@ func (g *SandboxGateway) ParseWebhook(payload []byte) (*GatewayEvent, error) {
 	if ev.Reference == "" {
 		return nil, fmt.Errorf("webhook missing reference")
 	}
+	// The wire format is still a JSON number; whole-rupiah is enforced here,
+	// once, rather than trusted to every sender.
+	if ev.Amount != math.Trunc(ev.Amount) {
+		return nil, fmt.Errorf("webhook amount is not whole rupiah")
+	}
 	return &GatewayEvent{
 		Type:      ev.Type,
 		Reference: ev.Reference,
-		Amount:    ev.Amount,
+		Amount:    domain.IDRFromFloat(ev.Amount),
 		Currency:  ev.Currency,
 	}, nil
 }

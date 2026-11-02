@@ -161,7 +161,7 @@ func (r refundRow) Scan(dest ...any) error {
 	*dest[3].(*string) = r.rf.JournalID
 	*dest[4].(*string) = r.rf.Gateway
 	*dest[5].(*string) = r.rf.GatewayRef
-	*dest[6].(*float64) = r.rf.Amount
+	*dest[6].(*int64) = int64(r.rf.Amount)
 	*dest[7].(*string) = r.rf.Reason
 	*dest[8].(*string) = r.rf.Status
 	*dest[9].(*string) = r.rf.FailureReason

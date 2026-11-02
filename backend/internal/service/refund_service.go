@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -181,7 +180,7 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 			PaymentIntentID: intent.ID,
 			OrderID:         intent.OrderID,
 			Gateway:         ev.Gateway,
-			Amount:          moneyRound(ev.Amount),
+			Amount:          ev.Amount,
 			Reason:          ev.Reason,
 			Status:          RefundStateManual,
 			RequestedAt:     time.Now().UTC(),
@@ -212,7 +211,7 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 		OrderID:         intent.OrderID,
 		Gateway:         ev.Gateway,
 		GatewayRef:      strings.TrimSpace(ev.Reference),
-		Amount:          moneyRound(ev.Amount),
+		Amount:          ev.Amount,
 		Reason:          ev.Reason,
 		// `submitted` rather than `succeeded`: the provider has told us the money
 		// moved, but this system has not yet derived anything from that, and the
@@ -231,7 +230,7 @@ func (s *PaymentService) RecordProviderRefund(ctx context.Context, ev providerRe
 		return claimed, nil
 	}
 
-	plan := &refundPlan{Amount: moneyRound(ev.Amount)}
+	plan := &refundPlan{Amount: ev.Amount}
 	if err := s.settleProviderRefund(ctx, claimed, intent, plan, ev.Reason); err != nil {
 		return claimed, err
 	}
@@ -316,7 +315,15 @@ func (s *PaymentService) ExecuteRefund(
 	// the pending row is written in the SAME transaction. Two concurrent refunds
 	// therefore cannot both read the same remaining balance: the second blocks on
 	// the lock and then sees the first one's row.
-	refund, plan, err := s.reserveRefund(ctx, intent, reason, refundToBuyer, amount, requestedBy)
+	//
+	// The requested amount arrives as float (handler JSON) and is converted
+	// once, here. A fractional request is rejected rather than rounded: the
+	// refund would otherwise move a different amount than the operator typed.
+	if amount != 0 && !IsWholeIDR(amount) {
+		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT",
+			"refund amount must be whole rupiah")
+	}
+	refund, plan, err := s.reserveRefund(ctx, intent, reason, refundToBuyer, domain.IDRFromFloat(amount), requestedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +405,7 @@ func (s *PaymentService) updateRefundOutcome(
 // figures rather than re-deriving them.
 func (s *PaymentService) reserveRefund(
 	ctx context.Context, intent *domain.PaymentIntent, reason string,
-	refundToBuyer bool, amount float64, requestedBy string,
+	refundToBuyer bool, amount domain.IDR, requestedBy string,
 ) (*repository.Refund, *refundPlan, error) {
 	tx, err := s.orders.Begin(ctx)
 	if err != nil {
@@ -506,9 +513,9 @@ func (s *PaymentService) settleProviderRefund(
 		// the row as manual so the discrepancy is visible and a person resolves
 		// it, rather than either paying it or silently discarding the notice.
 		s.markRefundManual(ctx, refund.ID,
-			fmt.Sprintf("the gateway reported Rp%.0f but only Rp%.0f remains refundable; "+
+			fmt.Sprintf("the gateway reported Rp%v but only Rp%v remains refundable; "+
 				"an operator must reconcile the difference", plan.Amount,
-				moneyRound(locked.Amount-already)))
+				locked.Amount-already))
 		return err
 	}
 	final := s.refundPlanFor(ctx, q, locked, cap)
@@ -539,7 +546,7 @@ func (s *PaymentService) settleProviderRefund(
 	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: order.ID, FromStatus: order.Status, ToStatus: order.Status,
-		Note: fmt.Sprintf("refund confirmed by gateway (Rp %.0f): %s", final.Amount, reason),
+		Note: fmt.Sprintf("refund confirmed by gateway (Rp %v): %s", final.Amount, reason),
 	}); err != nil {
 		return err
 	}
@@ -564,13 +571,13 @@ func (s *PaymentService) reverseDisbursement(
 	}
 	if plan.RefundSeller > 0 {
 		if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
-			domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundSeller), order.ID); err != nil {
+			domain.TxReasonRefund, plan.RefundSeller, order.ID); err != nil {
 			return err
 		}
 	}
 	if plan.RefundFee > 0 {
 		if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
-			domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundFee), order.ID); err != nil {
+			domain.TxReasonRefund, plan.RefundFee, order.ID); err != nil {
 			return err
 		}
 	}
@@ -617,7 +624,7 @@ func (s *PaymentService) refundPlanFor(
 		// to the active rate. Recomputing from today's rate would reverse a
 		// commission that was never charged.
 		if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
-			fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, cap.Amount)
+			fee, sellerAmount = repository.Commission(cfg.Pct, domain.IDRFromFloat(cfg.Fixed), cap.Amount)
 		}
 	}
 
@@ -697,7 +704,7 @@ func (s *PaymentService) completeRefund(
 	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: order.ID, FromStatus: order.Status, ToStatus: order.Status,
-		Note: fmt.Sprintf("refund issued via gateway (Rp %.0f): %s", final.Amount, reason),
+		Note: fmt.Sprintf("refund issued via gateway (Rp %v): %s", final.Amount, reason),
 	}); err != nil {
 		return err
 	}
@@ -889,7 +896,7 @@ func newRefundID() string { return uuid.NewString() }
 
 // refundDescription is a human-readable summary for the admin queue.
 func refundDescription(r *repository.Refund) string {
-	return fmt.Sprintf("%s Rp%.0f (%s)", r.Gateway, r.Amount, r.Status)
+	return fmt.Sprintf("%s Rp%v (%s)", r.Gateway, r.Amount, r.Status)
 }
 
 // isTerminal reports whether a refund is in a state that will not change on its
@@ -1062,7 +1069,7 @@ func (s *PaymentService) classifyProviderRefunds(
 		// refund id to tell them apart. Picking one would settle the wrong refund,
 		// so this needs a human.
 		s.markRefundManual(ctx, rf.ID,
-			fmt.Sprintf("the gateway lists %d refunds of Rp%.0f and gave no refund id to "+
+			fmt.Sprintf("the gateway lists %d refunds of Rp%v and gave no refund id to "+
 				"tell them apart; an operator must confirm which one this is",
 				len(known), rf.Amount))
 		return RefundStateManual
@@ -1106,7 +1113,7 @@ func gatewayRefundInput(intent *domain.PaymentIntent, plan *refundPlan, reason s
 		Currency:  intent.Currency,
 		Reason:    reason,
 		IdempotencyKey: "refund:" + intent.ID + ":" +
-			strconv.FormatFloat(math.Round(plan.Amount), 'f', 0, 64),
+			strconv.FormatInt(int64(plan.Amount), 10),
 	}
 }
 

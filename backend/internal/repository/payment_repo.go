@@ -46,7 +46,7 @@ type Refund struct {
 	JournalID       string
 	Gateway         string
 	GatewayRef      string
-	Amount          float64
+	Amount          domain.IDR
 	Reason          string
 	Status          string
 	FailureReason   string
@@ -89,7 +89,7 @@ func (r *PaymentRepository) CreateRefund(ctx context.Context, q Querier, rf *Ref
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NULLIF($7, ''), $8,
 		        NULLIF($9, '')::uuid, now())`,
 		rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,
-		rf.Amount, rf.Reason, rf.Status, rf.RequestedBy)
+		int64(rf.Amount), rf.Reason, rf.Status, rf.RequestedBy)
 	return err
 }
 
@@ -270,14 +270,16 @@ type rowScanner interface {
 
 func scanRefund(row rowScanner) (*Refund, error) {
 	var rf Refund
+	var amount int64
 	if err := row.Scan(&rf.ID, &rf.PaymentIntentID, &rf.OrderID, &rf.JournalID,
-		&rf.Gateway, &rf.GatewayRef, &rf.Amount, &rf.Reason, &rf.Status,
+		&rf.Gateway, &rf.GatewayRef, &amount, &rf.Reason, &rf.Status,
 		&rf.FailureReason, &rf.RequestedBy, &rf.RequestedAt, &rf.SettledAt, &rf.CreatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
 		return nil, err
 	}
+	rf.Amount = domain.IDR(amount)
 	return &rf, nil
 }
 
@@ -289,7 +291,7 @@ func (r *PaymentRepository) CreateIntent(ctx context.Context, in *domain.Payment
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
 			NULLIF($12, ''), $13)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
-		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway,
+		in.ID, in.OrderID, in.BuyerID, int64(in.Amount), in.Currency, in.Status, in.Gateway,
 		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
@@ -347,7 +349,7 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *d
 		// Nothing supplied: read the active card.
 		if cfg, err := r.ActiveFeeTx(ctx, q); err == nil && cfg != nil {
 			in.CommissionRatePct = cfg.Pct
-			in.CommissionRateFixed = cfg.Fixed
+			in.CommissionRateFixed = domain.IDRFromFloat(cfg.Fixed)
 			// Present even when the card is (0, 0): a 0% rate that was READ is a
 			// real snapshot and must survive an admin change before delivery.
 			in.CommissionSnapshotPresent = true
@@ -360,9 +362,9 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *d
 			commission_snapshot_present)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
 			NULLIF($12, ''), $13, false, $14, $15, $16)`,
-		in.ID, in.OrderID, in.BuyerID, in.Amount, in.Currency, in.Status, in.Gateway,
+		in.ID, in.OrderID, in.BuyerID, int64(in.Amount), in.Currency, in.Status, in.Gateway,
 		in.GatewayRef, in.SnapToken, in.GatewayTxnID, in.RedirectURL, in.Method, in.IdempotencyKey,
-		in.CommissionRatePct, in.CommissionRateFixed, in.CommissionSnapshotPresent)
+		in.CommissionRatePct, int64(in.CommissionRateFixed), in.CommissionSnapshotPresent)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return domain.E(domain.KindConflict, "INTENT_EXISTS", "this order already has a payment intent")
@@ -377,11 +379,11 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *d
 // uses to decide whether the split is authoritative; before it existed the code
 // used `fee_amount == 0`, which cannot distinguish "not derived" from "derived
 // and genuinely zero".
-func (r *PaymentRepository) ApplyFeeTx(ctx context.Context, q Querier, intentID string, fee, sellerAmount float64) error {
+func (r *PaymentRepository) ApplyFeeTx(ctx context.Context, q Querier, intentID string, fee, sellerAmount domain.IDR) error {
 	_, err := q.Exec(ctx, `
 		UPDATE payment_intents
 		SET fee_amount = $2, seller_amount = $3, commission_computed = true, updated_at = now()
-		WHERE id = $1`, intentID, fee, sellerAmount)
+		WHERE id = $1`, intentID, int64(fee), int64(sellerAmount))
 	return err
 }
 
@@ -402,13 +404,17 @@ const intentColumns = `
 
 func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 	var in domain.PaymentIntent
-	err := row.Scan(&in.ID, &in.OrderID, &in.BuyerID, &in.Amount, &in.Currency, &in.Status, &in.Gateway,
+	// NUMERIC scans into int64 locals; see Wallet for why not the named type.
+	var amount, fee, seller, rateFixed int64
+	err := row.Scan(&in.ID, &in.OrderID, &in.BuyerID, &amount, &in.Currency, &in.Status, &in.Gateway,
 		&in.GatewayRef, &in.SnapToken, &in.GatewayTxnID, &in.RedirectURL,
 		&in.Method, &in.IdempotencyKey,
-		&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &in.FeeAmount, &in.SellerAmount,
-		&in.CommissionComputed, &in.CommissionRatePct, &in.CommissionRateFixed,
+		&in.EscrowReleasedAt, &in.CapturedAt, &in.RefundedAt, &fee, &seller,
+		&in.CommissionComputed, &in.CommissionRatePct, &rateFixed,
 		&in.CommissionSnapshotPresent,
 		&in.CreatedAt, &in.UpdatedAt)
+	in.Amount, in.FeeAmount, in.SellerAmount = domain.IDR(amount), domain.IDR(fee), domain.IDR(seller)
+	in.CommissionRateFixed = domain.IDR(rateFixed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -476,7 +482,7 @@ func refundKeyFor(r *Refund) string {
 	if r == nil || strings.TrimSpace(r.GatewayRef) == "" {
 		return ""
 	}
-	return fmt.Sprintf("provider:%s:%s:%.0f", r.Gateway, r.GatewayRef, r.Amount)
+	return fmt.Sprintf("provider:%s:%s:%d", r.Gateway, r.GatewayRef, r.Amount)
 }
 
 // SetIntentStatusGuardedTx is SetIntentStatusGuarded inside a transaction.
@@ -547,16 +553,16 @@ func (r *PaymentRepository) SetIntentStatusGuardedTx(ctx context.Context, q Quer
 // refused rather than treated as nil, because "no id" and "the empty id" are
 // different claims and only one of them is true.
 func (r *PaymentRepository) SumRefundedByOrder(
-	ctx context.Context, q Querier, orderID string, excludeRefundID *string, out *float64,
+	ctx context.Context, q Querier, orderID string, excludeRefundID *string, out *int64,
 ) error {
 	if excludeRefundID != nil && strings.TrimSpace(*excludeRefundID) == "" {
 		return domain.E(domain.KindInternal, "REFUND_EXCLUDE_ID_INVALID",
 			"the refund being settled was excluded from the cap without an id, so the "+
 				"cap cannot be trusted; refusing rather than guessing which row was meant")
 	}
-	var total float64
+	var total int64
 	err := q.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0)::float8
+		SELECT COALESCE(SUM(amount), 0)::bigint
 		  FROM refunds
 		 WHERE order_id = $1
 		   AND status IN ('submitted', 'succeeded', 'manual')
@@ -633,7 +639,7 @@ func (r *PaymentRepository) ClaimProviderRefund(
 		DO NOTHING
 		RETURNING `+refundSelectColumns,
 		rf.ID, rf.PaymentIntentID, rf.OrderID, rf.Gateway, rf.GatewayRef,
-		rf.Amount, rf.Reason, rf.Status, rf.RequestedBy))
+		int64(rf.Amount), rf.Reason, rf.Status, rf.RequestedBy))
 	if err == nil {
 		return inserted, true, nil
 	}
@@ -1507,30 +1513,28 @@ func (r *PaymentRepository) SetFee(ctx context.Context, pct, fixed float64) erro
 //
 // Bounds are enforced on the ROUNDED value, so an amount smaller than the fixed fee
 // cannot produce a negative fee or a seller leg larger than the order.
-func Commission(pct, fixed, amount float64) (fee, seller float64) {
-	raw := amount*pct/100 + fixed
-	if raw > amount {
-		raw = amount
+func Commission(pct float64, fixed, amount domain.IDR) (fee, seller domain.IDR) {
+	// The percent leg rounds inside Pct; fixed is already whole, so rounding
+	// the sum separately (as the old code did) is unnecessary. The two clamps
+	// are unchanged: a rate above 100% cannot take more than the charge, and a
+	// negative config value must not become a credit against the seller.
+	fee = amount.Pct(pct) + fixed
+	if fee > amount {
+		fee = amount
 	}
-	if raw < 0 {
+	if fee < 0 {
 		// A negative pct or fixed must not become a credit to the platform against the
 		// seller. Config is admin-editable, so this is reachable by a typo.
-		raw = 0
-	}
-	fee = moneyRound(raw)
-	if fee > amount {
-		// Only reachable if amount itself is fractional and rounds down below a fee that
-		// was just under it. Clamping keeps fee + seller == amount exact.
-		fee = amount
+		fee = 0
 	}
 	return fee, amount - fee
 }
 
 // ApplyFee records the fee split on an intent.
-func (r *PaymentRepository) ApplyFee(ctx context.Context, intentID string, fee, sellerAmount float64) error {
+func (r *PaymentRepository) ApplyFee(ctx context.Context, intentID string, fee, sellerAmount domain.IDR) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE payment_intents SET fee_amount = $2, seller_amount = $3 WHERE id = $1`,
-		intentID, fee, sellerAmount)
+		intentID, int64(fee), int64(sellerAmount))
 	return err
 }
 

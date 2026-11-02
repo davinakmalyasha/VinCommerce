@@ -226,18 +226,19 @@ func TestRefundValidatesItsInput(t *testing.T) {
 	}
 }
 
-func TestRefundRejectsAnAmountThatRoundsToZero(t *testing.T) {
-	// Rp0.4 rounds to Rp0. Posting it is a 400, and dropping it silently would be
-	// a refund that vanishes.
+func TestRefundRejectsANonPositiveAmount(t *testing.T) {
+	// A zero refund reaches no provider: posting it is a 400, and dropping it
+	// silently would be a refund that vanishes. (A fractional amount cannot
+	// even be expressed anymore -- it fails to compile at the call site.)
 	g, _ := newRefundGateway(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("a zero-rupiah refund must not reach the provider")
 	})
-	_, err := g.Refund(context.Background(), RefundInput{Reference: "tx-1", Amount: 0.4})
+	_, err := g.Refund(context.Background(), RefundInput{Reference: "tx-1", Amount: 0})
 	if err == nil {
-		t.Fatal("an amount that rounds to zero was accepted")
+		t.Fatal("a zero amount was accepted")
 	}
-	if !strings.Contains(err.Error(), "zero") {
-		t.Errorf("error %q should say the amount rounds to zero", err)
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error %q should say the amount must be positive", err)
 	}
 }
 

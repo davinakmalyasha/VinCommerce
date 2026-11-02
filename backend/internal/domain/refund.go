@@ -24,10 +24,10 @@ type Refund struct {
 	// GatewayRef is the provider's id for THIS refund, which is distinct from the
 	// charge it reverses. Exposed because it is the operator's reconciliation key
 	// against the provider's own dashboard.
-	GatewayRef string  `json:"gateway_ref,omitempty"`
-	Amount     float64 `json:"amount"`
-	Reason     string  `json:"reason,omitempty"`
-	Status     string  `json:"status"`
+	GatewayRef string `json:"gateway_ref,omitempty"`
+	Amount     IDR    `json:"amount"`
+	Reason     string `json:"reason,omitempty"`
+	Status     string `json:"status"`
 	// FailureReason is populated for failed and manual refunds. It is the
 	// difference between an operator guessing and an operator reading.
 	FailureReason string     `json:"failure_reason,omitempty"`

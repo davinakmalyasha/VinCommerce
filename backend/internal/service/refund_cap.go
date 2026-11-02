@@ -25,7 +25,7 @@ import (
 // refunds.
 type providerRefundEvent struct {
 	OrderID string
-	Amount  float64
+	Amount  domain.IDR
 	// Gateway is the adapter that reported it, so the idempotency key is scoped
 	// per provider. Two gateways may legitimately issue the same refund id.
 	Gateway string
@@ -51,7 +51,9 @@ func providerRefundKey(ev providerRefundEvent) string {
 	if ref == "" {
 		return ""
 	}
-	return fmt.Sprintf("provider:%s:%s:%.0f", ev.Gateway, ref, ev.Amount)
+	// %d renders whole values identically to the old %.0f, so keys recorded
+	// before the migration still match.
+	return fmt.Sprintf("provider:%s:%s:%d", ev.Gateway, ref, ev.Amount)
 }
 
 // refundDecision is what to do with a provider refund notification.
@@ -120,9 +122,9 @@ func classifyUnidentifiableProviderRefund(ev providerRefundEvent) refundDecision
 type capDecision struct {
 	// Amount is what will actually be refunded: the request, or the whole
 	// remaining balance when the request was zero.
-	Amount float64
+	Amount domain.IDR
 	// Remaining is what is left of the charge afterwards.
-	Remaining float64
+	Remaining domain.IDR
 	// Partial reports whether anything is left, which is what makes this a partial
 	// rather than a full refund.
 	Partial bool
@@ -137,8 +139,8 @@ type capDecision struct {
 // The cap is EXACT. With whole-rupiah money an epsilon is not a rounding
 // tolerance, it is a rupiah of money that does not exist: a `> 0.01` comparison
 // on a buyer's refund is a sen the platform pays out and cannot account for.
-func decideRefundCap(charge, alreadyRefunded, requested float64) (capDecision, error) {
-	remaining := moneyRound(charge - alreadyRefunded)
+func decideRefundCap(charge, alreadyRefunded, requested domain.IDR) (capDecision, error) {
+	remaining := charge - alreadyRefunded
 	if remaining <= 0 {
 		return capDecision{}, domain.E(domain.KindConflict, "ALREADY_REFUNDED",
 			"this order has already been fully refunded")
@@ -150,14 +152,13 @@ func decideRefundCap(charge, alreadyRefunded, requested float64) (capDecision, e
 		// the gateway's own `payment.refunded` notification both mean.
 		amount = remaining
 	}
-	amount = moneyRound(amount)
 	if amount > remaining {
 		return capDecision{}, domain.E(domain.KindConflict, "REFUND_EXCEEDS_REMAINING",
-			fmt.Sprintf("refund Rp%.0f exceeds the remaining refundable Rp%.0f of Rp%.0f charged",
+			fmt.Sprintf("refund Rp%v exceeds the remaining refundable Rp%v of Rp%v charged",
 				amount, remaining, charge))
 	}
 
-	after := moneyRound(remaining - amount)
+	after := remaining - amount
 	return capDecision{Amount: amount, Remaining: after, Partial: after > 0}, nil
 }
 
@@ -178,22 +179,22 @@ func decideRefundCap(charge, alreadyRefunded, requested float64) (capDecision, e
 // Rounding both independently drifts by a sen per partial refund, and the drift
 // accumulates permanently in the wallet balances: there is no later sweep that
 // would ever collect it.
-func deriveReversalLegs(fee, charge, amount float64) (refundFee, refundSeller float64) {
+func deriveReversalLegs(fee, charge, amount domain.IDR) (refundFee, refundSeller domain.IDR) {
 	if amount <= 0 || charge <= 0 {
 		return 0, 0
 	}
-	refundFee = moneyRound(fee * (amount / charge))
-	refundSeller = moneyRound(amount - refundFee)
+	refundFee = fee.Pct(100 * float64(amount) / float64(charge))
+	refundSeller = amount - refundFee
 	if refundSeller < 0 {
 		// The scaled fee exceeded the refund itself. Clamp rather than go negative:
 		// a negative seller leg is a credit TO the seller on a refund.
 		refundSeller = 0
 	}
 	// Make the pair sum exactly even if the residual fell outside the leg. Only
-	// reachable through float edges, but a pair that does not sum means money was
-	// created or destroyed.
+	// reachable if the fee exceeds the refund, but a pair that does not sum
+	// means money was created or destroyed.
 	if refundFee+refundSeller != amount {
-		refundFee = moneyRound(amount - refundSeller)
+		refundFee = amount - refundSeller
 	}
 	return refundFee, refundSeller
 }
@@ -203,7 +204,7 @@ func deriveReversalLegs(fee, charge, amount float64) (refundFee, refundSeller fl
 // The name is the warning: there is a separate path for refunds the provider has
 // already performed, and reaching for this one from a webhook is the double-refund
 // that `ac351cf` introduced.
-func providerRefundInputFor(intent *domain.PaymentIntent, amount float64, reason string) payments.RefundInput {
+func providerRefundInputFor(intent *domain.PaymentIntent, amount domain.IDR, reason string) payments.RefundInput {
 	return payments.RefundInput{
 		Reference: chargeReference(intent),
 		Amount:    amount,
@@ -211,6 +212,6 @@ func providerRefundInputFor(intent *domain.PaymentIntent, amount float64, reason
 		Reason:    reason,
 		// Keyed on the amount, so a second partial refund of a DIFFERENT amount
 		// is a different key, and a retry of the same one is recognised.
-		IdempotencyKey: fmt.Sprintf("refund:%s:%.0f", intent.ID, moneyRound(amount)),
+		IdempotencyKey: fmt.Sprintf("refund:%s:%d", intent.ID, amount),
 	}
 }

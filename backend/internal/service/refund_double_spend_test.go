@@ -47,14 +47,14 @@ import (
 // fixed, and reachable again while this arithmetic was inline in a function that
 // needed a database to call.
 func TestARefundAfterReleaseReversesBothLegs(t *testing.T) {
-	const charge, fee = 100000.0, 2000.0
+	const charge, fee domain.IDR = 100000, 2000
 
 	fullFee, fullSeller := deriveReversalLegs(fee, charge, charge)
 	if fullFee != fee {
-		t.Errorf("a full refund reverses Rp%.0f of commission, want Rp%.0f", fullFee, fee)
+		t.Errorf("a full refund reverses Rp%v of commission, want Rp%v", fullFee, fee)
 	}
 	if fullSeller != charge-fee {
-		t.Errorf("a full refund reverses Rp%.0f from the seller, want Rp%.0f",
+		t.Errorf("a full refund reverses Rp%v from the seller, want Rp%v",
 			fullSeller, charge-fee)
 	}
 
@@ -65,18 +65,18 @@ func TestARefundAfterReleaseReversesBothLegs(t *testing.T) {
 	// about Rp25 the commission share is less than half a rupiah and correctly
 	// rounds to zero. Asserting a non-zero commission on those would be asserting
 	// that the function invents money.
-	for _, amount := range []float64{30000, 33333, 25000, 99999, 123457} {
+	for _, amount := range []domain.IDR{30000, 33333, 25000, 99999, 123457} {
 		refundFee, refundSeller := deriveReversalLegs(fee, charge, amount)
 		if refundFee+refundSeller != amount {
-			t.Errorf("refund of Rp%.0f: legs sum to Rp%.0f, want Rp%.0f; the drift "+
+			t.Errorf("refund of Rp%v: legs sum to Rp%v, want Rp%v; the drift "+
 				"accumulates permanently because nothing ever sweeps it",
 				amount, refundFee+refundSeller, amount)
 		}
 		if refundFee == 0 {
-			t.Errorf("refund of Rp%.0f reversed NO commission", amount)
+			t.Errorf("refund of Rp%v reversed NO commission", amount)
 		}
 		if refundSeller == 0 && amount > fee {
-			t.Errorf("refund of Rp%.0f reversed nothing from the seller", amount)
+			t.Errorf("refund of Rp%v reversed nothing from the seller", amount)
 		}
 	}
 }
@@ -92,19 +92,19 @@ func TestARefundAfterReleaseReversesBothLegs(t *testing.T) {
 // sub-rupiah amount the checkout work removed -- an amount the gateway cannot
 // charge, which is what caused paid orders to be cancelled as AMOUNT_MISMATCH.
 func TestTinyRefundsReverseNoCommissionAndThatIsCorrect(t *testing.T) {
-	const charge, fee = 100000.0, 2000.0
+	const charge, fee domain.IDR = 100000, 2000
 
 	// Rp1: the share is Rp0.02, which is not a whole rupiah.
 	f, s := deriveReversalLegs(fee, charge, 1)
 	if f != 0 {
-		t.Errorf("a Rp1 refund reversed Rp%.2f of commission; the exact share is Rp0.02 "+
+		t.Errorf("a Rp1 refund reversed Rp%v of commission; the exact share is Rp0.02 "+
 			"and IDR has no sen", f)
 	}
 	if s != 1 {
-		t.Errorf("the seller leg is Rp%.0f, want the full Rp1", s)
+		t.Errorf("the seller leg is Rp%v, want the full Rp1", s)
 	}
 	if f+s != 1 {
-		t.Errorf("legs sum to Rp%.0f, want Rp1", f+s)
+		t.Errorf("legs sum to Rp%v, want Rp1", f+s)
 	}
 
 	// Rp25: the share is exactly Rp0.50, which rounds to Rp1. Above this, the
@@ -324,11 +324,11 @@ func TestALookupFailureIsNotSilentlyTreatedAsNothingRecorded(t *testing.T) {
 // The commission leg is the one that gets dropped, so assert it SCALES rather
 // than being all-or-nothing.
 func TestTheCommissionReversalScalesWithTheRefund(t *testing.T) {
-	const charge, fee = 100000.0, 2000.0
+	const charge, fee domain.IDR = 100000, 2000
 
 	halfFee, _ := deriveReversalLegs(fee, charge, 50000)
 	if halfFee != 1000 {
-		t.Errorf("a half refund reverses Rp%.0f of commission, want Rp1000 (half of Rp%.0f)",
+		t.Errorf("a half refund reverses Rp%v of commission, want Rp1000 (half of Rp%v)",
 			halfFee, fee)
 	}
 	smallFee, _ := deriveReversalLegs(fee, charge, 1000)
@@ -336,8 +336,8 @@ func TestTheCommissionReversalScalesWithTheRefund(t *testing.T) {
 		t.Error("a Rp1,000 refund reversed no commission at all")
 	}
 	if smallFee >= fee {
-		t.Errorf("a Rp1,000 refund reversed Rp%.0f of commission, which is not less than "+
-			"the Rp%.0f charged", smallFee, fee)
+		t.Errorf("a Rp1,000 refund reversed Rp%v of commission, which is not less than "+
+			"the Rp%v charged", smallFee, fee)
 	}
 }
 
@@ -345,7 +345,7 @@ func TestTheCommissionReversalScalesWithTheRefund(t *testing.T) {
 func TestDeriveReversalLegsHandlesDegenerateInputs(t *testing.T) {
 	for _, c := range []struct {
 		name                string
-		fee, charge, amount float64
+		fee, charge, amount domain.IDR
 	}{
 		{"zero refund", 2000, 100000, 0},
 		{"negative refund", 2000, 100000, -5000},
@@ -357,11 +357,11 @@ func TestDeriveReversalLegsHandlesDegenerateInputs(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f, s := deriveReversalLegs(c.fee, c.charge, c.amount)
 			if f < 0 || s < 0 {
-				t.Errorf("legs are negative: fee=Rp%.2f seller=Rp%.2f; a negative "+
+				t.Errorf("legs are negative: fee=Rp%v seller=Rp%v; a negative "+
 					"seller leg is a credit TO the seller on a refund", f, s)
 			}
 			if c.amount <= 0 && (f != 0 || s != 0) {
-				t.Errorf("legs = (Rp%.2f, Rp%.2f) for a non-positive amount, want zeroes", f, s)
+				t.Errorf("legs = (Rp%v, Rp%v) for a non-positive amount, want zeroes", f, s)
 			}
 		})
 	}
@@ -371,10 +371,10 @@ func TestDeriveReversalLegsHandlesDegenerateInputs(t *testing.T) {
 func TestDeriveReversalLegsClampsWhenTheFeeExceedsTheRefund(t *testing.T) {
 	f, s := deriveReversalLegs(2000, 100000, 500)
 	if s < 0 {
-		t.Fatalf("seller leg is negative (Rp%.2f): a refund must never credit the seller", s)
+		t.Fatalf("seller leg is negative (Rp%v): a refund must never credit the seller", s)
 	}
 	if f+s != 500 {
-		t.Errorf("legs sum to Rp%.2f, want Rp500", f+s)
+		t.Errorf("legs sum to Rp%v, want Rp500", f+s)
 	}
 }
 
@@ -990,7 +990,7 @@ func TestTheCapRefusesAnOverRefundAfterPartialRefunds(t *testing.T) {
 		t.Fatalf("refunding exactly the remaining Rp40,000 was refused: %v", err)
 	}
 	if d.Remaining != 0 || d.Partial {
-		t.Errorf("remaining = Rp%.0f, partial = %v; want 0 and false", d.Remaining, d.Partial)
+		t.Errorf("remaining = Rp%v, partial = %v; want 0 and false", d.Remaining, d.Partial)
 	}
 }
 
@@ -1022,10 +1022,10 @@ func TestAZeroRefundRequestMeansTheWholeRemainingBalance(t *testing.T) {
 		t.Fatalf("a zero request was refused: %v", err)
 	}
 	if d.Amount != 70000 {
-		t.Errorf("amount = Rp%.0f, want the full remaining Rp70,000", d.Amount)
+		t.Errorf("amount = Rp%v, want the full remaining Rp70,000", d.Amount)
 	}
 	if d.Remaining != 0 {
-		t.Errorf("remaining = Rp%.0f, want 0", d.Remaining)
+		t.Errorf("remaining = Rp%v, want 0", d.Remaining)
 	}
 	if d.Partial {
 		t.Error("partial = true, but nothing remains outstanding")
@@ -1040,7 +1040,7 @@ func TestAZeroRefundRequestMeansTheWholeRemainingBalance(t *testing.T) {
 		t.Error("partial = false, but Rp50,000 of the charge is still outstanding")
 	}
 	if p.Remaining != 50000 {
-		t.Errorf("remaining = Rp%.0f, want Rp50,000", p.Remaining)
+		t.Errorf("remaining = Rp%v, want Rp50,000", p.Remaining)
 	}
 }
 
@@ -1126,6 +1126,17 @@ func TestTheProviderKeyIsScopedPerGateway(t *testing.T) {
 	if providerRefundKey(a) == providerRefundKey(b) {
 		t.Error("the same reference on two gateways shares a key; one provider's " +
 			"refund would be mistaken for another's")
+	}
+}
+
+// The key includes the amount: two partial refunds under one reference must not
+// collapse into one entry, or the second is swallowed as a replay of the first.
+func TestTheProviderKeyDistinguishesAmounts(t *testing.T) {
+	a := providerRefundEvent{OrderID: "o1", Amount: 30000, Gateway: "midtrans", Reference: "rf-1"}
+	b := providerRefundEvent{OrderID: "o1", Amount: 10000, Gateway: "midtrans", Reference: "rf-1"}
+	if providerRefundKey(a) == providerRefundKey(b) {
+		t.Error("two refunds for different amounts share a key; the second would " +
+			"be swallowed as a replay of the first")
 	}
 }
 

@@ -50,7 +50,7 @@ func TestReleaseEscrowGatesTheStoredSplitOnCommissionComputed(t *testing.T) {
 func TestReleaseEscrowDefaultsToPayingTheSellerInFull(t *testing.T) {
 	body := releaseEscrowBody(t)
 
-	if !strings.Contains(body, "fee, sellerAmount := 0.0, intent.Amount") {
+	if !strings.Contains(body, "sellerAmount = intent.Amount") {
 		t.Errorf("ReleaseEscrow no longer defaults to (fee 0, seller full amount).\n"+
 			"A default of (full, 0) means any path that skips the recompute pays the "+
 			"platform the whole sale.\n%s", body)
@@ -69,14 +69,14 @@ func TestAZeroPercentRateCreditsTheSellerTheWholeAmount(t *testing.T) {
 
 	fee, seller := repository.Commission(0, 0, gross)
 	if fee != 0 {
-		t.Errorf("a 0%% rate produced a fee of %.2f, want 0", fee)
+		t.Errorf("a 0%% rate produced a fee of %v, want 0", fee)
 	}
 	if seller != gross {
-		t.Errorf("a 0%% rate credited the seller %.2f of %.2f; the platform kept the "+
+		t.Errorf("a 0%% rate credited the seller %v of %v; the platform kept the "+
 			"difference on a sale it was entitled to none of", seller, gross)
 	}
 	if fee+seller != gross {
-		t.Errorf("the legs sum to %.2f, want %.2f -- money created or destroyed", fee+seller, gross)
+		t.Errorf("the legs sum to %v, want %v -- money created or destroyed", fee+seller, gross)
 	}
 }
 

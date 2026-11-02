@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +185,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		}
 		intent := &domain.PaymentIntent{
 			ID: uuid.NewString(), OrderID: order.ID, BuyerID: in.BuyerID,
-			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
+			Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "internal", Method: "wallet", IdempotencyKey: key,
 		}
 		if err := s.payments.CreateIntentTx(ctx, tx.PgTx(), intent); err != nil {
@@ -249,7 +248,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		}
 		s.publish(ctx, order.ID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
 		s.emailFor(ctx, order.ID, "order_paid", "Pembayaran diterima — VinCommerce",
-			map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
+			map[string]any{"Total": fmt.Sprintf("Rp %v", intent.Amount)})
 		return intent, &payments.GatewayPayment{Reference: "wallet", Status: "paid"}, nil
 	}
 
@@ -261,7 +260,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 	if in.Method == "cod" {
 		intent := &domain.PaymentIntent{
 			ID: uuid.NewString(), OrderID: order.ID, BuyerID: in.BuyerID,
-			Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
+			Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
 			Gateway: "cod", Method: "cod", IdempotencyKey: key,
 		}
 		tx, err := s.orders.Begin(ctx)
@@ -305,7 +304,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 	gwPayment, err := gateway.CreatePayment(ctx, payments.CreatePaymentInput{
 		OrderID:     order.ID,
 		OrderNumber: order.OrderNumber,
-		Amount:      order.TotalAmount,
+		Amount:      domain.IDRFromFloat(order.TotalAmount),
 		Currency:    order.Currency,
 		Idempotency: key,
 		ReturnURL:   finishBase + "/orders/" + order.ID,
@@ -318,7 +317,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 		ID:             uuid.NewString(),
 		OrderID:        order.ID,
 		BuyerID:        in.BuyerID,
-		Amount:         order.TotalAmount,
+		Amount:         domain.IDRFromFloat(order.TotalAmount),
 		Currency:       order.Currency,
 		Status:         domain.IntentInitiated,
 		Gateway:        gateway.Name(),
@@ -413,7 +412,7 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "COD collected on delivery; funds held in escrow",
-		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
 			"order_id": intent.OrderID, "method": intent.Method,
 		}),
 	}); err != nil {
@@ -424,7 +423,7 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 	}
 	s.publish(ctx, intent.OrderID, "", "", "pembayaran COD tercatat")
 	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
-		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
+		map[string]any{"Total": fmt.Sprintf("Rp %v", intent.Amount)})
 	return nil
 }
 
@@ -476,9 +475,12 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
 				"webhook did not include a payable amount")
 		}
-		if absDiff(ev.Amount, intent.Amount) > 0.01 {
+		// Exact equality: both sides are whole rupiah now, so the epsilon that
+		// used to forgive float drift has no input left to forgive. A provider
+		// amount that disagrees by any amount is a tampered notification.
+		if ev.Amount != intent.Amount {
 			return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
-				fmt.Sprintf("webhook amount %.2f does not match intent amount %.2f", ev.Amount, intent.Amount))
+				fmt.Sprintf("webhook amount %v does not match intent amount %v", ev.Amount, intent.Amount))
 		}
 		return s.onPaid(ctx, intent)
 	case payments.EventRefunded:
@@ -494,9 +496,9 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 			return domain.E(domain.KindInvalid, "REFUND_AMOUNT_REQUIRED",
 				"partial refund notification did not include a refunded amount")
 		}
-		if amount > intent.Amount+0.01 {
+		if amount > intent.Amount {
 			return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
-				fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
+				fmt.Sprintf("refund %v exceeds the charged amount %v", amount, intent.Amount))
 		}
 		return s.onRefunded(ctx, intent, amount, ev)
 	case payments.EventFailed:
@@ -561,12 +563,12 @@ func (s *PaymentService) HandleWebhook(ctx context.Context, gatewayName string, 
 // ballgame under concurrency.
 func (s *PaymentService) refundedTotal(
 	ctx context.Context, q repository.Querier, orderID string, excludeRefundID *string,
-) (float64, error) {
-	var total float64
+) (domain.IDR, error) {
+	var total int64
 	if err := s.payments.SumRefundedByOrder(ctx, q, orderID, excludeRefundID, &total); err != nil {
 		return 0, err
 	}
-	return moneyRound(total), nil
+	return domain.IDR(total), nil
 }
 
 // refundPlan is the derived, validated outcome of a refund, computed once and
@@ -575,7 +577,7 @@ type refundPlan struct {
 	// Remaining is the un-refunded balance of the charge after everything
 	// already written to the ledger, read INSIDE the transaction and after the
 	// intent row lock.
-	Remaining float64
+	Remaining domain.IDR
 	// WasReleased reports whether escrow was ever paid out to the seller. If it
 	// was, the refund must claw the seller's net and the platform's fee back;
 	// if not, there is nothing to claw back because the money never left.
@@ -583,16 +585,16 @@ type refundPlan struct {
 	// Fee and SellerAmount are the split actually applied to this intent, which
 	// is what makes the reversal exact rather than recomputed from today's
 	// configured rate.
-	Fee, SellerAmount float64
+	Fee, SellerAmount domain.IDR
 	// RefundFee and RefundSeller are THIS refund's share of those two legs,
 	// derived so that RefundFee + RefundSeller == amount by construction.
-	RefundFee, RefundSeller float64
+	RefundFee, RefundSeller domain.IDR
 	// Partial reports whether this refund leaves a balance.
 	Partial bool
 	// NextStatus is the intent status this refund moves to.
 	NextStatus string
 	// Amount is the amount being refunded.
-	Amount float64
+	Amount domain.IDR
 }
 
 // buildRefundPlan derives and validates a refund against the ledger.
@@ -611,14 +613,14 @@ type refundPlan struct {
 // same order credited the buyer again with no cap, no commission reversal, and
 // no debit anywhere.
 func (s *PaymentService) buildRefundPlan(
-	ctx context.Context, q repository.Querier, intent *domain.PaymentIntent, amount float64,
+	ctx context.Context, q repository.Querier, intent *domain.PaymentIntent, amount domain.IDR,
 	excludeRefundID *string,
 ) (*refundPlan, error) {
 	already, err := s.refundedTotal(ctx, q, intent.OrderID, excludeRefundID)
 	if err != nil {
 		return nil, err
 	}
-	remaining := moneyRound(intent.Amount - already)
+	remaining := intent.Amount - already
 	if remaining <= 0 {
 		return nil, domain.E(domain.KindConflict, "ALREADY_REFUNDED",
 			"this order has already been fully refunded")
@@ -631,7 +633,7 @@ func (s *PaymentService) buildRefundPlan(
 	// buyer's refund is one rupiah of money that does not exist.
 	if amount > remaining {
 		return nil, domain.E(domain.KindConflict, "REFUND_EXCEEDS_REMAINING",
-			fmt.Sprintf("refund Rp%.0f exceeds the remaining refundable Rp%.0f of Rp%.0f charged",
+			fmt.Sprintf("refund Rp%v exceeds the remaining refundable Rp%v of Rp%v charged",
 				amount, remaining, intent.Amount))
 	}
 
@@ -664,7 +666,7 @@ func (s *PaymentService) buildRefundPlan(
 		pct, fixed := intent.CommissionRatePct, intent.CommissionRateFixed
 		if !intent.CommissionSnapshotPresent {
 			if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
-				pct, fixed = cfg.Pct, cfg.Fixed
+				pct, fixed = cfg.Pct, domain.IDRFromFloat(cfg.Fixed)
 			}
 		}
 		fee, sellerAmount = repository.Commission(pct, fixed, intent.Amount)
@@ -676,23 +678,16 @@ func (s *PaymentService) buildRefundPlan(
 		sellerAmount = 0
 	}
 
-	refundFee, refundSeller := 0.0, 0.0
+	var refundFee, refundSeller domain.IDR
 	if wasReleased && intent.Amount > 0 {
 		// Scale the fee to this refund's share of the charge, then make the
 		// seller's leg the RESIDUAL so the two sum to `amount` by construction.
-		// Rounding two independently-scaled values drifted by a sen per partial
-		// refund, and the drift accumulates permanently in the wallet balances.
-		ratio := amount / intent.Amount
-		refundFee = moneyRound(fee * ratio)
-		refundSeller = moneyRound(amount - refundFee)
+		// The residual needs no re-derivation pass anymore: integer arithmetic
+		// cannot produce the fractional edge cases the float version guarded.
+		refundFee = fee.Pct(100 * float64(amount) / float64(intent.Amount))
+		refundSeller = amount - refundFee
 		if refundSeller < 0 {
 			refundSeller = 0
-		}
-		// Re-derive if the residual fell outside the leg, so the pair always
-		// sums exactly. Only reachable through float edge cases, but a pair that
-		// does not sum means money created or destroyed.
-		if refundFee+refundSeller != amount {
-			refundFee = moneyRound(amount - refundSeller)
 		}
 	}
 
@@ -810,7 +805,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "payment captured; funds held in escrow",
-		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
 			"order_id": intent.OrderID, "method": intent.Method,
 		}),
 	})
@@ -819,7 +814,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 	}
 	s.publish(ctx, intent.OrderID, domain.OrderPending, domain.OrderPaid, "payment captured (escrow held)")
 	s.emailFor(ctx, intent.OrderID, "order_paid", "Pembayaran diterima — VinCommerce",
-		map[string]any{"Total": fmt.Sprintf("Rp %.0f", intent.Amount)})
+		map[string]any{"Total": fmt.Sprintf("Rp %v", intent.Amount)})
 	return nil
 }
 
@@ -925,7 +920,7 @@ func (s *PaymentService) RecordExternalCapture(
 ) error {
 	intent := &domain.PaymentIntent{
 		ID: uuid.NewString(), OrderID: order.ID, BuyerID: order.BuyerID,
-		Amount: order.TotalAmount, Currency: order.Currency, Status: domain.IntentInitiated,
+		Amount: domain.IDRFromFloat(order.TotalAmount), Currency: order.Currency, Status: domain.IntentInitiated,
 		Gateway: "external", Method: domain.MethodManualTransfer,
 		IdempotencyKey: "external-" + order.ID,
 	}
@@ -945,7 +940,7 @@ func (s *PaymentService) RecordExternalCapture(
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "off-platform payment asserted by the buyer; funds assumed held in escrow",
-		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
 			"order_id": order.ID, "method": intent.Method, "reference": reference,
 		}),
 	})
@@ -990,7 +985,8 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	// The default is (fee 0, seller the full amount) so that a future reader who
 	// removes the recompute branch fails toward paying the seller, not toward paying
 	// the platform.
-	fee, sellerAmount := 0.0, intent.Amount
+	var fee, sellerAmount domain.IDR
+	sellerAmount = intent.Amount
 	if intent.CommissionComputed {
 		fee, sellerAmount = intent.FeeAmount, intent.SellerAmount
 	}
@@ -1034,7 +1030,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 			if ferr != nil {
 				return ferr
 			}
-			pct, fixed = cfg.Pct, cfg.Fixed
+			pct, fixed = cfg.Pct, domain.IDRFromFloat(cfg.Fixed)
 		}
 		fee, sellerAmount = repository.Commission(pct, fixed, intent.Amount)
 		if err := s.payments.ApplyFeeTx(ctx, q, intent.ID, fee, sellerAmount); err != nil {
@@ -1050,16 +1046,16 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 	if err := tx.AddEvent(ctx, &domain.OrderEvent{
 		OrderID: orderID, FromStatus: order.Status, ToStatus: order.Status,
-		ActorID: nil, Note: fmt.Sprintf("escrow released to seller (komisi platform Rp %.0f)", fee),
+		ActorID: nil, Note: fmt.Sprintf("escrow released to seller (komisi platform Rp %v)", fee),
 	}); err != nil {
 		return err
 	}
 
 	// seller credited the net amount; platform fee recorded against the platform wallet.
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "credit", domain.TxReasonEscrowRelease, domain.IDRFromFloat(sellerAmount), orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "credit", domain.TxReasonEscrowRelease, sellerAmount, orderID); err != nil {
 		return err
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", domain.IDRFromFloat(fee), orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", fee, orderID); err != nil {
 		return err
 	}
 
@@ -1071,8 +1067,8 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 		TxType:         TxTypeEscrowRelease,
 		RefType:        "order",
 		RefID:          orderID,
-		Note:           fmt.Sprintf("escrow released; platform commission Rp %.0f", fee),
-		Entries: withMeta(releaseEntries(order.SellerID, domain.IDRFromFloat(intent.Amount), domain.IDRFromFloat(sellerAmount), domain.IDRFromFloat(fee)), map[string]any{
+		Note:           fmt.Sprintf("escrow released; platform commission Rp %v", fee),
+		Entries: withMeta(releaseEntries(order.SellerID, intent.Amount, sellerAmount, fee), map[string]any{
 			"order_id": orderID, "seller_id": order.SellerID,
 			"gross": intent.Amount, "fee": fee, "seller_net": sellerAmount,
 		}),
@@ -1104,7 +1100,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	// withdraw the whole amount. That window is the fraud.
 	if intent.Method == domain.MethodCOD && sellerAmount > 0 {
 		if err := s.holdSellerFundsTx(ctx, q, order.SellerID, orderID, intent.ID,
-			HoldCOD, "COD collected; awaiting the return window", sellerAmount); err != nil {
+			HoldCOD, "COD collected; awaiting the return window", sellerAmount.Float()); err != nil {
 			return err
 		}
 	}
@@ -1115,7 +1111,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 
 	s.publish(ctx, orderID, order.Status, order.Status, "escrow released to seller")
 	s.emailFor(ctx, orderID, "order_completed", "Pesanan selesai — dana escrow dilepas",
-		map[string]any{"Total": fmt.Sprintf("Rp %.0f", sellerAmount)})
+		map[string]any{"Total": fmt.Sprintf("Rp %v", sellerAmount)})
 	return nil
 }
 
@@ -1205,13 +1201,13 @@ func (s *PaymentService) notifyRefund(ctx context.Context, order *domain.Order, 
 	var body string
 	switch refund.Status {
 	case RefundStateSucceeded:
-		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s telah dikirim ke metode pembayaran Anda.",
+		body = fmt.Sprintf("Refund Rp%v untuk pesanan %s telah dikirim ke metode pembayaran Anda.",
 			refund.Amount, order.OrderNumber)
 	case RefundStateManual:
-		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s sedang diproses manual oleh tim kami.",
+		body = fmt.Sprintf("Refund Rp%v untuk pesanan %s sedang diproses manual oleh tim kami.",
 			refund.Amount, order.OrderNumber)
 	default:
-		body = fmt.Sprintf("Refund Rp%.0f untuk pesanan %s sedang diproses oleh penyedia pembayaran.",
+		body = fmt.Sprintf("Refund Rp%v untuk pesanan %s sedang diproses oleh penyedia pembayaran.",
 			refund.Amount, order.OrderNumber)
 	}
 	_ = s.notifications.Notify(ctx, order.BuyerID, "order", "Refund diproses", body,
@@ -1235,7 +1231,7 @@ func (s *PaymentService) notifyRefund(ctx context.Context, order *domain.Order, 
 // claim refunded in the same transaction, so a failure rolls both back together
 // and leaves the claim retryable rather than stranded.
 func (s *PaymentService) RefundOrderInTx(
-	ctx context.Context, tx *repository.OrderTx, orderID string, amount float64, reason string,
+	ctx context.Context, tx *repository.OrderTx, orderID string, amount domain.IDR, reason string,
 ) error {
 	order, err := s.orders.ByID(ctx, orderID)
 	if err != nil {
@@ -1263,7 +1259,7 @@ func (s *PaymentService) RefundOrderInTx(
 // and together refund more than was charged.
 func (s *PaymentService) refundInTx(
 	ctx context.Context, tx *repository.OrderTx, order *domain.Order, intentID string,
-	amount float64, reason string, refundToBuyer bool, addEvent bool,
+	amount domain.IDR, reason string, refundToBuyer bool, addEvent bool,
 ) error {
 	orderID := order.ID
 	q := tx.Querier()
@@ -1329,20 +1325,20 @@ func (s *PaymentService) refundInTx(
 		// were derived in buildRefundPlan so they sum to `plan.Amount` exactly.
 		if plan.RefundSeller > 0 {
 			if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
-				domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundSeller), orderID); err != nil {
+				domain.TxReasonRefund, plan.RefundSeller, orderID); err != nil {
 				return err
 			}
 		}
 		if plan.RefundFee > 0 {
 			if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
-				domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundFee), orderID); err != nil {
+				domain.TxReasonRefund, plan.RefundFee, orderID); err != nil {
 				return err
 			}
 		}
 	}
 	if refundToBuyer {
 		if err := s.payments.WalletTxOn(ctx, q, order.BuyerID, "credit",
-			domain.TxReasonRefund, domain.IDRFromFloat(plan.Amount), orderID); err != nil {
+			domain.TxReasonRefund, plan.Amount, orderID); err != nil {
 			return err
 		}
 	}
@@ -1358,8 +1354,8 @@ func (s *PaymentService) refundInTx(
 	if addEvent {
 		note := "refund: " + reason
 		if plan.Partial {
-			note = fmt.Sprintf("partial refund: %s (Rp %.0f, Rp %.0f still refundable of Rp %.0f charged)",
-				reason, plan.Amount, moneyRound(plan.Remaining-plan.Amount), locked.Amount)
+			note = fmt.Sprintf("partial refund: %s (Rp %v, Rp %v still refundable of Rp %v charged)",
+				reason, plan.Amount, plan.Remaining-plan.Amount, locked.Amount)
 		}
 		if err := tx.AddEvent(ctx, &domain.OrderEvent{
 			OrderID: orderID, FromStatus: order.Status, ToStatus: order.Status,
@@ -1418,7 +1414,7 @@ func (s *PaymentService) emailOrder(ctx context.Context, o *domain.Order, templa
 // actually double-paid. That protection is the idempotency key inside
 // RecordProviderRefund.
 func (s *PaymentService) onRefunded(
-	ctx context.Context, intent *domain.PaymentIntent, amount float64, ev *payments.GatewayEvent,
+	ctx context.Context, intent *domain.PaymentIntent, amount domain.IDR, ev *payments.GatewayEvent,
 ) error {
 	// Already terminal: a replayed refund notification is a no-op, not an error.
 	// Returning an error here makes the gateway retry forever.
@@ -1433,9 +1429,9 @@ func (s *PaymentService) onRefunded(
 		return domain.E(domain.KindInvalid, "REFUND_AMOUNT_REQUIRED",
 			"refund amount must be positive")
 	}
-	if amount > intent.Amount+0.01 {
+	if amount > intent.Amount {
 		return domain.E(domain.KindConflict, "REFUND_EXCEEDS_CHARGE",
-			fmt.Sprintf("refund %.2f exceeds the charged amount %.2f", amount, intent.Amount))
+			fmt.Sprintf("refund %v exceeds the charged amount %v", amount, intent.Amount))
 	}
 
 	// The provider's own refund id, taken from the notification, is what makes
@@ -1500,7 +1496,7 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 	if maxCredit <= 0 {
 		cfg, err := s.payments.ActiveFee(ctx)
 		if err == nil {
-			fee, _ := repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
+			fee, _ := repository.Commission(cfg.Pct, domain.IDRFromFloat(cfg.Fixed), intent.Amount)
 			maxCredit = fee
 		}
 	}
@@ -1509,9 +1505,9 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 			"platform earned no commission on this order, so there is nothing to credit from")
 	}
 
-	// Median-style split of the commission actually earned, rounded down to a
-	// whole sen. Never more than the commission, never negative.
-	credit := math.Floor(maxCredit/2*100) / 100
+	// Median-style split of the commission actually earned, halved with integer
+	// division (floored). Never more than the commission, never negative.
+	credit := maxCredit / 2
 	if credit <= 0 {
 		return nil
 	}
@@ -1536,10 +1532,10 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 	// Debit the platform wallet first: WalletTxOn enforces balance >= 0, so if
 	// the platform cannot cover it the whole transaction (including the claim)
 	// rolls back and the dispute stays open for a human to retry.
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, domain.IDRFromFloat(credit), orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, credit, orderID); err != nil {
 		return err
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, domain.IDRFromFloat(credit), orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, credit, orderID); err != nil {
 		return err
 	}
 
@@ -1556,8 +1552,8 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 		FromStatus: domain.OrderPaid,
 		ToStatus:   domain.OrderPaid,
 		ActorID:    &adminID,
-		Note: fmt.Sprintf("dispute %s resolved as split: Rp %.0f credited to buyer "+
-			"(capped at the platform commission of Rp %.0f earned on this order)",
+		Note: fmt.Sprintf("dispute %s resolved as split: Rp %v credited to buyer "+
+			"(capped at the platform commission of Rp %v earned on this order)",
 			disputeID, credit, maxCredit),
 	}); err != nil {
 		return err

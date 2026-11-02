@@ -2,12 +2,12 @@ package service
 
 import (
 	"context"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/payments"
 )
 
@@ -60,7 +60,7 @@ func readFileAt(t *testing.T, path string) string {
 // be able to. If the two ever disagree, a replayed webhook stops matching and
 // every replay becomes a second refund, so the duplication is deliberate and the
 // mismatch is a test failure rather than a runtime surprise.
-func repositoryRefundKeyFor(gateway, ref string, amount float64) string {
+func repositoryRefundKeyFor(gateway, ref string, amount domain.IDR) string {
 	if ref == "" {
 		return ""
 	}
@@ -69,11 +69,11 @@ func repositoryRefundKeyFor(gateway, ref string, amount float64) string {
 
 // formatRupiah renders a whole-rupiah amount the way both key builders do.
 //
-// Both sides use `%.0f` on a value already rounded to whole rupiah. Duplicated
-// here for the same reason as the key itself: if the format drifted, the two keys
-// would disagree and every replayed webhook would become a second refund.
-func formatRupiah(v float64) string {
-	return strconv.FormatFloat(math.Round(v), 'f', 0, 64)
+// Both sides use `%d`. Duplicated here for the same reason as the key itself:
+// if the format drifted, the two keys would disagree and every replayed webhook
+// would become a second refund.
+func formatRupiah(v domain.IDR) string {
+	return strconv.FormatInt(int64(v), 10)
 }
 
 // recordingRefundGateway counts gateway refund calls and models Midtrans's
@@ -85,10 +85,10 @@ func formatRupiah(v float64) string {
 // paid twice.
 type recordingRefundGateway struct {
 	refundCalls   int
-	charge        float64
-	cumulativeRef float64
-	rejected      []float64
-	accepted      []float64
+	charge        domain.IDR
+	cumulativeRef domain.IDR
+	rejected      []domain.IDR
+	accepted      []domain.IDR
 }
 
 func (g *recordingRefundGateway) Name() string { return "midtrans" }

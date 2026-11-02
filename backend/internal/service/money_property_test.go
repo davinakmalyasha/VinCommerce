@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/repository"
 )
 
@@ -60,7 +61,7 @@ func TestAllocateGlobalSharesAreNeverNegative(t *testing.T) {
 
 	for _, sid := range sellerIDs {
 		if shares[sid] < 0 {
-			t.Errorf("seller %s received a NEGATIVE discount of Rp%.0f -- this inflates the "+
+			t.Errorf("seller %s received a NEGATIVE discount of Rp%v -- this inflates the "+
 				"sub-order total and trips 00040's orders_discount_bounded CHECK", sid, shares[sid])
 		}
 	}
@@ -69,7 +70,7 @@ func TestAllocateGlobalSharesAreNeverNegative(t *testing.T) {
 		sum += shares[sid]
 	}
 	if sum != 1 {
-		t.Errorf("shares sum to Rp%.2f, want exactly Rp1", sum)
+		t.Errorf("shares sum to Rp%v, want exactly Rp1", sum)
 	}
 }
 
@@ -98,16 +99,16 @@ func TestAllocateGlobalNeverExceedsItsOwnSubtotal(t *testing.T) {
 		for _, sid := range sellerIDs {
 			sum += shares[sid]
 			if shares[sid] < 0 {
-				t.Fatalf("n=%d amount=Rp%.0f sid=%s share=Rp%.0f is NEGATIVE", n, amount, sid, shares[sid])
+				t.Fatalf("n=%d amount=Rp%v sid=%s share=Rp%v is NEGATIVE", n, amount, sid, shares[sid])
 			}
 			if shares[sid] > subtotals[sid] {
-				t.Fatalf("n=%d amount=Rp%.0f sid=%s share=Rp%.0f exceeds its own subtotal Rp%.0f "+
+				t.Fatalf("n=%d amount=Rp%v sid=%s share=Rp%v exceeds its own subtotal Rp%v "+
 					"-- 00040's orders_discount_bounded CHECK rejects the INSERT",
 					n, amount, sid, shares[sid], subtotals[sid])
 			}
 		}
 		if sum != amount {
-			t.Fatalf("n=%d shares sum to Rp%.2f, want exactly Rp%.2f -- a discount is created or "+
+			t.Fatalf("n=%d shares sum to Rp%v, want exactly Rp%v -- a discount is created or "+
 				"destroyed by the allocation itself", n, sum, amount)
 		}
 	}
@@ -126,7 +127,7 @@ func TestAllocateGlobalIsDeterministic(t *testing.T) {
 		got := allocateGlobal(13, sellerIDs, subtotals)
 		for _, sid := range sellerIDs {
 			if got[sid] != first[sid] {
-				t.Fatalf("allocation is not deterministic: %s got Rp%.0f then Rp%.0f",
+				t.Fatalf("allocation is not deterministic: %s got Rp%v then Rp%v",
 					sid, first[sid], got[sid])
 			}
 		}
@@ -156,7 +157,7 @@ func TestAllocateGlobalDegenerateInputs(t *testing.T) {
 	t.Run("one seller takes the whole amount", func(t *testing.T) {
 		got := allocateGlobal(37, []string{"a"}, map[string]float64{"a": 500})
 		if got["a"] != 37 {
-			t.Errorf("got Rp%.0f, want Rp37", got["a"])
+			t.Errorf("got Rp%v, want Rp37", got["a"])
 		}
 	})
 	t.Run("a bundle not in sellerIDs is ignored", func(t *testing.T) {
@@ -165,7 +166,7 @@ func TestAllocateGlobalDegenerateInputs(t *testing.T) {
 			t.Error("allocated to a bundle the caller did not ask for")
 		}
 		if got["a"] != 10 {
-			t.Errorf("got Rp%.0f, want the whole Rp10", got["a"])
+			t.Errorf("got Rp%v, want the whole Rp10", got["a"])
 		}
 	})
 }
@@ -332,7 +333,7 @@ func TestMoneyRoundIsIdempotent(t *testing.T) {
 		once := moneyRound(v)
 		twice := moneyRound(once)
 		if once != twice {
-			t.Fatalf("moneyRound is not idempotent: %.2f -> %.0f -> %.0f", v, once, twice)
+			t.Fatalf("moneyRound is not idempotent: %v -> %v -> %v", v, once, twice)
 		}
 		if !IsWholeIDR(once) {
 			t.Fatalf("moneyRound(%.4f) = %v, which is not whole rupiah", v, once)
@@ -388,32 +389,28 @@ func TestMoneyRoundNeverProducesFractionalRupiah(t *testing.T) {
 func TestCommissionLegsSumToGross(t *testing.T) {
 	rng := rand.New(rand.NewPCG(23, 29))
 	for iter := 0; iter < 100_000; iter++ {
-		amount := float64(rng.IntN(500_000_000))
-		pct := rng.Float64() * 60      // includes out-of-range; must still be safe
-		fixed := rng.Float64() * 25000 // includes a fee far above the amount
+		amount := domain.IDR(rng.IntN(500_000_000))
+		pct := rng.Float64() * 60            // includes out-of-range; must still be safe
+		fixed := domain.IDR(rng.IntN(25000)) // whole: a fractional fixed fee is unrepresentable now
 
 		// The production function, not a restatement of it.
 		fee, seller := repository.Commission(pct, fixed, amount)
 
 		if seller < 0 {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: seller leg is negative",
+			t.Fatalf("amount=Rp%v pct=%.4f fixed=Rp%v: seller leg is negative",
 				amount, pct, fixed)
 		}
 		if fee < 0 {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee leg is negative",
+			t.Fatalf("amount=Rp%v pct=%.4f fixed=Rp%v: fee leg is negative",
 				amount, pct, fixed)
 		}
 		if fee+seller != amount {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee Rp%.2f + seller Rp%.2f = "+
-				"Rp%.2f, want Rp%.2f -- money is created or destroyed at escrow release, and "+
+			t.Fatalf("amount=Rp%v pct=%.4f fixed=Rp%v: fee Rp%v + seller Rp%v = "+
+				"Rp%v, want Rp%v -- money is created or destroyed at escrow release, and "+
 				"payment_intents_split_sums rejects the write so the SELLER IS NOT PAID",
 				amount, pct, fixed, fee, seller, fee+seller, amount)
 		}
-		// IDR has no sen. A fractional leg cannot be charged to a gateway at all.
-		if !IsWholeIDR(fee) || !IsWholeIDR(seller) {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: produced fractional rupiah "+
-				"fee=%v seller=%v", amount, pct, fixed, fee, seller)
-		}
+		// Legs are IDR: wholeness is structural now, not asserted.
 	}
 }
 
@@ -429,29 +426,28 @@ func TestCommissionLegsSumToGross(t *testing.T) {
 // probability zero, so 100,000 random iterations pass against that implementation. It
 // did pass when tried. These cases pin it.
 func TestCommissionLegsSumOnTheHalfRupiahBoundary(t *testing.T) {
+	// Fractional FIXED cases ({0, 0.5, 100} etc.) are gone: a fractional
+	// fixed fee no longer compiles as an argument. Fractional PCT cases stay --
+	// the rate card is still a float, and the half-rupiah boundary is where an
+	// implementation that rounds both legs independently creates money.
 	cases := []struct {
-		pct, fixed, amount float64
-		why                string
+		pct           float64
+		fixed, amount domain.IDR
+		why           string
 	}{
 		{0.5, 0, 100, "raw is exactly 0.5; both legs round up if rounded separately"},
 		{0.5, 0, 1000, "same, larger order"},
 		{2.5, 0, 200, "raw is exactly 5"},
-		{0, 0.5, 100, "the FIXED fee is the half-rupiah, not the percentage"},
-		{0, 49.5, 100, "fixed just under a half"},
-		{0, 50.5, 100, "fixed just over a half"},
 		{1.5, 0, 100, "raw is exactly 1.5"},
 		{99.5, 0, 100, "nearly the whole order"},
-		{33.333, 0.5, 999, "both components fractional at once"},
+		{33.333, 0, 999, "fractional percentage on an odd amount"},
+		{2, 1000, 100, "fixed above the amount caps at the amount"},
 	}
 	for _, c := range cases {
 		fee, seller := repository.Commission(c.pct, c.fixed, c.amount)
 		if fee+seller != c.amount {
 			t.Errorf("Commission(%v,%v,%v) = (%v,%v), sum %v != %v: %s",
 				c.pct, c.fixed, c.amount, fee, seller, fee+seller, c.amount, c.why)
-		}
-		if !IsWholeIDR(fee) || !IsWholeIDR(seller) {
-			t.Errorf("Commission(%v,%v,%v) produced fractional rupiah fee=%v seller=%v",
-				c.pct, c.fixed, c.amount, fee, seller)
 		}
 	}
 }
@@ -462,20 +458,22 @@ func TestCommissionLegsSumOnTheHalfRupiahBoundary(t *testing.T) {
 func TestCommissionUsesTheSharedRoundingRule(t *testing.T) {
 	rng := rand.New(rand.NewPCG(101, 7))
 	for iter := 0; iter < 50_000; iter++ {
-		amount := float64(rng.IntN(5_000_000))
+		amount := domain.IDR(rng.IntN(5_000_000))
 		pct := rng.Float64() * 30
-		fixed := rng.Float64() * 5000
+		fixed := domain.IDR(rng.IntN(5000))
 
 		fee, _ := repository.Commission(pct, fixed, amount)
 
-		want := amount*pct/100 + fixed
+		// The shared rule, restated in integers: round the percent leg once,
+		// then add the (whole) fixed leg. This is the same expression Pct
+		// computes, which is the point -- the test pins the agreement.
+		want := amount.Pct(pct) + fixed
 		if want > amount {
 			want = amount
 		}
-		want = moneyRound(want)
 
 		if fee != want {
-			t.Fatalf("amount=Rp%.0f pct=%.4f fixed=Rp%.0f: fee=%v but the shared rounding "+
+			t.Fatalf("amount=Rp%v pct=%.4f fixed=Rp%v: fee=%v but the shared rounding "+
 				"rule gives %v", amount, pct, fixed, fee, want)
 		}
 	}
@@ -498,7 +496,7 @@ func TestShippingFeeRoundsToWholeRupiah(t *testing.T) {
 	for _, tc := range cases {
 		got := shippingFee(tc.base, tc.perKg, tc.kg)
 		if got != tc.want {
-			t.Errorf("shippingFee(%v, %v, %d) = Rp%.0f, want Rp%.0f", tc.base, tc.perKg, tc.kg, got, tc.want)
+			t.Errorf("shippingFee(%v, %v, %d) = Rp%v, want Rp%v", tc.base, tc.perKg, tc.kg, got, tc.want)
 		}
 		if !IsWholeIDR(got) {
 			t.Errorf("shippingFee produced a fractional rupiah: %v", got)
@@ -510,7 +508,7 @@ func TestShippingFeeClampsNegativeWeight(t *testing.T) {
 	// A negative weight_grams from a seller form produced a negative shipping
 	// fee, which migration 00040's orders_total_nonneg turned into a 500.
 	if got := shippingFee(9000, 6000, -5); got != 9000 {
-		t.Errorf("shippingFee with a negative weight = Rp%.0f, want the base fee Rp9000", got)
+		t.Errorf("shippingFee with a negative weight = Rp%v, want the base fee Rp9000", got)
 	}
 }
 
@@ -526,7 +524,7 @@ func TestInsuranceFeeRoundsTheChargeNotTheRate(t *testing.T) {
 		got := insuranceFee(subtotal, pct)
 		want := moneyRound(subtotal * pct / 100)
 		if got != want {
-			t.Fatalf("insuranceFee(Rp%.0f, %v) = Rp%.0f, want Rp%.0f", subtotal, pct, got, want)
+			t.Fatalf("insuranceFee(Rp%v, %v) = Rp%v, want Rp%v", subtotal, pct, got, want)
 		}
 		if !IsWholeIDR(got) {
 			t.Fatalf("insuranceFee produced a fractional rupiah: %v", got)
@@ -534,7 +532,7 @@ func TestInsuranceFeeRoundsTheChargeNotTheRate(t *testing.T) {
 	}
 	// A rate above 100 is where the old form visibly diverges.
 	if old, correct := math.Round(10_000*150.5)/100, insuranceFee(10_000, 150.5); old != correct {
-		t.Logf("the old form gives %.2f and the correct form gives %.0f -- the divergence is real", old, correct)
+		t.Logf("the old form gives %v and the correct form gives %v -- the divergence is real", old, correct)
 	}
 	if insuranceFee(0, 0.3) != 0 {
 		t.Error("a zero subtotal must not produce an insurance fee")
@@ -580,7 +578,7 @@ func TestQuoteSubtotalMatchesSumOfLines(t *testing.T) {
 			viaQuote += q.SubtotalFor(sid)
 		}
 		if viaQuote != expected {
-			t.Fatalf("per-bundle subtotals sum to Rp%.2f, want Rp%.2f", viaQuote, expected)
+			t.Fatalf("per-bundle subtotals sum to Rp%v, want Rp%v", viaQuote, expected)
 		}
 	}
 }

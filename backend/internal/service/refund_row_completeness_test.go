@@ -59,7 +59,7 @@ func TestARecordedReturnRefundReducesWhatIsStillRefundable(t *testing.T) {
 		t.Fatalf("the remaining Rp50,000 was refused: %v", err)
 	}
 	if plan.Amount != 50000 {
-		t.Errorf("amount = Rp%.0f, want Rp50,000", plan.Amount)
+		t.Errorf("amount = Rp%v, want Rp50,000", plan.Amount)
 	}
 	if plan.Partial {
 		t.Error("partial = true, but nothing remains after this")
