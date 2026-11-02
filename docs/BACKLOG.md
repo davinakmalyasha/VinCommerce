@@ -13,7 +13,7 @@ correctness and operability.
 > | P0-1 | Return-refund credits wallet, not gateway | Closed — `3223e9c` |
 > | P0-2 | No wallet top-up (refund-only balance) | Closed — `833aa5c` |
 > | P0-3 | PPN/NPWP/invoice sequence | Closed — `0f88c5e`, `28ac4b8`, `41ff0a4` |
-> | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Partly closed — DB rejects fractional rupiah `3ea601d`; Go still `float64` |
+> | P0-4 | Money `float64` vs `NUMERIC(14,2)` end-to-end | Migrating — type `b023a80`, wallet vertical `cc8338a`; ledger/orders/catalogue remain |
 > | P1-1 | No carrier label/rate adapter (only `manual`) | Partly closed — signed tracking webhook `424963f`; label+rate still open |
 > | P1-2 | Payouts group but never pay (CSV human step) | Open |
 > | P1-3 | Search English-stem, bestsellers not personalised | Closed — `09a8351`, `6c1013f` |
@@ -1566,3 +1566,12 @@ commit: the chat button/panel move above it below `md`, and `main` gains
 mobile-only bottom padding. The badge reuses the shared cart key. Run
 `41412008455`: 9/9, 126/126 vitest (3 new). No small-viewport run exists, so
 this is class-and-state proven, not layout-proven.
+
+**Money migration to IDR (P0-4).** `domain.IDR` (int64 whole rupiah,
+`b023a80`) with the only sanctioned float path, Pct matching the old
+rounding, and wire-compatible JSON. The wallet vertical followed
+(`cc8338a`): balances, transactions, top-ups, payouts, WalletTxOn and its 13
+call sites (wrapped at the seam; each wrap names the next slice). Run
+`41425253940`: 9/9, top-up integration asserts exact integer movement, 46/46
+e2e proves payout and wallet JSON compatibility. Remaining: ledger entries,
+intents/refunds, orders/checkout, catalogue prices, coupons/shipping.
