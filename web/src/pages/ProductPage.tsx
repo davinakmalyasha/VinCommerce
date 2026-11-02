@@ -24,6 +24,7 @@ interface Review {
   images?: string[]
   helpful_count?: number
   is_verified_purchase?: boolean
+  reply?: string
   created_at: string
 }
 
@@ -801,6 +802,12 @@ export function ProductPage() {
                       className="w-16 h-16 rounded-lg object-cover bg-gray-100 border border-gray-200"
                     />
                   ))}
+                </div>
+              )}
+              {r.reply && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-100 rounded-lg p-2.5 mt-2">
+                  <p className="text-xs font-semibold text-amber-700 mb-0.5">Balasan toko</p>
+                  <p className="text-sm">{r.reply}</p>
                 </div>
               )}
               {user && (

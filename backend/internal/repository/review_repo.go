@@ -115,9 +115,11 @@ func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, 
 		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
 		       r.images, r.status, r.helpful_count, r.created_at,
 		       u.full_name,
-		       (r.order_item_id IS NOT NULL)
+		       (r.order_item_id IS NOT NULL),
+		       COALESCE(rr.content, '')
 		FROM product_reviews r
 		JOIN users u ON u.id = r.user_id
+		LEFT JOIN review_replies rr ON rr.review_id = r.id
 		WHERE r.product_id = $1 AND r.status = 'approved'
 		ORDER BY `+order+`
 		LIMIT $2 OFFSET $3`, productID, pageSize, (page-1)*pageSize)
@@ -132,7 +134,7 @@ func (r *ReviewRepository) ListByProduct(ctx context.Context, productID string, 
 		var images []byte
 		if err := rows.Scan(&rev.ID, &rev.ProductID, &rev.UserID, &rev.OrderItemID, &rev.Rating,
 			&rev.Title, &rev.Content, &images, &rev.Status, &rev.HelpfulCount, &rev.CreatedAt,
-			&rev.UserName, &rev.IsVerifiedPurchase); err != nil {
+			&rev.UserName, &rev.IsVerifiedPurchase, &rev.Reply); err != nil {
 			return nil, 0, err
 		}
 		if len(images) > 0 {
@@ -150,9 +152,10 @@ func (r *ReviewRepository) ListAllApproved(ctx context.Context, productID string
 	rows, err := r.pool.Query(ctx, `
 		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
 		       r.images, r.status, r.helpful_count, r.created_at,
-		       u.full_name
+		       u.full_name, COALESCE(rr.content, '')
 		FROM product_reviews r
 		JOIN users u ON u.id = r.user_id
+		LEFT JOIN review_replies rr ON rr.review_id = r.id
 		WHERE r.product_id = $1 AND r.status = 'approved'
 		ORDER BY r.created_at DESC
 		LIMIT $2`, productID, limit)
@@ -257,9 +260,10 @@ func (r *ReviewRepository) Pending(ctx context.Context, limit int) ([]*domain.Pr
 	rows, err := r.pool.Query(ctx, `
 		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
 		       r.images, r.status, r.helpful_count, r.created_at,
-		       u.full_name
+		       u.full_name, COALESCE(rr.content, '')
 		FROM product_reviews r
 		JOIN users u ON u.id = r.user_id
+		LEFT JOIN review_replies rr ON rr.review_id = r.id
 		WHERE r.status = 'pending'
 		ORDER BY r.created_at ASC
 		LIMIT $1`, limit)
@@ -315,6 +319,9 @@ func (r *ReviewRepository) ListBySeller(ctx context.Context, sellerID string, li
 		if err != nil {
 			return nil, err
 		}
+		// The reply lives on the embedded review too, so both JSON shapes carry
+		// it: the seller inbox reads the outer field, buyers read the embedded one.
+		sr.ProductReview.Reply = sr.Reply
 		if len(images) > 0 {
 			_ = json.Unmarshal(images, &sr.Images)
 		}
@@ -371,7 +378,7 @@ func scanReview(row reviewRow) (*domain.ProductReview, error) {
 	var images []byte
 	err := row.Scan(&rev.ID, &rev.ProductID, &rev.UserID, &rev.OrderItemID, &rev.Rating,
 		&rev.Title, &rev.Content, &images, &rev.Status, &rev.HelpfulCount, &rev.CreatedAt,
-		&rev.UserName)
+		&rev.UserName, &rev.Reply)
 	if err != nil {
 		return nil, err
 	}

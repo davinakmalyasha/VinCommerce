@@ -116,17 +116,20 @@ type ProductImage struct {
 
 // ProductReview is a buyer review.
 type ProductReview struct {
-	ID           string    `json:"id"`
-	ProductID    string    `json:"product_id"`
-	UserID       string    `json:"user_id"`
-	OrderItemID  *string   `json:"order_item_id,omitempty"`
-	Rating       int       `json:"rating"`
-	Title        string    `json:"title,omitempty"`
-	Content      string    `json:"content"`
-	Images       []string  `json:"images,omitempty"`
-	Status       string    `json:"status"`
-	HelpfulCount int       `json:"helpful_count"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string   `json:"id"`
+	ProductID    string   `json:"product_id"`
+	UserID       string   `json:"user_id"`
+	OrderItemID  *string  `json:"order_item_id,omitempty"`
+	Rating       int      `json:"rating"`
+	Title        string   `json:"title,omitempty"`
+	Content      string   `json:"content"`
+	Images       []string `json:"images,omitempty"`
+	Status       string   `json:"status"`
+	HelpfulCount int      `json:"helpful_count"`
+	// Reply is the seller's public response, if any. Empty when the seller has
+	// not replied. Stored in review_replies, joined at read time.
+	Reply     string    `json:"reply,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 
 	UserName           string `json:"user_name,omitempty"`
 	VariantName        string `json:"variant_name,omitempty"`
