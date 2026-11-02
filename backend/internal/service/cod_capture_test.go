@@ -40,7 +40,7 @@ func TestCODCapturePostsItsJournalThroughTheStrictPath(t *testing.T) {
 			"a failed posting must stop the capture, not leave the money collected "+
 			"with nothing recording it", body)
 	}
-	if !strings.Contains(body, "captureEntries(intent.Amount, intent.Method)") {
+	if !strings.Contains(body, "captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method)") {
 		t.Errorf("COD capture does not use captureEntries:\n%s\n"+
 			"that helper is what routes COD to cod_receivable rather than "+
 			"gateway_clearing, because the courier holds that cash for several days", body)
@@ -95,7 +95,7 @@ func TestTheCaptureJournalIsIdempotentUnderTheSameKeyAsTheGatewayPath(t *testing
 // capture actually reaches it.
 func TestACODCaptureReachesTheCourierAccountAndNotTheGateway(t *testing.T) {
 	cod := functionSource(t, "payment_service.go", "captureIntentOnly")
-	if !strings.Contains(cod, "captureEntries(intent.Amount, intent.Method)") {
+	if !strings.Contains(cod, "captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method)") {
 		t.Fatalf("COD capture does not route through captureEntries:\n%s", cod)
 	}
 	// And the journal must carry the intent's method as metadata, so an auditor

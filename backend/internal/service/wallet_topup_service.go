@@ -180,7 +180,7 @@ func (s *PaymentService) captureTopUp(ctx context.Context, topUp *domain.WalletT
 		RefType:        "wallet_topup",
 		RefID:          topUp.ID,
 		Note:           "wallet top-up",
-		Entries: withMeta(topUpEntries(topUp.UserID, topUp.Amount.Float()), map[string]any{
+		Entries: withMeta(topUpEntries(topUp.UserID, topUp.Amount), map[string]any{
 			"wallet_topup_id": topUp.ID,
 			"gateway":         topUp.Gateway,
 			"amount":          topUp.Amount,

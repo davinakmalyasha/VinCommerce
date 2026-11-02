@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+
+	"github.com/vincommerce/backend/internal/domain"
 )
 
 // The pure half of the ledger: entry normalisation, balance validation and
@@ -15,12 +17,15 @@ import (
 // That is not redundancy for its own sake: the trigger is the guarantee, and
 // these tests are the evidence that the guarantee is being asked for correctly.
 
-func TestDebitAndCreditRoundToWholeRupiah(t *testing.T) {
-	if got := Debit(AccEscrowHeld, 10000.4).Amount; got != 10000 {
-		t.Errorf("debit amount = %v, want 10000 (rounded at construction)", got)
+func TestDebitAndCreditStoreExactWholeRupiah(t *testing.T) {
+	// Rounding used to happen here: Debit(Acc, 10000.4) silently became 10000.
+	// With IDR that input is a compile error instead -- a fraction cannot be
+	// constructed, so there is nothing to round. These assert exactness.
+	if got := Debit(AccEscrowHeld, 10000).Amount; got != 10000 {
+		t.Errorf("debit amount = %v, want exactly 10000", got)
 	}
-	if got := Credit(AccEscrowHeld, 10000.6).Amount; got != 10001 {
-		t.Errorf("credit amount = %v, want 10001 (rounded at construction)", got)
+	if got := Credit(AccEscrowHeld, 10001).Amount; got != 10001 {
+		t.Errorf("credit amount = %v, want exactly 10001", got)
 	}
 }
 
@@ -121,19 +126,22 @@ func TestValidateBalancedRejectsEmptyAccount(t *testing.T) {
 
 func TestNormaliseEntriesDropsZeroButKeepsNegative(t *testing.T) {
 	// Zero is dropped: `CHECK (amount > 0)` rejects it, so a caller computing a
-	// split where one leg rounds to zero should not have to special-case it.
+	// split where one leg is zero should not have to special-case it.
 	//
 	// Negative is NOT dropped, and this is the subtle one. A negative debit is a
 	// different statement from an absent line. Silently discarding it would turn a
 	// sign error into a missing entry -- which still balances, and is wrong.
+	//
+	// Note what is NOT here anymore: the old version also asserted that 0.4
+	// rounds away. With IDR a fractional input does not compile, so that case
+	// moved from a runtime assertion to the type system.
 	out := normaliseEntries([]LedgerEntry{
 		Debit(AccEscrowHeld, 0),
-		Debit(AccEscrowHeld, 0.4),
 		{Account: AccGatewayClearing, Amount: -500, Side: LedgerSideDebit},
 		Credit(AccEscrowHeld, -500),
 	})
 	if len(out) != 2 {
-		t.Fatalf("got %d entries, want 2 (two zeros dropped, negative kept): %+v", len(out), out)
+		t.Fatalf("got %d entries, want 2 (one zero dropped, negatives kept): %+v", len(out), out)
 	}
 	for _, e := range out {
 		if e.Amount == 0 {
@@ -156,7 +164,7 @@ func TestNormaliseEntriesDropsZeroButKeepsNegative(t *testing.T) {
 // against escrow without deducting it from the seller's share silently inflates
 // what we owe sellers by exactly the fee.
 func TestOrderLifecycleConservesEveryRupiah(t *testing.T) {
-	order, commission := 100000.0, 2000.0
+	order, commission := domain.IDR(100000), domain.IDR(2000)
 	seller := order - commission
 
 	postings := []struct {
@@ -193,7 +201,7 @@ func TestOrderLifecycleConservesEveryRupiah(t *testing.T) {
 		},
 	}
 
-	balances := map[string]float64{}
+	balances := map[string]domain.IDR{}
 	for _, p := range postings {
 		if err := validateBalanced(p.entries); err != nil {
 			t.Fatalf("%s: journal does not balance: %v", p.name, err)
@@ -203,15 +211,15 @@ func TestOrderLifecycleConservesEveryRupiah(t *testing.T) {
 			if e.Side == LedgerSideCredit {
 				signed = -signed
 			}
-			balances[e.Account] = moneyRound(balances[e.Account] + signed)
+			balances[e.Account] += signed
 		}
 
 		// Checked at every step, not only at the end. A system can reach a correct
 		// total while being wrong in the middle, and money that is wrong
 		// transiently is money a withdrawal can race.
-		var total float64
+		var total domain.IDR
 		for _, v := range balances {
-			total = moneyRound(total + v)
+			total += v
 		}
 		if total != 0 {
 			t.Fatalf("after %s the ledger sums to %v, want 0: %v", p.name, total, balances)
@@ -220,7 +228,7 @@ func TestOrderLifecycleConservesEveryRupiah(t *testing.T) {
 
 	// And the books say what the world says: escrow drained, the seller paid in
 	// cash, the commission still held at the gateway and earned.
-	want := map[string]float64{
+	want := map[string]domain.IDR{
 		AccGatewayClearing:    order,
 		AccBankClearing:       -seller,
 		AccEscrowHeld:         0,
@@ -243,7 +251,7 @@ func TestOrderLifecycleConservesEveryRupiah(t *testing.T) {
 // seller's balance is inflated by Rp1,500 per Rp100,000 of order -- which is
 // money the platform does not have and will discover at payout.
 func TestGatewayFeeIsDeductedFromEscrowAndReconciledAtSettlement(t *testing.T) {
-	order, commission, fee := 100000.0, 2000.0, 1500.0
+	order, commission, fee := domain.IDR(100000), domain.IDR(2000), domain.IDR(1500)
 	seller := order - commission - fee // MDR borne by the seller, as in Indonesia
 
 	postings := []struct {
@@ -274,7 +282,7 @@ func TestGatewayFeeIsDeductedFromEscrowAndReconciledAtSettlement(t *testing.T) {
 		}},
 	}
 
-	balances := map[string]float64{}
+	balances := map[string]domain.IDR{}
 	for _, p := range postings {
 		if err := validateBalanced(p.entries); err != nil {
 			t.Fatalf("%s does not balance: %v", p.name, err)
@@ -284,11 +292,11 @@ func TestGatewayFeeIsDeductedFromEscrowAndReconciledAtSettlement(t *testing.T) {
 			if e.Side == LedgerSideCredit {
 				signed = -signed
 			}
-			balances[e.Account] = moneyRound(balances[e.Account] + signed)
+			balances[e.Account] += signed
 		}
-		var total float64
+		var total domain.IDR
 		for _, v := range balances {
-			total = moneyRound(total + v)
+			total += v
 		}
 		if total != 0 {
 			t.Fatalf("after %s the ledger sums to %v, want 0: %v", p.name, total, balances)
@@ -304,7 +312,7 @@ func TestGatewayFeeIsDeductedFromEscrowAndReconciledAtSettlement(t *testing.T) {
 	// commission, which is the only thing the platform kept. An earlier version
 	// of this expectation was written as -(order-fee)+seller, i.e. negated, and
 	// asserted the platform was out Rp2,000 on an order it had earned Rp2,000 on.
-	want := map[string]float64{
+	want := map[string]domain.IDR{
 		AccGatewayClearing:    0,
 		AccEscrowHeld:         0,
 		AccSellerAvailable:    0,
@@ -345,7 +353,7 @@ func TestCaptureCreditsEscrowBecauseEscrowIsALiability(t *testing.T) {
 	}
 	// Walk it and assert the escrow balance moves in the direction a liability
 	// moves: up, on a credit.
-	escrow := 0.0
+	var escrow domain.IDR
 	for _, e := range capture {
 		if e.Account != AccEscrowHeld {
 			continue
@@ -357,7 +365,7 @@ func TestCaptureCreditsEscrowBecauseEscrowIsALiability(t *testing.T) {
 		}
 	}
 	if escrow != 100000 {
-		t.Errorf("after a capture escrow holds Rp%.0f, want Rp100000 owed", escrow)
+		t.Errorf("after a capture escrow holds Rp%v, want Rp100000 owed", escrow)
 	}
 
 	// And the release must bring it back to zero, or escrow grows without bound
@@ -380,12 +388,12 @@ func TestCaptureCreditsEscrowBecauseEscrowIsALiability(t *testing.T) {
 		escrow -= e.Amount
 	}
 	if escrow != 0 {
-		t.Errorf("after a full lifecycle escrow holds Rp%.0f, want 0", escrow)
+		t.Errorf("after a full lifecycle escrow holds Rp%v, want 0", escrow)
 	}
 }
 
 func TestFullRefundReversesEveryLegOfTheOriginalCharge(t *testing.T) {
-	order, commission := 100000.0, 2000.0
+	order, commission := domain.IDR(100000), domain.IDR(2000)
 	seller := order - commission
 
 	capture := []LedgerEntry{
@@ -418,7 +426,7 @@ func TestFullRefundReversesEveryLegOfTheOriginalCharge(t *testing.T) {
 	}
 
 	// Walk all three, then assert the platform is exactly where it started.
-	balances := map[string]float64{}
+	balances := map[string]domain.IDR{}
 	for _, tc := range []struct {
 		name    string
 		journal []LedgerEntry
@@ -428,11 +436,11 @@ func TestFullRefundReversesEveryLegOfTheOriginalCharge(t *testing.T) {
 			if e.Side == LedgerSideCredit {
 				signed = -signed
 			}
-			balances[e.Account] = moneyRound(balances[e.Account] + signed)
+			balances[e.Account] += signed
 		}
-		var total float64
+		var total domain.IDR
 		for _, v := range balances {
-			total = moneyRound(total + v)
+			total += v
 		}
 		if total != 0 {
 			t.Fatalf("after %s the ledger sums to %v, want 0: %v", tc.name, total, balances)
@@ -472,13 +480,13 @@ func TestValidateBalancedIsExactlyZeroSum(t *testing.T) {
 		for j := 0; j < lines; j++ {
 			entries = append(entries, LedgerEntry{
 				Account: accounts[rng.Intn(len(accounts))],
-				Amount:  float64(1 + rng.Intn(500000)),
+				Amount:  domain.IDR(1 + rng.Intn(500000)),
 				Side:    []string{LedgerSideDebit, LedgerSideCredit}[rng.Intn(2)],
 			})
 		}
 		entries = normaliseEntries(entries)
 
-		var debits, credits float64
+		var debits, credits domain.IDR
 		seen := map[string]bool{}
 		duplicate := false
 		bad := false
@@ -489,9 +497,9 @@ func TestValidateBalancedIsExactlyZeroSum(t *testing.T) {
 			seen[e.Account] = true
 			switch e.Side {
 			case LedgerSideDebit:
-				debits = moneyRound(debits + e.Amount)
+				debits += e.Amount
 			case LedgerSideCredit:
-				credits = moneyRound(credits + e.Amount)
+				credits += e.Amount
 			default:
 				bad = true
 			}

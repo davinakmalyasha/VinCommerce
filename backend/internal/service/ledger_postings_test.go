@@ -27,7 +27,7 @@ import (
 // mutation that rerouted COD from cod_receivable to gateway_clearing passed
 // cleanly: the test asserted its own copy was right while the service was wrong.
 // A test that duplicates the logic it is testing is a test of the duplicate.
-func captureJournal(amount float64, method string) []LedgerEntry {
+func captureJournal(amount domain.IDR, method string) []LedgerEntry {
 	return captureEntries(amount, method)
 }
 
@@ -63,12 +63,12 @@ func TestCODCaptureGoesToTheCourierNotTheGateway(t *testing.T) {
 }
 
 // releaseJournal is the production function.
-func releaseJournal(orderID, sellerID string, gross, sellerNet, fee float64) []LedgerEntry {
+func releaseJournal(orderID, sellerID string, gross, sellerNet, fee domain.IDR) []LedgerEntry {
 	return releaseEntries(sellerID, gross, sellerNet, fee)
 }
 
 func TestReleaseJournalDebitsEscrowForTheGrossNotTheNet(t *testing.T) {
-	gross, fee := 100000.0, 2000.0
+	gross, fee := domain.IDR(100000), domain.IDR(2000)
 	sellerNet := gross - fee
 	j := releaseJournal("o1", "seller-1", gross, sellerNet, fee)
 
@@ -79,12 +79,12 @@ func TestReleaseJournalDebitsEscrowForTheGrossNotTheNet(t *testing.T) {
 	// leaves escrow holding a residual, which reads as "we still owe money we
 	// have already disbursed" -- a permanent phantom liability.
 	if j[0].Account != AccEscrowHeld || j[0].Amount != gross {
-		t.Errorf("escrow leg = %s Rp%.0f, want escrow_held Rp%.0f (the gross)",
+		t.Errorf("escrow leg = %s Rp%v, want escrow_held Rp%v (the gross)",
 			j[0].Account, j[0].Amount, gross)
 	}
 	// And the two credits must sum to the gross, or money is created.
 	if j[1].Amount+j[2].Amount != gross {
-		t.Errorf("credits sum to Rp%.0f, want Rp%.0f", j[1].Amount+j[2].Amount, gross)
+		t.Errorf("credits sum to Rp%v, want Rp%v", j[1].Amount+j[2].Amount, gross)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestSellerPersonalAccountsAreDistinct(t *testing.T) {
 }
 
 // refundJournal is the production function.
-func refundJournal(sellerID string, amount, refundSeller, refundFee float64, wasReleased bool) []LedgerEntry {
+func refundJournal(sellerID string, amount, refundSeller, refundFee domain.IDR, wasReleased bool) []LedgerEntry {
 	return refundEntries(sellerID, amount, refundSeller, refundFee, wasReleased)
 }
 
@@ -125,7 +125,7 @@ func TestRefundBeforeReleaseComesOutOfEscrow(t *testing.T) {
 		t.Fatalf("refund journal does not balance: %v", err)
 	}
 	if j[0].Account != AccEscrowHeld || j[0].Amount != 100000 {
-		t.Errorf("first leg = %s Rp%.0f, want escrow_held Rp100000", j[0].Account, j[0].Amount)
+		t.Errorf("first leg = %s Rp%v, want escrow_held Rp100000", j[0].Account, j[0].Amount)
 	}
 	if j[1].Account != AccGatewayClearing || j[1].Side != LedgerSideCredit {
 		t.Errorf("second leg = %s:%s, want gateway_clearing:credit", j[1].Account, j[1].Side)
@@ -178,16 +178,19 @@ func TestRefundAfterReleaseReversesTheCommissionToo(t *testing.T) {
 func TestRefundReversalLegsSumToTheRefund(t *testing.T) {
 	// The reversal legs must reconstruct the amount exactly. A drift of one sen
 	// per partial refund accumulates permanently, because nothing ever sweeps it.
-	for _, amount := range []float64{100000, 33333, 1, 99999, 123457} {
-		ratio := amount / 100000.0
+	for _, amount := range []domain.IDR{100000, 33333, 1, 99999, 123457} {
+		// The fee leg rounds; the seller leg is the residual, so the two sum
+		// exactly. moneyRound on floats is still the transition arithmetic
+		// until the refund plan itself migrates; the journal takes IDR.
+		ratio := float64(amount) / 100000.0
 		fee := moneyRound(2000 * ratio)
-		seller := moneyRound(amount - fee)
-		if fee+seller != amount {
-			seller = moneyRound(amount - fee)
+		seller := moneyRound(amount.Float() - fee)
+		if fee+seller != amount.Float() {
+			seller = moneyRound(amount.Float() - fee)
 		}
-		j := refundJournal("s1", amount, seller, fee, true)
+		j := refundJournal("s1", amount, domain.IDRFromFloat(seller), domain.IDRFromFloat(fee), true)
 		if err := validateBalanced(j); err != nil {
-			t.Errorf("refund of Rp%.0f does not balance: %v", amount, err)
+			t.Errorf("refund of Rp%v does not balance: %v", amount, err)
 		}
 	}
 }
@@ -196,9 +199,11 @@ func TestRefundReversalLegsSumToTheRefund(t *testing.T) {
 // the platform holding exactly its commission.
 func TestLifecycleOfPostedJournalsLeavesEscrowAtZero(t *testing.T) {
 	const (
-		gross  = 100000.0
-		fee    = 2000.0
 		seller = "seller-1"
+	)
+	const (
+		gross domain.IDR = 100000
+		fee   domain.IDR = 2000
 	)
 	net := gross - fee
 
@@ -209,7 +214,7 @@ func TestLifecycleOfPostedJournalsLeavesEscrowAtZero(t *testing.T) {
 		refundJournal(seller, gross, net, fee, true),
 	}
 
-	balances := map[string]float64{}
+	balances := map[string]domain.IDR{}
 	for i, j := range postings {
 		if err := validateBalanced(j); err != nil {
 			t.Fatalf("posting %d does not balance: %v", i, err)
@@ -219,21 +224,21 @@ func TestLifecycleOfPostedJournalsLeavesEscrowAtZero(t *testing.T) {
 			if e.Side == LedgerSideCredit {
 				signed = -signed
 			}
-			balances[e.Account] = moneyRound(balances[e.Account] + signed)
+			balances[e.Account] += signed
 		}
-		var total float64
+		var total domain.IDR
 		for _, v := range balances {
-			total = moneyRound(total + v)
+			total += v
 		}
 		if total != 0 {
-			t.Fatalf("after posting %d the ledger sums to Rp%.0f, want 0: %v", i, total, balances)
+			t.Fatalf("after posting %d the ledger sums to Rp%v, want 0: %v", i, total, balances)
 		}
 	}
 
 	// A fully refunded order leaves nothing behind.
 	for account, got := range balances {
 		if got != 0 {
-			t.Errorf("balance(%s) = Rp%.0f after capture+release+refund, want 0", account, got)
+			t.Errorf("balance(%s) = Rp%v after capture+release+refund, want 0", account, got)
 		}
 	}
 }
@@ -333,7 +338,7 @@ func TestFailedPayoutIsTheExactMirrorOfTheRequest(t *testing.T) {
 			continue
 		}
 		if r.Amount != f.Amount {
-			t.Errorf("%s: request Rp%.0f, failure Rp%.0f", account, r.Amount, f.Amount)
+			t.Errorf("%s: request Rp%v, failure Rp%v", account, r.Amount, f.Amount)
 		}
 		if r.Side == f.Side {
 			t.Errorf("%s: both request and failure are on the %s side; the reversal "+
@@ -349,54 +354,52 @@ func TestFailedPayoutIsTheExactMirrorOfTheRequest(t *testing.T) {
 // Both were previously invisible: the wallet moved with no journal, so the
 // reconciliation job had nothing to compare and reported nothing.
 func TestPayoutLifecycleConservesTheAmount(t *testing.T) {
-	const (
-		amount = 98000.0
-		seller = "seller-1"
-	)
-	apply := func(bal map[string]float64, j []LedgerEntry) {
+	const seller = "seller-1"
+	const amount domain.IDR = 98000
+	apply := func(bal map[string]domain.IDR, j []LedgerEntry) {
 		for _, e := range j {
 			s := e.Amount
 			if e.Side == LedgerSideCredit {
 				s = -s
 			}
-			bal[e.Account] = moneyRound(bal[e.Account] + s)
+			bal[e.Account] += s
 		}
 	}
-	total := func(bal map[string]float64) float64 {
-		var t float64
+	total := func(bal map[string]domain.IDR) domain.IDR {
+		var t domain.IDR
 		for _, v := range bal {
-			t = moneyRound(t + v)
+			t += v
 		}
 		return t
 	}
 
 	// Requested then settled: the money ends up in the bank and nowhere else.
-	bal := map[string]float64{}
+	bal := map[string]domain.IDR{}
 	apply(bal, payoutRequestedEntries(seller, amount))
 	if got := bal[AccSellerPending]; got != -amount {
-		t.Errorf("after a request the pipeline holds Rp%.0f, want Rp%.0f", got, -amount)
+		t.Errorf("after a request the pipeline holds Rp%v, want Rp%v", got, -amount)
 	}
 	if total(bal) != 0 {
-		t.Errorf("mid-lifecycle the ledger sums to Rp%.0f, want 0", total(bal))
+		t.Errorf("mid-lifecycle the ledger sums to Rp%v, want 0", total(bal))
 	}
 	apply(bal, payoutSettledEntries(seller, amount))
 	if bal[AccSellerPending] != 0 {
-		t.Errorf("the pipeline still holds Rp%.0f after settlement", bal[AccSellerPending])
+		t.Errorf("the pipeline still holds Rp%v after settlement", bal[AccSellerPending])
 	}
 	if bal[AccBankClearing] != -amount {
-		t.Errorf("the bank holds Rp%.0f, want Rp%.0f", bal[AccBankClearing], -amount)
+		t.Errorf("the bank holds Rp%v, want Rp%v", bal[AccBankClearing], -amount)
 	}
 	if total(bal) != 0 {
-		t.Errorf("the ledger sums to Rp%.0f after settlement, want 0", total(bal))
+		t.Errorf("the ledger sums to Rp%v after settlement, want 0", total(bal))
 	}
 
 	// Requested then failed: everything returns to the starting position.
-	bal = map[string]float64{}
+	bal = map[string]domain.IDR{}
 	apply(bal, payoutRequestedEntries(seller, amount))
 	apply(bal, payoutFailedEntries(seller, amount))
 	for account, got := range bal {
 		if got != 0 {
-			t.Errorf("balance(%s) = Rp%.0f after a failed payout, want 0", account, got)
+			t.Errorf("balance(%s) = Rp%v after a failed payout, want 0", account, got)
 		}
 	}
 }
@@ -414,14 +417,14 @@ func TestPayoutReservationPreventsAConcurrentClawback(t *testing.T) {
 	// with a credit normal side, so a debit REDUCES the balance they are owed --
 	// reading it debit-positive would say the seller gained Rp98,000 by asking to
 	// be paid, which is the opposite of what happened.
-	amount := 98000.0
+	amount := domain.IDR(98000)
 	sellerAccount := PersonalAccount("seller-1")
 
 	// The seller starts owed Rp98,000 -- a released escrow balance. Reading the
 	// test as starting from zero was itself a bug: a debit reducing a liability
 	// from 98,000 to 0 is correct, and "from 0 to -98,000" would be a seller who
 	// owes the platform money, which is a different and much worse scenario.
-	bal := map[string]float64{sellerAccount: amount}
+	bal := map[string]domain.IDR{sellerAccount: amount}
 
 	for _, e := range payoutRequestedEntries("seller-1", amount) {
 		// Liabilities increase on credit; assets increase on debit.
@@ -433,14 +436,14 @@ func TestPayoutReservationPreventsAConcurrentClawback(t *testing.T) {
 		if e.Side != normal {
 			s = -s
 		}
-		bal[e.Account] = moneyRound(bal[e.Account] + s)
+		bal[e.Account] += s
 	}
 	if got := bal[sellerAccount]; got != 0 {
-		t.Errorf("the seller is still owed Rp%.0f after requesting the whole balance; "+
+		t.Errorf("the seller is still owed Rp%v after requesting the whole balance; "+
 			"the money is in the pipeline, not available", got)
 	}
 	if got := bal[AccSellerPending]; got != amount {
-		t.Errorf("the pipeline holds Rp%.0f, want Rp%.0f owed and scheduled", got, amount)
+		t.Errorf("the pipeline holds Rp%v, want Rp%v owed and scheduled", got, amount)
 	}
 }
 
@@ -462,7 +465,7 @@ func TestRefundIdempotencyKeyUsesTheCumulativeTotal(t *testing.T) {
 }
 
 // topUpJournal is the production function.
-func topUpJournal(userID string, amount float64) []LedgerEntry {
+func topUpJournal(userID string, amount domain.IDR) []LedgerEntry {
 	return topUpEntries(userID, amount)
 }
 

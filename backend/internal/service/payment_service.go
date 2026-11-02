@@ -237,7 +237,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			RefType:        "order",
 			RefID:          order.ID,
 			Note:           "wallet balance payment",
-			Entries: withMeta(walletPaymentEntries(order.BuyerID, order.TotalAmount), map[string]any{
+			Entries: withMeta(walletPaymentEntries(order.BuyerID, domain.IDRFromFloat(order.TotalAmount)), map[string]any{
 				"order_id": order.ID,
 				"method":   "wallet",
 			}),
@@ -413,7 +413,7 @@ func (s *PaymentService) captureIntentOnly(ctx context.Context, intent *domain.P
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "COD collected on delivery; funds held in escrow",
-		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
 			"order_id": intent.OrderID, "method": intent.Method,
 		}),
 	}); err != nil {
@@ -810,7 +810,7 @@ func (s *PaymentService) onPaid(ctx context.Context, intent *domain.PaymentInten
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "payment captured; funds held in escrow",
-		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
 			"order_id": intent.OrderID, "method": intent.Method,
 		}),
 	})
@@ -945,7 +945,7 @@ func (s *PaymentService) RecordExternalCapture(
 		RefType:        "payment_intent",
 		RefID:          intent.ID,
 		Note:           "off-platform payment asserted by the buyer; funds assumed held in escrow",
-		Entries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{
+		Entries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{
 			"order_id": order.ID, "method": intent.Method, "reference": reference,
 		}),
 	})
@@ -1072,7 +1072,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 		RefType:        "order",
 		RefID:          orderID,
 		Note:           fmt.Sprintf("escrow released; platform commission Rp %.0f", fee),
-		Entries: withMeta(releaseEntries(order.SellerID, intent.Amount, sellerAmount, fee), map[string]any{
+		Entries: withMeta(releaseEntries(order.SellerID, domain.IDRFromFloat(intent.Amount), domain.IDRFromFloat(sellerAmount), domain.IDRFromFloat(fee)), map[string]any{
 			"order_id": orderID, "seller_id": order.SellerID,
 			"gross": intent.Amount, "fee": fee, "seller_net": sellerAmount,
 		}),
@@ -1637,7 +1637,7 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 		RefType:        "payout",
 		RefID:          payout.ID,
 		Note:           "payout requested; balance moved to the payout pipeline",
-		Entries: withMeta(payoutRequestedEntries(userID, amount), map[string]any{
+		Entries: withMeta(payoutRequestedEntries(userID, payout.Amount), map[string]any{
 			"payout_id": payout.ID, "seller_id": userID, "amount": amount,
 		}),
 	})
@@ -1705,7 +1705,7 @@ func (s *PaymentService) postPayoutSettled(ctx context.Context, payoutID, ref st
 		RefType:        "payout",
 		RefID:          payoutID,
 		Note:           "payout transferred: " + ref,
-		Entries: withMeta(payoutSettledEntries(p.WalletID, p.Amount.Float()), map[string]any{
+		Entries: withMeta(payoutSettledEntries(p.WalletID, p.Amount), map[string]any{
 			"payout_id": payoutID, "seller_id": p.WalletID, "transfer_ref": ref,
 		}),
 	})
@@ -1743,7 +1743,7 @@ func (s *PaymentService) failPayout(ctx context.Context, payoutID string) error 
 		RefType:        "payout",
 		RefID:          payoutID,
 		Note:           "payout failed; balance returned to the seller",
-		Entries: withMeta(payoutFailedEntries(p.WalletID, p.Amount.Float()), map[string]any{
+		Entries: withMeta(payoutFailedEntries(p.WalletID, p.Amount), map[string]any{
 			"payout_id": payoutID, "seller_id": p.WalletID,
 		}),
 	})
@@ -1859,7 +1859,7 @@ func (s *PaymentService) releaseOneReservation(ctx context.Context, res *reposit
 		RefType:        "order",
 		RefID:          res.OrderID,
 		Note:           "seller hold released: " + res.Kind,
-		Entries: withMeta(sellerHoldReleaseEntries(res.SellerID, res.Amount),
+		Entries: withMeta(sellerHoldReleaseEntries(res.SellerID, domain.IDRFromFloat(res.Amount)),
 			holdMeta(res.SellerID, res.OrderID, res.Kind, res.Amount)),
 	}); err != nil {
 		return err
@@ -2009,7 +2009,7 @@ func (s *PaymentService) holdSellerFundsTx(
 		RefType:        "order",
 		RefID:          orderID,
 		Note:           note,
-		Entries: withMeta(sellerHoldEntries(sellerID, amount),
+		Entries: withMeta(sellerHoldEntries(sellerID, domain.IDRFromFloat(amount)),
 			holdMeta(sellerID, orderID, kind, amount)),
 	}); err != nil {
 		return err

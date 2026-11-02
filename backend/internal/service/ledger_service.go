@@ -150,14 +150,17 @@ const (
 // whole structure is built on.
 type LedgerEntry = domain.LedgerEntry
 
-// Debit builds a debit entry, rounded to whole rupiah.
-func Debit(account string, amount float64) LedgerEntry {
-	return LedgerEntry{Account: account, Amount: moneyRound(amount), Side: LedgerSideDebit}
+// Debit builds a debit entry. No rounding: the type cannot carry a fraction,
+// so there is nothing to round. A fractional input is a compile error, which
+// is the entire point -- the old version rounded here, which meant every
+// caller could pass sen and the rounding hid it.
+func Debit(account string, amount domain.IDR) LedgerEntry {
+	return LedgerEntry{Account: account, Amount: amount, Side: LedgerSideDebit}
 }
 
-// Credit builds a credit entry, rounded to whole rupiah.
-func Credit(account string, amount float64) LedgerEntry {
-	return LedgerEntry{Account: account, Amount: moneyRound(amount), Side: LedgerSideCredit}
+// Credit builds a credit entry. See Debit for why there is no rounding.
+func Credit(account string, amount domain.IDR) LedgerEntry {
+	return LedgerEntry{Account: account, Amount: amount, Side: LedgerSideCredit}
 }
 
 // WithMetadata returns a copy of the entry with metadata attached.
@@ -252,11 +255,13 @@ func (s *LedgerService) Post(ctx context.Context, q repository.Querier, spec Jou
 		spec.RefType, spec.RefID, spec.Note, spec.EffectiveAt, spec.ReversalOf, entries)
 }
 
-// normaliseEntries rounds to whole rupiah and drops zero-amount lines.
+// normaliseEntries drops zero-amount lines.
 //
 // Zero is dropped because `CHECK (amount > 0)` rejects it, and a caller
-// computing a split where one leg rounds to zero should not have to special-case
-// it at six call sites.
+// computing a split where one leg is zero should not have to special-case
+// it at six call sites. There is deliberately no rounding step anymore: with
+// IDR amounts there is nothing to round, and the old moneyRound call was the
+// last place a fraction could be silently absorbed.
 //
 // Negative is NOT dropped: a negative debit is a different statement from an
 // absent one, and discarding it would turn a sign error into a missing entry --
@@ -264,7 +269,6 @@ func (s *LedgerService) Post(ctx context.Context, q repository.Querier, spec Jou
 func normaliseEntries(in []LedgerEntry) []LedgerEntry {
 	out := make([]LedgerEntry, 0, len(in))
 	for _, e := range in {
-		e.Amount = moneyRound(e.Amount)
 		if e.Amount == 0 {
 			continue
 		}
@@ -280,7 +284,11 @@ func normaliseEntries(in []LedgerEntry) []LedgerEntry {
 // different orders would produce two different messages for one problem, which
 // is a genuinely unpleasant thing to debug at 3am.
 func validateBalanced(entries []LedgerEntry) error {
-	var debits, credits float64
+	// Integer sums, compared exactly. The old version rounded running float
+	// totals and compared with ==, which is exactness balanced on top of
+	// rounding: correct only because every input had already been rounded.
+	// With IDR the sums are exact by construction.
+	var debits, credits domain.IDR
 	seen := map[string]bool{}
 	for _, e := range entries {
 		if strings.TrimSpace(e.Account) == "" {
@@ -297,9 +305,9 @@ func validateBalanced(entries []LedgerEntry) error {
 		seen[e.Account] = true
 		switch e.Side {
 		case LedgerSideDebit:
-			debits = moneyRound(debits + e.Amount)
+			debits += e.Amount
 		case LedgerSideCredit:
-			credits = moneyRound(credits + e.Amount)
+			credits += e.Amount
 		default:
 			return domain.E(domain.KindInvalid, "BAD_SIDE",
 				fmt.Sprintf("entry for %q has side %q, want debit or credit", e.Account, e.Side))
@@ -312,7 +320,7 @@ func validateBalanced(entries []LedgerEntry) error {
 		}
 		sort.Strings(codes)
 		return domain.E(domain.KindInvalid, "UNBALANCED_JOURNAL",
-			fmt.Sprintf("debits Rp%.0f != credits Rp%.0f in [%s]",
+			fmt.Sprintf("debits Rp%s != credits Rp%s in [%s]",
 				debits, credits, strings.Join(codes, " ")))
 	}
 	return nil

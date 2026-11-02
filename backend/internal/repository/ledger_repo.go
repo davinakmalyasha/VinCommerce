@@ -194,7 +194,7 @@ func (r *LedgerRepository) PostJournal(
 		if _, err := q.Exec(ctx, `
 			INSERT INTO ledger_entries (journal_id, account_code, amount, side, metadata)
 			VALUES ($1, $2, $3, $4, $5)`,
-			journalID, e.Account, e.Amount, e.Side, raw); err != nil {
+			journalID, e.Account, int64(e.Amount), e.Side, raw); err != nil {
 			return nil, err
 		}
 	}

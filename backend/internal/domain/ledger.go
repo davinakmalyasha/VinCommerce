@@ -11,7 +11,7 @@ import "time"
 // which inverts the dependency direction the whole layering is built on.
 type LedgerEntry struct {
 	Account  string
-	Amount   float64
+	Amount   IDR
 	Side     string // "debit" or "credit"
 	Metadata map[string]any
 }

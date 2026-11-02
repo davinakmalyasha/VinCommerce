@@ -37,7 +37,7 @@ import (
 // Extracted so the test asserts the SAME logic the service runs. A test with its
 // own copy of the mapping passes while the service is wrong, which is precisely
 // how a mutation that reroutes COD survived the first version of this file.
-func captureEntries(amount float64, method string) []LedgerEntry {
+func captureEntries(amount domain.IDR, method string) []LedgerEntry {
 	clearing := AccGatewayClearing
 	if method == domain.MethodCOD {
 		clearing = AccCodReceivable
@@ -180,7 +180,7 @@ func withMeta(entries []LedgerEntry, meta map[string]any) []LedgerEntry {
 //
 // Extracted for the same reason as captureEntries: so the test exercises the code
 // the service runs.
-func releaseEntries(sellerID string, gross, sellerNet, fee float64) []LedgerEntry {
+func releaseEntries(sellerID string, gross, sellerNet, fee domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(AccEscrowHeld, gross),
 		Credit(PersonalAccount(sellerID), sellerNet),
@@ -202,7 +202,7 @@ func releaseEntries(sellerID string, gross, sellerNet, fee float64) []LedgerEntr
 // after a release, when escrow is zero, gives a negative escrow balance that reads
 // as a receivable from nobody -- and the journal still balances. Reversing only
 // the seller's leg leaves the platform its commission on a sale it refunded.
-func refundEntries(sellerID string, amount, refundSeller, refundFee float64, wasReleased bool) []LedgerEntry {
+func refundEntries(sellerID string, amount, refundSeller, refundFee domain.IDR, wasReleased bool) []LedgerEntry {
 	var entries []LedgerEntry
 	if wasReleased {
 		if refundSeller > 0 {
@@ -232,7 +232,7 @@ func refundEntries(sellerID string, amount, refundSeller, refundFee float64, was
 // the seller can spend and a credit of what they cannot; the release is the exact
 // mirror. An asset/liability pair would have needed the signs worked out, and a
 // sign error here would post cleanly and mean the opposite of the truth.
-func sellerHoldEntries(sellerID string, amount float64) []LedgerEntry {
+func sellerHoldEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(PersonalAccount(sellerID), amount),
 		Credit(SellerHeldAccount(sellerID), amount),
@@ -245,7 +245,7 @@ func sellerHoldEntries(sellerID string, amount float64) []LedgerEntry {
 // so the two journals read as the same event in opposite directions and a reader
 // can check them against each other. `Post` is idempotent on its key, so a
 // repeated release returns the original rather than moving the money twice.
-func sellerHoldReleaseEntries(sellerID string, amount float64) []LedgerEntry {
+func sellerHoldReleaseEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(SellerHeldAccount(sellerID), amount),
 		Credit(PersonalAccount(sellerID), amount),
@@ -262,7 +262,7 @@ func sellerHoldReleaseEntries(sellerID string, amount float64) []LedgerEntry {
 // seller and is now owed to them specifically. Putting it back in escrow would
 // make "money we are holding for the marketplace" include a withdrawal already
 // queued, which is the number an operator reads when asking what is at risk.
-func payoutRequestedEntries(sellerID string, amount float64) []LedgerEntry {
+func payoutRequestedEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(PersonalAccount(sellerID), amount),
 		Credit(AccSellerPending, amount),
@@ -274,7 +274,7 @@ func payoutRequestedEntries(sellerID string, amount float64) []LedgerEntry {
 // Debit seller_pending, credit bank_clearing. This is the moment the money
 // genuinely leaves: a liability we owed becomes cash in the platform's own
 // account, and the pipeline empties.
-func payoutSettledEntries(sellerID string, amount float64) []LedgerEntry {
+func payoutSettledEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(AccSellerPending, amount),
 		Credit(AccBankClearing, amount),
@@ -287,7 +287,7 @@ func payoutSettledEntries(sellerID string, amount float64) []LedgerEntry {
 //
 // A reversal rather than a new unrelated posting, so the two journals read as
 // halves of one story when an operator reads the trial balance for a seller.
-func payoutFailedEntries(sellerID string, amount float64) []LedgerEntry {
+func payoutFailedEntries(sellerID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(AccSellerPending, amount),
 		Credit(PersonalAccount(sellerID), amount),
@@ -349,8 +349,8 @@ func (s *PaymentService) postRefundJournal(
 			RefID:          order.ID,
 			Note:           "refund written off: " + reason,
 			Entries: withMeta([]LedgerEntry{
-				Debit(AccRefundWriteoff, plan.Amount),
-				Credit(AccGatewayClearing, plan.Amount),
+				Debit(AccRefundWriteoff, domain.IDRFromFloat(plan.Amount)),
+				Credit(AccGatewayClearing, domain.IDRFromFloat(plan.Amount)),
 			}, map[string]any{
 				"order_id": order.ID, "reason": reason, "written_off": true,
 			}),
@@ -362,7 +362,7 @@ func (s *PaymentService) postRefundJournal(
 	// refundEntries debits it by the refund amount, which is that remaining
 	// balance. So the not-released branch leaves escrow back at zero rather than
 	// carrying a residual.
-	entries := refundEntries(order.SellerID, plan.Amount, plan.RefundSeller, plan.RefundFee, plan.WasReleased)
+	entries := refundEntries(order.SellerID, domain.IDRFromFloat(plan.Amount), domain.IDRFromFloat(plan.RefundSeller), domain.IDRFromFloat(plan.RefundFee), plan.WasReleased)
 
 	s.postLedger(ctx, q, JournalSpec{
 		IdempotencyKey: refundKey(intent.ID, plan.Remaining, plan.Amount),
@@ -388,7 +388,7 @@ func (s *PaymentService) postRefundJournal(
 // system had no such posting because there was no top-up at all: wallet balance
 // could only appear from a refund, which moved money OUT of escrow rather than
 // in from outside.
-func topUpEntries(userID string, amount float64) []LedgerEntry {
+func topUpEntries(userID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(AccGatewayClearing, amount),
 		Credit(WalletAccount(userID), amount),
@@ -403,7 +403,7 @@ func topUpEntries(userID string, amount float64) []LedgerEntry {
 // went. Debiting user_wallet and crediting escrow_held is the same event the
 // capture journal records for a gateway payment -- the money simply came from
 // the buyer's stored value instead of a card.
-func walletPaymentEntries(userID string, amount float64) []LedgerEntry {
+func walletPaymentEntries(userID string, amount domain.IDR) []LedgerEntry {
 	return []LedgerEntry{
 		Debit(WalletAccount(userID), amount),
 		Credit(AccEscrowHeld, amount),
