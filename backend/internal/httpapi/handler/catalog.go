@@ -294,6 +294,51 @@ func (h *Product) ToggleReviewHelpful(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"helpful": helpful, "helpful_count": count})
 }
 
+// MyReviews handles GET /reviews/mine — the caller's own reviews, any status.
+func (h *Product) MyReviews(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	reviews, err := h.svc.MyReviews(r.Context(), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reviews": reviews})
+}
+
+// UpdateReview handles PUT /reviews/{id} — a buyer edits their own review.
+// The review returns to pending moderation; see UpdateOwnReview.
+func (h *Product) UpdateReview(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		Rating  int      `json:"rating"`
+		Title   string   `json:"title,omitempty"`
+		Content string   `json:"content"`
+		Images  []string `json:"images,omitempty"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.EditOwnReview(r.Context(), service.EditOwnReviewInput{
+		ReviewID: chi.URLParam(r, "id"), UserID: user.ID,
+		Rating: req.Rating, Title: req.Title, Content: req.Content, Images: req.Images,
+	}); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+// DeleteReview handles DELETE /reviews/{id} — a buyer removes their own review.
+func (h *Product) DeleteReview(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if err := h.svc.DeleteOwnReview(r.Context(), chi.URLParam(r, "id"), user.ID); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
 // ReportProduct handles POST /products/{id}/report (buyer).
 func (h *Product) ReportProduct(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())

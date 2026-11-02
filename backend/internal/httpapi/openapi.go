@@ -177,6 +177,11 @@ func BuildOpenAPI(baseURL string) *OpenAPIDocument {
 		[]OpenAPIParameter{strParam("id", "path", "product id", true)}, jsonResp("Reviews"))
 	add("/products/{id}/reviews", "post", "Catalog", "Submit a review", true,
 		[]OpenAPIParameter{strParam("id", "path", "product id", true)}, jsonResp("Review"))
+	add("/products/reviews/mine", "get", "Catalog", "My reviews, any status", true, nil, jsonResp("Reviews"))
+	add("/products/reviews/{id}", "put", "Catalog", "Edit my review (returns to moderation)", true,
+		[]OpenAPIParameter{strParam("id", "path", "review id", true)}, jsonResp("Ok"))
+	add("/products/reviews/{id}", "delete", "Catalog", "Delete my review", true,
+		[]OpenAPIParameter{strParam("id", "path", "review id", true)}, jsonResp("Ok"))
 	add("/products/{id}/view", "post", "Catalog", "Analytics view beacon (optional auth)", false,
 		[]OpenAPIParameter{strParam("id", "path", "product id", true)}, jsonResp("Ok"))
 	add("/products/{id}/report", "post", "Catalog", "Report a product for moderation", true,

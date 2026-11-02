@@ -45,6 +45,7 @@ export function AccountPage() {
         {[
           { to: '/wallet', label: '💰 Dompet Saya' },
           { to: '/returns', label: '↩️ Retur Saya' },
+          { to: '/reviews', label: '⭐ Ulasan Saya' },
           { to: '/vouchers', label: '🎟️ Voucher Saya' },
           { to: '/notifications', label: '🔔 Notifikasi' },
         ].map((l) => (

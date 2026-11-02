@@ -210,6 +210,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/{id}/photos", product.CustomerPhotos)
 			r.With(authMw).Post("/{id}/reviews", product.CreateReview)
 			r.With(authMw).Post("/reviews/{id}/helpful", product.ToggleReviewHelpful)
+			// Static before param: /reviews/mine must not be swallowed by /{id}.
+			r.With(authMw).Get("/reviews/mine", product.MyReviews)
+			r.With(authMw).Put("/reviews/{id}", product.UpdateReview)
+			r.With(authMw).Delete("/reviews/{id}", product.DeleteReview)
 			r.With(optionalAuthMw, rateLimiter.Limit(60, time.Minute, userKey)).
 				Post("/{id}/view", analyticsH.View)
 			r.With(authMw).Post("/{id}/report", product.ReportProduct)

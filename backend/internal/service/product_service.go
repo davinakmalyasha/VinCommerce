@@ -191,6 +191,39 @@ func (s *ProductService) ToggleReviewHelpful(ctx context.Context, reviewID, user
 	return s.reviews.ToggleHelpful(ctx, reviewID, userID)
 }
 
+// EditOwnReviewInput is a buyer's correction to their own review.
+type EditOwnReviewInput struct {
+	ReviewID string
+	UserID   string
+	Rating   int
+	Title    string
+	Content  string
+	Images   []string
+}
+
+// EditOwnReview updates a buyer's own review. Same validation as create: the
+// edit path must not accept what the create path refuses.
+func (s *ProductService) EditOwnReview(ctx context.Context, in EditOwnReviewInput) error {
+	if in.Rating < 1 || in.Rating > 5 {
+		return domain.E(domain.KindInvalid, "INVALID_RATING", "rating must be between 1 and 5")
+	}
+	if strings.TrimSpace(in.Content) == "" && strings.TrimSpace(in.Title) == "" {
+		return domain.E(domain.KindInvalid, "EMPTY_REVIEW", "review text is required")
+	}
+	return s.reviews.UpdateOwnReview(ctx, in.ReviewID, in.UserID, in.Rating,
+		strings.TrimSpace(in.Title), strings.TrimSpace(in.Content), in.Images)
+}
+
+// DeleteOwnReview removes a buyer's own review.
+func (s *ProductService) DeleteOwnReview(ctx context.Context, reviewID, userID string) error {
+	return s.reviews.DeleteOwnReview(ctx, reviewID, userID)
+}
+
+// MyReviews lists the caller's own reviews.
+func (s *ProductService) MyReviews(ctx context.Context, userID string) ([]*repository.OwnReview, error) {
+	return s.reviews.ListByUser(ctx, userID, 50)
+}
+
 // PendingReviews lists reviews awaiting moderation (admin).
 func (s *ProductService) PendingReviews(ctx context.Context, limit int) ([]*domain.ProductReview, error) {
 	return s.reviews.Pending(ctx, limit)

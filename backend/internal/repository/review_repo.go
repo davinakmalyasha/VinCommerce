@@ -59,6 +59,93 @@ func (r *ReviewRepository) Reply(ctx context.Context, reviewID, userID, content 
 	return err
 }
 
+// UpdateOwnReview edits a buyer's own review and returns it to moderation.
+//
+// The row guard (`AND user_id = $2`) is the ownership check: zero rows means
+// "no such review belonging to you", deliberately the same answer for a
+// missing id and somebody else's, so the endpoint is not an ownership oracle.
+//
+// An edit resets status to `pending`. Approved content swapped without review
+// would bypass the moderation the create path enforces, and the rating trigger
+// recomputes the product aggregates from the status change.
+func (r *ReviewRepository) UpdateOwnReview(ctx context.Context, reviewID, userID string, rating int, title, content string, images []string) error {
+	if images == nil {
+		images = []string{}
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE product_reviews
+		   SET rating = $3, title = NULLIF($4, ''), content = $5, images = $6,
+		       status = 'pending', updated_at = now()
+		 WHERE id = $1 AND user_id = $2`, reviewID, userID, rating, title, content, images)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// DeleteOwnReview removes a buyer's own review. Replies and helpful votes go
+// with it (both are ON DELETE CASCADE) and the rating trigger recomputes the
+// product aggregates. Same non-oracle guard as UpdateOwnReview.
+func (r *ReviewRepository) DeleteOwnReview(ctx context.Context, reviewID, userID string) error {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM product_reviews WHERE id = $1 AND user_id = $2`, reviewID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// OwnReview is one of the caller's reviews with its product and seller reply.
+type OwnReview struct {
+	domain.ProductReview
+	ProductName string `json:"product_name"`
+}
+
+// ListByUser lists the caller's own reviews, newest first, any status: an
+// edited review returns to `pending` and must still be visible to its author.
+func (r *ReviewRepository) ListByUser(ctx context.Context, userID string, limit int) ([]*OwnReview, error) {
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT r.id, r.product_id, r.user_id, r.order_item_id, r.rating, COALESCE(r.title,''), r.content,
+		       r.images, r.status, r.helpful_count, r.created_at,
+		       u.full_name, p.name, COALESCE(rr.content, '')
+		FROM product_reviews r
+		JOIN users u ON u.id = r.user_id
+		JOIN products p ON p.id = r.product_id
+		LEFT JOIN review_replies rr ON rr.review_id = r.id
+		WHERE r.user_id = $1
+		ORDER BY r.created_at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*OwnReview{}
+	for rows.Next() {
+		var rev OwnReview
+		var images []byte
+		if err := rows.Scan(&rev.ID, &rev.ProductID, &rev.UserID, &rev.OrderItemID, &rev.Rating,
+			&rev.Title, &rev.Content, &images, &rev.Status, &rev.HelpfulCount, &rev.CreatedAt,
+			&rev.UserName, &rev.ProductName, &rev.Reply); err != nil {
+			return nil, err
+		}
+		if len(images) > 0 {
+			_ = json.Unmarshal(images, &rev.Images)
+		}
+		out = append(out, &rev)
+	}
+	return out, rows.Err()
+}
+
 // RatingDistribution returns the star histogram for approved reviews.
 func (r *ReviewRepository) RatingDistribution(ctx context.Context, productID string) ([]*domain.RatingCount, error) {
 	rows, err := r.pool.Query(ctx, `

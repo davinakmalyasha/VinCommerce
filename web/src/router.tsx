@@ -88,6 +88,7 @@ const FollowedStoresPage = lazyOf(() => import('./pages/FollowedStoresPage'), 'F
 const VerifyEmailPage = lazyOf(() => import('./pages/VerifyEmailPage'), 'VerifyEmailPage')
 const ResetPasswordPage = lazyOf(() => import('./pages/ResetPasswordPage'), 'ResetPasswordPage')
 const MyReturnsPage = lazyOf(() => import('./pages/MyReturnsPage'), 'MyReturnsPage')
+const MyReviewsPage = lazyOf(() => import('./pages/MyReviewsPage'), 'MyReviewsPage')
 const WalletPage = lazyOf(() => import('./pages/WalletPage'), 'WalletPage')
 const DiscoverFeedPage = lazyOf(() => import('./pages/DiscoverFeedPage'), 'DiscoverFeedPage')
 const InviteLandingPage = lazyOf(() => import('./pages/InviteLandingPage'), 'InviteLandingPage')
@@ -140,6 +141,7 @@ export const router = createBrowserRouter([
       { path: 'wishlist', element: route(<WishlistPage />, 'Favorit') },
       { path: 'wallet', element: route(<WalletPage />, 'Dompet') },
       { path: 'returns', element: route(<MyReturnsPage />, 'Retur') },
+      { path: 'reviews', element: route(<MyReviewsPage />, 'Ulasan saya') },
       { path: 'followed-stores', element: route(<FollowedStoresPage />, 'Toko diikuti') },
       { path: 'notifications', element: route(<NotificationsPage />, 'Notifikasi') },
       { path: 'flash-sales', element: route(<FlashSalePage />, 'Flash sale') },
