@@ -45,6 +45,11 @@ func TestBuyerCanEditAndDeleteOnlyTheirOwnReview(t *testing.T) {
 	})
 
 	reviews := repository.NewReviewRepository(pool)
+	svc := NewProductService(
+		repository.NewProductRepository(pool),
+		reviews,
+		repository.NewOrderRepository(pool),
+	)
 
 	// A stranger's edit and delete both fail, and the row survives both.
 	if err := reviews.UpdateOwnReview(ctx, reviewID, strangerID, 1, "", "vandalised", nil); err == nil {
@@ -63,16 +68,23 @@ func TestBuyerCanEditAndDeleteOnlyTheirOwnReview(t *testing.T) {
 	}
 
 	// Invalid edits fail even for the owner: the edit path must not accept
-	// what the create path refuses.
-	if err := reviews.UpdateOwnReview(ctx, reviewID, buyerID, 0, "", "bad rating", nil); err == nil {
+	// what the create path refuses. Validation lives in the service, not the
+	// row guard, so these go through EditOwnReview.
+	if err := svc.EditOwnReview(ctx, EditOwnReviewInput{
+		ReviewID: reviewID, UserID: buyerID, Rating: 0, Content: "bad rating",
+	}); err == nil {
 		t.Fatal("an invalid rating was accepted on edit")
 	}
-	if err := reviews.UpdateOwnReview(ctx, reviewID, buyerID, 4, "", "   ", nil); err == nil {
+	if err := svc.EditOwnReview(ctx, EditOwnReviewInput{
+		ReviewID: reviewID, UserID: buyerID, Rating: 4, Title: "", Content: "   ",
+	}); err == nil {
 		t.Fatal("empty text was accepted on edit")
 	}
 
 	// The owner's edit lands and returns the review to pending moderation.
-	if err := reviews.UpdateOwnReview(ctx, reviewID, buyerID, 4, "integration", "corrected content", nil); err != nil {
+	if err := svc.EditOwnReview(ctx, EditOwnReviewInput{
+		ReviewID: reviewID, UserID: buyerID, Rating: 4, Title: "integration", Content: "corrected content",
+	}); err != nil {
 		t.Fatalf("owner edit: %v", err)
 	}
 	var status string
