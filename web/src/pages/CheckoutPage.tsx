@@ -209,7 +209,7 @@ export function CheckoutPage() {
   if (paidOrder) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-16">
-        <div className="bg-white border border-gray-200 rounded-2xl p-8">
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-8">
           <div className="text-center">
             <p className="text-5xl mb-4">✅</p>
             <h1 className="text-2xl font-bold mb-2">Pesanan dibuat!</h1>
@@ -243,7 +243,7 @@ export function CheckoutPage() {
     <QueryState query={addressesQuery} label="alamat pengiriman">
         <div className="mx-auto max-w-7xl px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-            <section className="bg-white border border-gray-200 rounded-xl p-5">
+            <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
               <h2 className="font-bold mb-3">1. Alamat Pengiriman</h2>
               {addresses && addresses.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
@@ -266,7 +266,7 @@ export function CheckoutPage() {
                     id="co-recipient"
                     value={form.recipient}
                     onChange={(e) => setForm({ ...form, recipient: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -276,7 +276,7 @@ export function CheckoutPage() {
                     type="tel"
                     value={form.phone}
                     onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
                 <div className="sm:col-span-2">
@@ -285,7 +285,7 @@ export function CheckoutPage() {
                     id="co-line1"
                     value={form.address_line1}
                     onChange={(e) => setForm({ ...form, address_line1: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -294,7 +294,7 @@ export function CheckoutPage() {
                     id="co-city"
                     value={form.city}
                     onChange={(e) => setForm({ ...form, city: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -303,7 +303,7 @@ export function CheckoutPage() {
                     id="co-province"
                     value={form.province}
                     onChange={(e) => setForm({ ...form, province: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -313,7 +313,7 @@ export function CheckoutPage() {
                     inputMode="numeric"
                     value={form.postal_code}
                     onChange={(e) => setForm({ ...form, postal_code: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
                   />
                 </div>
               </div>
@@ -330,14 +330,14 @@ export function CheckoutPage() {
             )}
           </section>
 
-          <section className="bg-white border border-gray-200 rounded-xl p-5">
+          <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
             <h2 className="font-bold mb-3">2. Metode Pengiriman</h2>
             <div className="space-y-2">
               {(quote?.shipping.length ? quote.shipping : [{ code: 'regular', name: 'Regular (Standard)', fee: 0, min_days: 3, max_days: 7 }]).map((m) => (
                 <label
                   key={m.code}
                   className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer ${
-                    shippingMethod === m.code ? 'border-amber-500 bg-amber-50' : 'border-gray-200'
+                    shippingMethod === m.code ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20' : 'border-gray-200 dark:border-gray-700'
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -358,7 +358,7 @@ export function CheckoutPage() {
               ))}
             </div>
             {quote?.insurance_available && (
-              <label className="flex items-center justify-between mt-3 p-3 rounded-xl border border-blue-200 bg-blue-50 cursor-pointer">
+              <label className="flex items-center justify-between mt-3 p-3 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 cursor-pointer">
                 <div className="flex items-center gap-3">
                   <input
                     type="checkbox"
@@ -377,7 +377,7 @@ export function CheckoutPage() {
             )}
           </section>
 
-          <section className="bg-white border border-gray-200 rounded-xl p-5">
+          <section className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
             <h2 className="font-bold mb-3">3. Pembayaran</h2>
             <p className="text-sm text-gray-600">
               Bayar instan via <b>Midtrans</b> (QRIS / e-wallet / VA / kartu) atau transfer di luar aplikasi —
@@ -392,7 +392,7 @@ export function CheckoutPage() {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
-              className="mt-3 w-full px-3 py-2 border rounded-lg text-sm outline-none focus:border-amber-400"
+              className="mt-3 w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
             />
           </section>
 
@@ -407,7 +407,7 @@ export function CheckoutPage() {
                   onChange={(e) => setCoupon(e.target.value.toUpperCase())}
                   placeholder="WELCOME10 atau FLAT50K"
                   aria-describedby="co-coupon-hint"
-                  className="w-full px-3 py-2 border rounded-lg text-sm uppercase outline-none focus:border-amber-400"
+                  className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm uppercase outline-none focus:border-amber-400 dark:bg-gray-800"
                 />
               </div>
             </div>
@@ -424,7 +424,7 @@ export function CheckoutPage() {
                       type="button"
                       onClick={() => setCoupon(v.code)}
                       className={`px-3 py-1.5 rounded-full border text-xs ${
-                        coupon === v.code ? 'border-amber-500 bg-amber-50 text-amber-700' : 'hover:border-amber-400'
+                        coupon === v.code ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300' : 'border-gray-200 dark:border-gray-700 hover:border-amber-400'
                       }`}
                     >
                       🎟️ <b>{v.code}</b> —{' '}
@@ -439,7 +439,7 @@ export function CheckoutPage() {
           </section>
         </div>
 
-        <aside className="h-fit bg-white border border-gray-200 rounded-xl p-5 space-y-3">
+        <aside className="h-fit bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 space-y-3">
           <h2 className="font-bold">Ringkasan</h2>
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">Subtotal</span>
@@ -470,7 +470,7 @@ export function CheckoutPage() {
             <span className="text-gray-500">Ongkir</span>
             <span>{formatIDR((quote?.shipping ?? []).reduce((s, m) => s + m.fee, 0))}</span>
           </div>
-          <hr />
+          <hr className="border-gray-200 dark:border-gray-700" />
           <div className="flex justify-between font-bold">
             <span>Total</span>
             <span className="text-amber-600">{formatIDR(quote?.total ?? 0)}</span>
@@ -509,7 +509,7 @@ export function CheckoutPage() {
                 value={pointsInput}
                 onChange={(e) => setPointsInput(e.target.value)}
                 placeholder="Jumlah poin"
-                className="w-full px-3 py-2 border rounded-lg outline-none focus:border-amber-400"
+                className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg outline-none focus:border-amber-400 dark:bg-gray-800"
               />
             </div>
           )}
@@ -603,7 +603,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
   const busy = walletPay.isPending || codPay.isPending || snapPay.isPending
 
   return (
-    <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+    <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
       <div className="flex items-center justify-between mb-2">
         <p className="font-medium text-sm">{order.order_number}</p>
         <p className="font-bold text-sm text-amber-600">{formatIDR(order.total_amount)}</p>
@@ -652,7 +652,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
               onClick={() => setShowExternal(!showExternal)}
               aria-expanded={showExternal}
               className={`px-3 py-2 rounded-lg text-xs font-medium border ${
-                showExternal ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-300 hover:bg-white'
+                showExternal ? 'bg-gray-900 dark:bg-gray-100 dark:text-gray-900 dark:border-gray-100 text-white border-gray-900' : 'border-gray-300 dark:border-gray-600 hover:bg-white dark:hover:bg-gray-800'
               }`}
             >
               🏦 Transfer Manual
@@ -668,7 +668,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
                     value={form.reference}
                     onChange={(e) => setForm({ ...form, reference: e.target.value })}
                     placeholder="No. referensi / bukti transfer"
-                    className="w-full px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-xs outline-none bg-white dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -680,7 +680,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
                     value={form.amount}
                     onChange={(e) => setForm({ ...form, amount: e.target.value })}
                     placeholder={`Jumlah (Rp ${Math.round(order.total_amount).toLocaleString('id-ID')})`}
-                    className="w-full px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-xs outline-none bg-white dark:bg-gray-800"
                   />
                 </div>
                 <div>
@@ -690,7 +690,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
                     type="date"
                     value={form.paid_at}
                     onChange={(e) => setForm({ ...form, paid_at: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg text-xs outline-none bg-white"
+                    className="w-full px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-xs outline-none bg-white dark:bg-gray-800"
                   />
                 </div>
               </div>
@@ -698,7 +698,7 @@ function PayCard({ order }: { order: { id: string; order_number: string; status:
                 type="button"
                 onClick={() => confirm.mutate()}
                 disabled={confirm.isPending || !form.reference.trim() || !form.amount}
-                className="mt-2 px-4 py-2 rounded-lg bg-gray-900 text-white text-xs hover:bg-gray-800 disabled:opacity-50"
+                className="mt-2 px-4 py-2 rounded-lg bg-gray-900 dark:bg-gray-100 dark:text-gray-900 text-white text-xs hover:bg-gray-800 disabled:opacity-50"
               >
                 {confirm.isPending ? 'Mencatat...' : 'Saya Sudah Bayar'}
               </button>

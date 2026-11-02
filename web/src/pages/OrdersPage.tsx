@@ -49,7 +49,7 @@ export function OrdersPage() {
         <div className="space-y-4">
           {filtered.length === 0 && <p className="text-gray-500 text-sm">Belum ada pesanan.</p>}
           {filtered.map((o) => (
-            <div key={o.id} className="bg-white border border-gray-200 rounded-xl p-5">
+            <div key={o.id} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
                 <div>
                   <p className="font-medium text-sm">{o.order_number}</p>
@@ -66,9 +66,9 @@ export function OrdersPage() {
                 {o.items.map((it) => (
                   <div key={it.id} className="flex items-center gap-3">
                     {it.image_url ? (
-                      <img src={it.image_url} alt={it.product_name} className="w-12 h-12 rounded-lg object-cover bg-gray-100" />
+                      <img src={it.image_url} alt={it.product_name} className="w-12 h-12 rounded-lg object-cover bg-gray-100 dark:bg-gray-800" />
                     ) : (
-                      <div className="w-12 h-12 rounded-lg bg-gray-100" />
+                      <div className="w-12 h-12 rounded-lg bg-gray-100 dark:bg-gray-800" />
                     )}
                     <div className="flex-1">
                       <p className="text-sm line-clamp-1">{it.product_name}</p>
@@ -78,7 +78,7 @@ export function OrdersPage() {
                   </div>
                 ))}
               </div>
-              <div className="flex items-center justify-between mt-4 pt-3 border-t">
+              <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-200 dark:border-gray-700">
                 <Link to={`/orders/${o.id}`} className="text-sm text-amber-600 hover:underline">
                   Detail & Lacak
                 </Link>

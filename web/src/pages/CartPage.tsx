@@ -248,8 +248,8 @@ export function CartPage() {
           const fsPct = fs?.threshold ? Math.min(100, Math.round((fs.subtotal / fs.threshold) * 100)) : 100
           const fsRemaining = fs?.threshold ? Math.max(0, fs.threshold - fs.subtotal) : 0
           return (
-            <div key={sellerId} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-              <div className="px-4 py-2.5 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 flex items-center justify-between">
+            <div key={sellerId} className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+              <div className="px-4 py-2.5 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <p className="text-sm font-semibold">🏪 {group.name}</p>
                 <p className="text-xs text-gray-500">Subtotal toko: <b>{formatIDR(groupTotal)}</b></p>
               </div>
@@ -290,7 +290,7 @@ export function CartPage() {
         })}
       </div>
 
-      <aside className="h-fit bg-white border border-gray-200 rounded-xl p-5 space-y-3">
+      <aside className="h-fit bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5 space-y-3">
         <h2 className="font-bold">Ringkasan</h2>
         <div className="flex justify-between text-sm">
           <span className="text-gray-500">Subtotal ({lines.length} item)</span>
@@ -300,7 +300,7 @@ export function CartPage() {
           <span className="text-gray-500">Ongkir</span>
           <span className="text-gray-400">Dihitung saat checkout</span>
         </div>
-        <hr />
+        <hr className="border-gray-200 dark:border-gray-700" />
         <div className="flex justify-between font-bold">
           <span>Total</span>
           <span className="text-amber-600">{formatIDR(total)}</span>
@@ -343,9 +343,9 @@ function CartRow({ line: l, busy, checked, onToggle, onIncrease, onDecrease, onR
         className="accent-amber-500"
       />
       {l.image_url ? (
-        <img src={l.image_url} alt={l.product_name} className="w-20 h-20 rounded-lg object-cover bg-gray-100" />
+        <img src={l.image_url} alt={l.product_name} className="w-20 h-20 rounded-lg object-cover bg-gray-100 dark:bg-gray-800" />
       ) : (
-        <div className="w-20 h-20 rounded-lg bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+        <div className="w-20 h-20 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
           {l.product_name.slice(0, 10)}
         </div>
       )}
@@ -357,13 +357,13 @@ function CartRow({ line: l, busy, checked, onToggle, onIncrease, onDecrease, onR
           {l.variant_name} · dari {l.seller_name}
         </p>
         <div className="flex items-center justify-between mt-3">
-          <div className="flex items-center border rounded-lg">
+          <div className="flex items-center border border-gray-200 dark:border-gray-700 rounded-lg">
             <button
               type="button"
               aria-label={l.quantity <= 1 ? `Hapus ${l.product_name} dari keranjang` : `Kurangi jumlah ${l.product_name}`}
               onClick={onDecrease}
               disabled={busy}
-              className="px-3 py-1.5 text-gray-500 hover:text-gray-900 disabled:opacity-40"
+              className="px-3 py-1.5 text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-40"
             >
               −
             </button>
@@ -375,7 +375,7 @@ function CartRow({ line: l, busy, checked, onToggle, onIncrease, onDecrease, onR
               aria-label={`Tambah jumlah ${l.product_name}`}
               onClick={onIncrease}
               disabled={busy}
-              className="px-3 py-1.5 text-gray-500 hover:text-gray-900 disabled:opacity-40"
+              className="px-3 py-1.5 text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-40"
             >
               +
             </button>

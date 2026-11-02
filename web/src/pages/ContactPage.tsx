@@ -51,7 +51,7 @@ export function ContactPage() {
       </p>
 
       {!user ? (
-        <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-8 text-center">
           <Link to="/login" className="px-6 py-3 rounded-xl bg-amber-500 text-white font-medium">
             Masuk untuk lanjut
           </Link>
@@ -62,7 +62,7 @@ export function ContactPage() {
             e.preventDefault()
             submit.mutate()
           }}
-          className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4"
+          className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 space-y-4"
         >
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -73,7 +73,7 @@ export function ContactPage() {
                 value={form.subject}
                 onChange={(e) => setForm({ ...form, subject: e.target.value })}
                 placeholder="Ringkasan masalah"
-                className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+                className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
               />
             </div>
             <div>
@@ -82,7 +82,7 @@ export function ContactPage() {
                 id="contact-category"
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
-                className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+                className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
               >
                 <option value="general">Umum</option>
                 <option value="order">Pesanan</option>
@@ -98,7 +98,7 @@ export function ContactPage() {
                 id="contact-priority"
                 value={form.priority}
                 onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+                className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
               >
                 <option value="low">Rendah</option>
                 <option value="normal">Normal</option>
@@ -112,7 +112,7 @@ export function ContactPage() {
                 id="contact-order"
                 value={form.order_id}
                 onChange={(e) => setForm({ ...form, order_id: e.target.value })}
-                className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+                className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
               >
                 <option value="">Tidak ada</option>
                 {orders?.map((o) => (
@@ -132,7 +132,7 @@ export function ContactPage() {
               value={form.message}
               onChange={(e) => setForm({ ...form, message: e.target.value })}
               placeholder="Jelaskan masalahmu secara detail..."
-              className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
+              className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
             />
           </div>
           {submit.isError && <p role="alert" className="text-sm text-red-600">Gagal membuat tiket. Coba lagi.</p>}
