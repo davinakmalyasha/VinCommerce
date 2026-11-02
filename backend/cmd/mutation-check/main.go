@@ -368,7 +368,7 @@ func main() {
 			label: "M1: onRefunded resubmits via RefundOrder (THE DOUBLE-REFUND)",
 			file:  svcFile,
 			old:   "\t_, err := s.RecordProviderRefund(ctx, providerRefundEvent{",
-			new: "\t_ = s.RefundOrder(ctx, intent.OrderID, \"gateway refund\", true, amount)\n" +
+			new: "\t_ = s.RefundOrder(ctx, intent.OrderID, \"gateway refund\", true, amount.Float())\n" +
 				"\t_, err := s.RecordProviderRefund(ctx, providerRefundEvent{",
 			expect: "",
 		},
@@ -390,7 +390,7 @@ func main() {
 		{
 			label: "M3: the cap goes back to reading wallet_transactions",
 			file:  repoFile,
-			old: "		SELECT COALESCE(SUM(amount), 0)::float8\n" +
+			old: "		SELECT COALESCE(SUM(amount), 0)::bigint\n" +
 				"		  FROM refunds\n" +
 				"		 WHERE order_id = $1\n" +
 				"		   AND status IN ('submitted', 'succeeded', 'manual')",
@@ -680,7 +680,7 @@ func main() {
 				"\t\tRefType:        \"payment_intent\",\n" +
 				"\t\tRefID:          intent.ID,\n" +
 				"\t\tNote:           \"COD collected on delivery; funds held in escrow\",\n" +
-				"\t\tEntries: withMeta(captureEntries(domain.IDRFromFloat(intent.Amount), intent.Method), map[string]any{\n" +
+				"\t\tEntries: withMeta(captureEntries(intent.Amount, intent.Method), map[string]any{\n" +
 				"\t\t\t\"order_id\": intent.OrderID, \"method\": intent.Method,\n" +
 				"\t\t}),\n" +
 				"\t}); err != nil {\n\t\treturn err\n\t}\n",
