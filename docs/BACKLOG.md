@@ -1515,3 +1515,15 @@ TLS 1.2/1.3, HSTS, plain-HTTP 301, local `/healthz`. CI generates a
 self-signed certificate, boots the same config and asserts the handshake, the
 refusals and the redirect. Run `41230061769`: `TLS terminator probe` success.
 PITR is still absent.
+
+**Seller replies on the buyer-facing product page (`1797774`).** Replies were
+written to `review_replies` and shown in the seller inbox, but the
+buyer-facing listing never joined them. The paged, unpaged and pending
+queries now LEFT JOIN the reply, `ProductReview` carries it (omitted when
+absent), and the PDP renders the same "Balasan toko" block the seller sees.
+Run `41385777201`: 9/9, `PASS: TestProductListingCarriesSellerReplies` — one
+replied and one unreplied review, asserting the listing carries exactly the
+reply it should.
+
+Still open and not claimed: buyer edit/delete of their own review (no
+endpoints exist yet), which is the remaining half of this gap.
