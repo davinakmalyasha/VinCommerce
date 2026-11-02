@@ -46,7 +46,11 @@ psql_dst() {
 wait_ready() {
   local name=$1
   for _ in $(seq 1 60); do
-    if docker exec "$name" pg_isready -U vincom >/dev/null 2>&1; then
+    # pg_isready alone is not enough: it can answer while the entrypoint is
+    # still creating the initial database, and the seed step then fails with
+    # `database "vincom" does not exist`. Require the database itself.
+    if docker exec -e PGPASSWORD=vincom_dev "$name" \
+      psql -U vincom -d vincom -tAc "SELECT 1" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
