@@ -1079,11 +1079,11 @@ func (r *PaymentRepository) MarkPayoutFailedTx(ctx context.Context, q Querier, p
 //
 // The seller_reservations row is what makes that hold visible and releasable
 // rather than implicit in a balance column.
-func (r *PaymentRepository) ReserveSellerPending(ctx context.Context, q Querier, sellerID, payoutID string, amount float64) error {
+func (r *PaymentRepository) ReserveSellerPending(ctx context.Context, q Querier, sellerID, payoutID string, amount domain.IDR) error {
 	if _, err := q.Exec(ctx, `
 		INSERT INTO seller_reservations (seller_id, payout_id, amount, kind, note)
 		VALUES ($1, $2, $3, 'payout', 'withdrawal requested')`,
-		sellerID, payoutID, amount); err != nil {
+		sellerID, payoutID, int64(amount)); err != nil {
 		return err
 	}
 	return nil
@@ -1130,7 +1130,7 @@ const (
 // The CHECK on `wallets.held_balance >= 0` is the backstop: a release larger than
 // the hold fails here rather than making the balance negative.
 func (r *PaymentRepository) WalletHeldTxOn(
-	ctx context.Context, q Querier, userID, direction, reason string, amount float64,
+	ctx context.Context, q Querier, userID, direction, reason string, amount domain.IDR,
 ) error {
 	if _, err := q.Exec(ctx, `
 		INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
@@ -1140,7 +1140,7 @@ func (r *PaymentRepository) WalletHeldTxOn(
 	// Signed delta on the spendable balance, signed delta on the held one. A hold
 	// debits the first and credits the second; a release does the reverse. The
 	// held leg is written in the same statement so the two can never disagree.
-	var balanceAfter, heldAfter float64
+	var balanceAfter, heldAfter int64
 	err := q.QueryRow(ctx, `
 		UPDATE wallets
 		   SET balance      = balance      + CASE WHEN $2::varchar = 'hold' THEN -$3 ELSE $3 END,
@@ -1150,7 +1150,7 @@ func (r *PaymentRepository) WalletHeldTxOn(
 		   AND (CASE WHEN $2::varchar = 'hold'
 		             THEN balance >= $3
 		             ELSE held_balance >= $3 END)
-		RETURNING balance, held_balance`, userID, direction, amount).Scan(&balanceAfter, &heldAfter)
+		RETURNING balance, held_balance`, userID, direction, int64(amount)).Scan(&balanceAfter, &heldAfter)
 	if errors.Is(err, pgx.ErrNoRows) {
 		switch direction {
 		case "hold":
@@ -1202,7 +1202,7 @@ type SellerReservation struct {
 	ID       string
 	SellerID string
 	OrderID  string
-	Amount   float64
+	Amount   domain.IDR
 	Kind     string
 	Note     string
 }
@@ -1254,7 +1254,7 @@ func (r *PaymentRepository) ReleasableReservations(
 	}
 	rows, err := q.Query(ctx, `
 		SELECT sr.id::text, sr.seller_id::text, sr.order_id::text,
-		       sr.amount::float8, sr.kind, COALESCE(sr.note, '')
+		       sr.amount, sr.kind, COALESCE(sr.note, '')
 		  FROM seller_reservations sr
 		  JOIN orders o ON o.id = sr.order_id
 		  LEFT JOIN stores st ON st.owner_id = sr.seller_id
@@ -1283,10 +1283,12 @@ func (r *PaymentRepository) ReleasableReservations(
 	out := []*SellerReservation{}
 	for rows.Next() {
 		res := &SellerReservation{}
+		var amount int64
 		if err := rows.Scan(&res.ID, &res.SellerID, &res.OrderID,
-			&res.Amount, &res.Kind, &res.Note); err != nil {
+			&amount, &res.Kind, &res.Note); err != nil {
 			return nil, err
 		}
+		res.Amount = domain.IDR(amount)
 		out = append(out, res)
 	}
 	return out, rows.Err()
@@ -1400,7 +1402,7 @@ func (r *PaymentRepository) MarkReservationReleasedTx(ctx context.Context, q Que
 // kind is 'cod' for an order paid cash on delivery, 'return' for an open return
 // claim and 'dispute' for an open dispute. Each reserves against its own order.
 func (r *PaymentRepository) ReserveSellerPendingTx(
-	ctx context.Context, q Querier, sellerID, orderID, kind, note string, amount float64,
+	ctx context.Context, q Querier, sellerID, orderID, kind, note string, amount domain.IDR,
 ) error {
 	switch kind {
 	case "cod", "return", "dispute":
@@ -1431,7 +1433,7 @@ func (r *PaymentRepository) ReserveSellerPendingTx(
 		ON CONFLICT (order_id, kind) WHERE order_id IS NOT NULL AND released_at IS NULL
 		DO NOTHING
 		RETURNING id`,
-		sellerID, orderID, amount, kind, note).Scan(&id)
+		sellerID, orderID, int64(amount), kind, note).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A hold of this kind is already live against this order, so the money is
 		// already protected. NAMED, because the caller must be able to treat this

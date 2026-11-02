@@ -448,7 +448,7 @@ func (s *MarketService) OpenDispute(ctx context.Context, returnID, userID, subje
 		order, oerr := s.payments.IntentByOrder(ctx, orderID)
 		if oerr == nil {
 			if err := s.payments.HoldSellerFunds(ctx, sellerID, orderID, d.ID,
-				HoldDispute, "dispute opened", order.Amount.Float()); err != nil {
+				HoldDispute, "dispute opened", order.Amount); err != nil {
 				return nil, err
 			}
 		}

@@ -1100,7 +1100,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	// withdraw the whole amount. That window is the fraud.
 	if intent.Method == domain.MethodCOD && sellerAmount > 0 {
 		if err := s.holdSellerFundsTx(ctx, q, order.SellerID, orderID, intent.ID,
-			HoldCOD, "COD collected; awaiting the return window", sellerAmount.Float()); err != nil {
+			HoldCOD, "COD collected; awaiting the return window", sellerAmount); err != nil {
 			return err
 		}
 	}
@@ -1617,7 +1617,7 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 	// Real marketplaces hold the balance for a T+n lag with no open return or
 	// dispute, and this row is what makes that hold visible and releasable rather
 	// than implicit in a balance column.
-	if err := s.payments.ReserveSellerPending(ctx, tx.PgTx(), userID, payout.ID, amount); err != nil {
+	if err := s.payments.ReserveSellerPending(ctx, tx.PgTx(), userID, payout.ID, domain.IDRFromFloat(amount)); err != nil {
 		return nil, err
 	}
 	// Payout journal, inside the payout transaction.
@@ -1855,7 +1855,7 @@ func (s *PaymentService) releaseOneReservation(ctx context.Context, res *reposit
 		RefType:        "order",
 		RefID:          res.OrderID,
 		Note:           "seller hold released: " + res.Kind,
-		Entries: withMeta(sellerHoldReleaseEntries(res.SellerID, domain.IDRFromFloat(res.Amount)),
+		Entries: withMeta(sellerHoldReleaseEntries(res.SellerID, res.Amount),
 			holdMeta(res.SellerID, res.OrderID, res.Kind, res.Amount)),
 	}); err != nil {
 		return err
@@ -1948,7 +1948,7 @@ const (
 // The repository returns SELLER_HOLD_EXISTS for exactly that case and it is treated
 // here as success.
 func (s *PaymentService) HoldSellerFunds(
-	ctx context.Context, sellerID, orderID, eventID, kind, note string, amount float64,
+	ctx context.Context, sellerID, orderID, eventID, kind, note string, amount domain.IDR,
 ) error {
 	if s.payments == nil {
 		return domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
@@ -1980,7 +1980,7 @@ func (s *PaymentService) HoldSellerFunds(
 // money is already protected.
 func (s *PaymentService) holdSellerFundsTx(
 	ctx context.Context, q repository.Querier,
-	sellerID, orderID, eventID, kind, note string, amount float64,
+	sellerID, orderID, eventID, kind, note string, amount domain.IDR,
 ) error {
 	if s.ledger == nil {
 		return domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
@@ -2005,7 +2005,7 @@ func (s *PaymentService) holdSellerFundsTx(
 		RefType:        "order",
 		RefID:          orderID,
 		Note:           note,
-		Entries: withMeta(sellerHoldEntries(sellerID, domain.IDRFromFloat(amount)),
+		Entries: withMeta(sellerHoldEntries(sellerID, amount),
 			holdMeta(sellerID, orderID, kind, amount)),
 	}); err != nil {
 		return err
@@ -2026,7 +2026,7 @@ func (s *PaymentService) holdSellerFundsTx(
 
 // holdMeta labels the journal lines, so a trial balance grouped by tx_type can say
 // what a hold was for without a second query.
-func holdMeta(sellerID, orderID, kind string, amount float64) map[string]any {
+func holdMeta(sellerID, orderID, kind string, amount domain.IDR) map[string]any {
 	return map[string]any{
 		"seller_id": sellerID, "order_id": orderID,
 		"hold_kind": kind, "amount": amount,

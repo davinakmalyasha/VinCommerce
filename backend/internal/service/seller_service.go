@@ -1083,7 +1083,7 @@ func (s *SellerService) RequestReturn(ctx context.Context, in CreateReturnInput)
 	// Holding the whole order would freeze money the seller is entitled to keep.
 	if s.paymentSvc != nil {
 		if err := s.paymentSvc.HoldSellerFunds(ctx, item.SellerID, order.ID, req.ID,
-			HoldReturn, "return claim "+req.ID, item.Total.Float()); err != nil {
+			HoldReturn, "return claim "+req.ID, item.Total); err != nil {
 			// Loud. Proceeding without the hold is the exact condition this exists
 			// to prevent, and it fails silently from the buyer's point of view: the
 			// return is accepted, and then the refund is stuck on a balance that is

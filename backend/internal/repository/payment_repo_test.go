@@ -66,10 +66,10 @@ func (twoColumnRow) Scan(dest ...any) error {
 	if len(dest) != 2 {
 		return errors.New("expected two destinations")
 	}
-	p0, ok0 := dest[0].(*float64)
-	p1, ok1 := dest[1].(*float64)
+	p0, ok0 := dest[0].(*int64)
+	p1, ok1 := dest[1].(*int64)
 	if !ok0 || !ok1 {
-		return errors.New("expected *float64 destinations")
+		return errors.New("expected *int64 destinations")
 	}
 	*p0, *p1 = 70000, 30000
 	return nil
