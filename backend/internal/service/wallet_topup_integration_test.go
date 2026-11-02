@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/vincommerce/backend/internal/domain"
+
 	"github.com/vincommerce/backend/internal/payments"
 	"github.com/vincommerce/backend/internal/repository"
 )
@@ -44,13 +46,13 @@ func TestWalletTopUpCreditsOnce(t *testing.T) {
 		t.Fatalf("top-up was not registered with the gateway: %+v", topUp)
 	}
 
-	balanceOf := func() float64 {
+	balanceOf := func() domain.IDR {
 		t.Helper()
-		var b float64
+		var b int64
 		if err := pool.QueryRow(ctx, `SELECT balance FROM wallets WHERE user_id = $1`, buyerID).Scan(&b); err != nil {
 			t.Fatalf("read wallet: %v", err)
 		}
-		return b
+		return domain.IDR(b)
 	}
 	// `wallets` rows are created lazily by the first movement, and the seeded
 	// buyer has never moved money. Reading before creating is a test bug, not a
@@ -70,8 +72,9 @@ func TestWalletTopUpCreditsOnce(t *testing.T) {
 		t.Fatalf("HandleWebhook(paid): %v", err)
 	}
 	after := balanceOf()
-	if diff := after - before; diff < 49_999.99 || diff > 50_000.01 {
-		t.Fatalf("wallet balance moved by %.2f, want 50000", diff)
+	// Exact integer equality is the point of the migration: no epsilon.
+	if diff := after - before; diff != 50_000 {
+		t.Fatalf("wallet balance moved by %v, want exactly 50000", diff)
 	}
 
 	// The provider retries until it gets a 2xx, and the handler returned 2xx.
@@ -80,7 +83,7 @@ func TestWalletTopUpCreditsOnce(t *testing.T) {
 		t.Fatalf("HandleWebhook(replay): %v", err)
 	}
 	if replay := balanceOf(); replay != after {
-		t.Fatalf("a replayed webhook credited again: %.2f -> %.2f", after, replay)
+		t.Fatalf("a replayed webhook credited again: %v -> %v", after, replay)
 	}
 
 	// A forged signature must move nothing.
@@ -88,7 +91,7 @@ func TestWalletTopUpCreditsOnce(t *testing.T) {
 		t.Fatal("HandleWebhook accepted a forged signature")
 	}
 	if forged := balanceOf(); forged != after {
-		t.Fatalf("a forged webhook moved money: %.2f -> %.2f", after, forged)
+		t.Fatalf("a forged webhook moved money: %v -> %v", after, forged)
 	}
 
 	// The credit and its journal are one event. A wallet balance with no

@@ -828,16 +828,21 @@ func (r *PaymentRepository) SetIntentMethod(ctx context.Context, intentID, metho
 // Wallet fetches a wallet, creating it if absent.
 func (r *PaymentRepository) Wallet(ctx context.Context, userID string) (*domain.Wallet, error) {
 	var w domain.Wallet
+	// NUMERIC scans into int64 locals: the whole-rupiah CHECKs guarantee
+	// integral values, and an explicit conversion beats trusting pgx with a
+	// named type.
+	var balance, held int64
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO wallets (user_id) VALUES ($1)
 		ON CONFLICT (user_id) DO UPDATE SET updated_at = now()
 		RETURNING user_id, balance, held_balance, created_at, updated_at`, userID).
-		Scan(&w.UserID, &w.Balance, &w.HeldBalance, &w.CreatedAt, &w.UpdatedAt)
+		Scan(&w.UserID, &balance, &held, &w.CreatedAt, &w.UpdatedAt)
+	w.Balance, w.HeldBalance = domain.IDR(balance), domain.IDR(held)
 	return &w, err
 }
 
 // WalletTx applies a ledger entry, updating balance atomically.
-func (r *PaymentRepository) WalletTx(ctx context.Context, userID, kind, reason string, amount float64, refID string) error {
+func (r *PaymentRepository) WalletTx(ctx context.Context, userID, kind, reason string, amount domain.IDR, refID string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -851,16 +856,16 @@ func (r *PaymentRepository) WalletTx(ctx context.Context, userID, kind, reason s
 
 // WalletTxOn applies a ledger entry inside a caller-managed transaction so it
 // can be composed atomically with intent status changes and payouts.
-func (r *PaymentRepository) WalletTxOn(ctx context.Context, q Querier, userID, kind, reason string, amount float64, refID string) error {
+func (r *PaymentRepository) WalletTxOn(ctx context.Context, q Querier, userID, kind, reason string, amount domain.IDR, refID string) error {
 	if _, err := q.Exec(ctx, `
 		INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
-	var balanceAfter float64
+	var balanceAfter int64
 	err := q.QueryRow(ctx, `
 		UPDATE wallets SET balance = balance + CASE WHEN $2::varchar = 'debit' THEN -$3 ELSE $3 END, updated_at = now()
 		WHERE user_id = $1 AND ($2::varchar <> 'debit' OR balance >= $3)
-		RETURNING balance`, userID, kind, amount).Scan(&balanceAfter)
+		RETURNING balance`, userID, kind, int64(amount)).Scan(&balanceAfter)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.E(domain.KindConflict, "INSUFFICIENT_BALANCE", "insufficient wallet balance")
 	}
@@ -870,7 +875,7 @@ func (r *PaymentRepository) WalletTxOn(ctx context.Context, q Querier, userID, k
 	_, err = q.Exec(ctx, `
 		INSERT INTO wallet_transactions (wallet_id, kind, reason, amount, balance_after, ref_id)
 		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
-		userID, kind, reason, amount, balanceAfter, refID)
+		userID, kind, reason, int64(amount), balanceAfter, refID)
 	return err
 }
 
@@ -891,9 +896,11 @@ func (r *PaymentRepository) Transactions(ctx context.Context, walletID string, l
 	txs := []*domain.WalletTransaction{}
 	for rows.Next() {
 		var t domain.WalletTransaction
-		if err := rows.Scan(&t.ID, &t.WalletID, &t.Kind, &t.Reason, &t.Amount, &t.BalanceAfter, &t.RefID, &t.CreatedAt); err != nil {
+		var amount, after int64
+		if err := rows.Scan(&t.ID, &t.WalletID, &t.Kind, &t.Reason, &amount, &after, &t.RefID, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		t.Amount, t.BalanceAfter = domain.IDR(amount), domain.IDR(after)
 		txs = append(txs, &t)
 	}
 	return txs, rows.Err()
@@ -904,7 +911,7 @@ func (r *PaymentRepository) CreatePayout(ctx context.Context, p *domain.Payout) 
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO payouts (id, wallet_id, amount, status, bank_name, bank_account)
 		VALUES ($1, $2, $3, 'pending', NULLIF($4, ''), NULLIF($5, ''))`,
-		p.ID, p.WalletID, p.Amount, p.BankName, p.BankAccount)
+		p.ID, p.WalletID, int64(p.Amount), p.BankName, p.BankAccount)
 	return err
 }
 
@@ -913,7 +920,7 @@ func (r *PaymentRepository) CreatePayoutTx(ctx context.Context, tx pgx.Tx, p *do
 	_, err := tx.Exec(ctx, `
 		INSERT INTO payouts (id, wallet_id, amount, status, bank_name, bank_account)
 		VALUES ($1, $2, $3, 'pending', NULLIF($4, ''), NULLIF($5, ''))`,
-		p.ID, p.WalletID, p.Amount, p.BankName, p.BankAccount)
+		p.ID, p.WalletID, int64(p.Amount), p.BankName, p.BankAccount)
 	return err
 }
 
@@ -931,10 +938,12 @@ func (r *PaymentRepository) Payouts(ctx context.Context, walletID string) ([]*do
 	payouts := []*domain.Payout{}
 	for rows.Next() {
 		var p domain.Payout
-		if err := rows.Scan(&p.ID, &p.WalletID, &p.Amount, &p.Status, &p.GatewayRef,
+		var amount int64
+		if err := rows.Scan(&p.ID, &p.WalletID, &amount, &p.Status, &p.GatewayRef,
 			&p.BankName, &p.BankAccount, &p.RequestedAt, &p.ProcessedAt); err != nil {
 			return nil, err
 		}
+		p.Amount = domain.IDR(amount)
 		payouts = append(payouts, &p)
 	}
 	return payouts, rows.Err()
@@ -1006,12 +1015,14 @@ func (r *PaymentRepository) PayoutsByStatus(ctx context.Context, status string, 
 func (r *PaymentRepository) PayoutForUpdate(ctx context.Context, q Querier, payoutID string) (*domain.Payout, error) {
 	var p domain.Payout
 	var processedAt *time.Time
+	var amount int64
 	err := q.QueryRow(ctx, `
 		SELECT id, wallet_id, amount, status, COALESCE(gateway_ref,''),
 		       COALESCE(bank_name,''), COALESCE(bank_account,''), requested_at, processed_at
 		  FROM payouts WHERE id = $1 AND status = 'pending' FOR UPDATE`, payoutID).
-		Scan(&p.ID, &p.WalletID, &p.Amount, &p.Status, &p.GatewayRef,
+		Scan(&p.ID, &p.WalletID, &amount, &p.Status, &p.GatewayRef,
 			&p.BankName, &p.BankAccount, &p.RequestedAt, &processedAt)
+	p.Amount = domain.IDR(amount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.E(domain.KindConflict, "NOT_PENDING", "payout is not awaiting processing")
 	}
@@ -1837,7 +1848,7 @@ func (r *PaymentRepository) CreateTopUp(ctx context.Context, t *domain.WalletTop
 		INSERT INTO wallet_topups (id, user_id, amount, status, gateway, gateway_ref, snap_token, redirect_url)
 		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''))
 		RETURNING created_at`,
-		t.ID, t.UserID, t.Amount, t.Status, t.Gateway, t.GatewayRef, t.SnapToken, t.RedirectURL).
+		t.ID, t.UserID, int64(t.Amount), t.Status, t.Gateway, t.GatewayRef, t.SnapToken, t.RedirectURL).
 		Scan(&t.CreatedAt)
 }
 
@@ -1858,12 +1869,14 @@ func (r *PaymentRepository) SetTopUpGateway(ctx context.Context, id, gatewayRef,
 // case where money must not move.
 func (r *PaymentRepository) TopUpByGatewayRef(ctx context.Context, gateway, ref string) (*domain.WalletTopUp, error) {
 	var t domain.WalletTopUp
+	var amount int64
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, user_id, amount, status, gateway, gateway_ref,
 		       COALESCE(snap_token, ''), COALESCE(redirect_url, ''), paid_at, created_at
 		  FROM wallet_topups WHERE gateway = $1 AND gateway_ref = $2`, gateway, ref).
-		Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+		Scan(&t.ID, &t.UserID, &amount, &t.Status, &t.Gateway, &t.GatewayRef,
 			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt)
+	t.Amount = domain.IDR(amount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -1891,10 +1904,12 @@ func (r *PaymentRepository) TopUpsByUser(ctx context.Context, userID string, lim
 	out := []*domain.WalletTopUp{}
 	for rows.Next() {
 		var t domain.WalletTopUp
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+		var amount int64
+		if err := rows.Scan(&t.ID, &t.UserID, &amount, &t.Status, &t.Gateway, &t.GatewayRef,
 			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		t.Amount = domain.IDR(amount)
 		out = append(out, &t)
 	}
 	return out, rows.Err()
@@ -1908,12 +1923,12 @@ func (r *PaymentRepository) TopUpsByUser(ctx context.Context, userID string, lim
 // would credit the wallet a second time. The boolean is what the caller uses to
 // decide whether to move money at all.
 func (r *PaymentRepository) MarkTopUpPaidTx(
-	ctx context.Context, q Querier, id string, amount float64,
+	ctx context.Context, q Querier, id string, amount domain.IDR,
 ) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		UPDATE wallet_topups
 		   SET status = 'paid', paid_at = now(), updated_at = now(), amount = $2
-		 WHERE id = $1 AND status = 'pending'`, id, amount)
+		 WHERE id = $1 AND status = 'pending'`, id, int64(amount))
 	if err != nil {
 		return false, err
 	}
@@ -1941,12 +1956,14 @@ func (r *PaymentRepository) FailTopUpIfPending(ctx context.Context, id string) e
 // TopUpByID fetches a top-up by id.
 func (r *PaymentRepository) TopUpByID(ctx context.Context, id string) (*domain.WalletTopUp, error) {
 	var t domain.WalletTopUp
+	var amount int64
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, user_id, amount, status, gateway, gateway_ref,
 		       COALESCE(snap_token, ''), COALESCE(redirect_url, ''), paid_at, created_at
 		  FROM wallet_topups WHERE id = $1`, id).
-		Scan(&t.ID, &t.UserID, &t.Amount, &t.Status, &t.Gateway, &t.GatewayRef,
+		Scan(&t.ID, &t.UserID, &amount, &t.Status, &t.Gateway, &t.GatewayRef,
 			&t.SnapToken, &t.RedirectURL, &t.PaidAt, &t.CreatedAt)
+	t.Amount = domain.IDR(amount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}

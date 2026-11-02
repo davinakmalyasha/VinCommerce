@@ -955,7 +955,8 @@ func (s *SellerService) Dashboard(ctx context.Context, sellerID string) (*Seller
 	}
 	wallet, err := s.payments.Wallet(ctx, sellerID)
 	if err == nil {
-		stats.WalletBalance = wallet.Balance
+		// SellerStats still reports floats until the dashboard slice migrates.
+		stats.WalletBalance = wallet.Balance.Float()
 	}
 	if stats.OrderCount > 0 {
 		stats.AvgOrderValue = stats.TotalSales / float64(stats.OrderCount)

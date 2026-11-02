@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -33,15 +32,19 @@ type CreateTopUpInput struct {
 // nothing; a row with no charge is inert and expires. The same ordering the
 // refund path uses, for the same reason.
 func (s *PaymentService) CreateTopUp(ctx context.Context, in CreateTopUpInput) (*domain.WalletTopUp, error) {
-	amount := moneyRound(in.Amount)
-	if math.Abs(in.Amount-amount) > 0.0001 || !IsWholeIDR(amount) {
+	// The wire amount is still float (the client sends a JSON number); it is
+	// converted once, here, and everything below is IDR. The gateway input and
+	// the ledger entries still take float and are converted back at those
+	// calls -- each is a remaining migration, tracked by its parameter type.
+	if !IsWholeIDR(in.Amount) {
 		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT",
 			"top-up amount must be whole rupiah")
 	}
+	amount := domain.IDRFromFloat(in.Amount)
 	if amount < domain.MinTopUpAmount || amount > domain.MaxTopUpAmount {
 		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT",
-			fmt.Sprintf("top-up must be between Rp %.0f and Rp %.0f",
-				float64(domain.MinTopUpAmount), float64(domain.MaxTopUpAmount)))
+			fmt.Sprintf("top-up must be between Rp %s and Rp %s",
+				domain.MinTopUpAmount, domain.MaxTopUpAmount))
 	}
 
 	gw, ok := s.gateways[s.defaultGW]
@@ -76,7 +79,7 @@ func (s *PaymentService) CreateTopUp(ctx context.Context, in CreateTopUpInput) (
 	gwPayment, err := gw.CreatePayment(ctx, payments.CreatePaymentInput{
 		OrderID:     id,
 		OrderNumber: "TU-" + strings.ReplaceAll(id, "-", ""),
-		Amount:      amount,
+		Amount:      amount.Float(),
 		Currency:    "IDR",
 		BuyerEmail:  in.Email,
 		Idempotency: "topup-" + id,
@@ -120,10 +123,10 @@ func (s *PaymentService) handleTopUpWebhook(
 			return domain.E(domain.KindInvalid, "AMOUNT_REQUIRED",
 				"webhook did not include a payable amount")
 		}
-		if absDiff(ev.Amount, topUp.Amount) > 0.01 {
+		if absDiff(ev.Amount, topUp.Amount.Float()) > 0.01 {
 			return domain.E(domain.KindConflict, "AMOUNT_MISMATCH",
 				fmt.Sprintf("top-up webhook amount %.2f does not match %.2f",
-					ev.Amount, topUp.Amount))
+					ev.Amount, topUp.Amount.Float()))
 		}
 		return s.captureTopUp(ctx, topUp)
 	case payments.EventFailed:
@@ -177,7 +180,7 @@ func (s *PaymentService) captureTopUp(ctx context.Context, topUp *domain.WalletT
 		RefType:        "wallet_topup",
 		RefID:          topUp.ID,
 		Note:           "wallet top-up",
-		Entries: withMeta(topUpEntries(topUp.UserID, topUp.Amount), map[string]any{
+		Entries: withMeta(topUpEntries(topUp.UserID, topUp.Amount.Float()), map[string]any{
 			"wallet_topup_id": topUp.ID,
 			"gateway":         topUp.Gateway,
 			"amount":          topUp.Amount,

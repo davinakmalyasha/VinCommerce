@@ -564,13 +564,13 @@ func (s *PaymentService) reverseDisbursement(
 	}
 	if plan.RefundSeller > 0 {
 		if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
-			domain.TxReasonRefund, plan.RefundSeller, order.ID); err != nil {
+			domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundSeller), order.ID); err != nil {
 			return err
 		}
 	}
 	if plan.RefundFee > 0 {
 		if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
-			domain.TxReasonRefund, plan.RefundFee, order.ID); err != nil {
+			domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundFee), order.ID); err != nil {
 			return err
 		}
 	}

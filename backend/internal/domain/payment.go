@@ -112,8 +112,8 @@ type PaymentIntent struct {
 // Wallet holds seller balances.
 type Wallet struct {
 	UserID      string    `json:"user_id"`
-	Balance     float64   `json:"balance"`
-	HeldBalance float64   `json:"held_balance"`
+	Balance     IDR       `json:"balance"`
+	HeldBalance IDR       `json:"held_balance"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -124,8 +124,8 @@ type WalletTransaction struct {
 	WalletID     string    `json:"wallet_id"`
 	Kind         string    `json:"kind"`
 	Reason       string    `json:"reason"`
-	Amount       float64   `json:"amount"`
-	BalanceAfter float64   `json:"balance_after"`
+	Amount       IDR       `json:"amount"`
+	BalanceAfter IDR       `json:"balance_after"`
 	RefID        string    `json:"ref_id,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -134,7 +134,7 @@ type WalletTransaction struct {
 type Payout struct {
 	ID          string     `json:"id"`
 	WalletID    string     `json:"wallet_id"`
-	Amount      float64    `json:"amount"`
+	Amount      IDR        `json:"amount"`
 	Status      string     `json:"status"`
 	GatewayRef  string     `json:"gateway_ref,omitempty"`
 	BankName    string     `json:"bank_name,omitempty"`
@@ -155,15 +155,15 @@ const (
 // gateway fees than it adds, and an unbounded amount is a typo away from a
 // charge the buyer cannot afford.
 const (
-	MinTopUpAmount = 10_000
-	MaxTopUpAmount = 20_000_000
+	MinTopUpAmount IDR = 10_000
+	MaxTopUpAmount IDR = 20_000_000
 )
 
 // WalletTopUp is a buyer's attempt to add balance through the gateway.
 type WalletTopUp struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"user_id"`
-	Amount      float64    `json:"amount"`
+	Amount      IDR        `json:"amount"`
 	Status      string     `json:"status"`
 	Gateway     string     `json:"gateway"`
 	GatewayRef  string     `json:"gateway_ref,omitempty"`

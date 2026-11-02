@@ -181,7 +181,7 @@ func (s *PaymentService) InitiatePayment(ctx context.Context, in CreateIntentInp
 			return nil, nil, err
 		}
 		defer tx.Rollback(ctx)
-		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "debit", "order_payment", order.TotalAmount, order.ID); err != nil {
+		if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.BuyerID, "debit", "order_payment", domain.IDRFromFloat(order.TotalAmount), order.ID); err != nil {
 			return nil, nil, err
 		}
 		intent := &domain.PaymentIntent{
@@ -1056,10 +1056,10 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 	}
 
 	// seller credited the net amount; platform fee recorded against the platform wallet.
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "credit", domain.TxReasonEscrowRelease, sellerAmount, orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), order.SellerID, "credit", domain.TxReasonEscrowRelease, domain.IDRFromFloat(sellerAmount), orderID); err != nil {
 		return err
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", fee, orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "credit", "commission", domain.IDRFromFloat(fee), orderID); err != nil {
 		return err
 	}
 
@@ -1329,20 +1329,20 @@ func (s *PaymentService) refundInTx(
 		// were derived in buildRefundPlan so they sum to `plan.Amount` exactly.
 		if plan.RefundSeller > 0 {
 			if err := s.payments.WalletTxOn(ctx, q, order.SellerID, "debit",
-				domain.TxReasonRefund, plan.RefundSeller, orderID); err != nil {
+				domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundSeller), orderID); err != nil {
 				return err
 			}
 		}
 		if plan.RefundFee > 0 {
 			if err := s.payments.WalletTxOn(ctx, q, platformWalletID, "debit",
-				domain.TxReasonRefund, plan.RefundFee, orderID); err != nil {
+				domain.TxReasonRefund, domain.IDRFromFloat(plan.RefundFee), orderID); err != nil {
 				return err
 			}
 		}
 	}
 	if refundToBuyer {
 		if err := s.payments.WalletTxOn(ctx, q, order.BuyerID, "credit",
-			domain.TxReasonRefund, plan.Amount, orderID); err != nil {
+			domain.TxReasonRefund, domain.IDRFromFloat(plan.Amount), orderID); err != nil {
 			return err
 		}
 	}
@@ -1536,10 +1536,10 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 	// Debit the platform wallet first: WalletTxOn enforces balance >= 0, so if
 	// the platform cannot cover it the whole transaction (including the claim)
 	// rolls back and the dispute stays open for a human to retry.
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, credit, orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), platformWalletID, "debit", domain.TxReasonRefund, domain.IDRFromFloat(credit), orderID); err != nil {
 		return err
 	}
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, credit, orderID); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), intent.BuyerID, "credit", domain.TxReasonRefund, domain.IDRFromFloat(credit), orderID); err != nil {
 		return err
 	}
 
@@ -1580,9 +1580,10 @@ func (s *PaymentService) WalletTransactions(ctx context.Context, userID string, 
 // can never leave money debited with no payout record. The instant
 // "sent" simulation only runs in development (sandboxAutoSend).
 func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amount float64, bankName, bankAccount string) (*domain.Payout, error) {
-	if amount <= 0 {
-		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
+	if !IsWholeIDR(amount) || amount <= 0 {
+		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive whole rupiah")
 	}
+	payoutAmount := domain.IDRFromFloat(amount)
 	if strings.TrimSpace(bankName) == "" || strings.TrimSpace(bankAccount) == "" {
 		return nil, domain.E(domain.KindInvalid, "BANK_REQUIRED", "bank name and account number are required")
 	}
@@ -1600,13 +1601,13 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), userID, "debit", domain.TxReasonPayout, amount, ""); err != nil {
+	if err := s.payments.WalletTxOn(ctx, tx.PgTx(), userID, "debit", domain.TxReasonPayout, payoutAmount, ""); err != nil {
 		return nil, err
 	}
 	payout := &domain.Payout{
 		ID:          uuid.NewString(),
 		WalletID:    userID,
-		Amount:      amount,
+		Amount:      payoutAmount,
 		Status:      "pending",
 		BankName:    bankName,
 		BankAccount: bankAccount,
@@ -1704,7 +1705,7 @@ func (s *PaymentService) postPayoutSettled(ctx context.Context, payoutID, ref st
 		RefType:        "payout",
 		RefID:          payoutID,
 		Note:           "payout transferred: " + ref,
-		Entries: withMeta(payoutSettledEntries(p.WalletID, p.Amount), map[string]any{
+		Entries: withMeta(payoutSettledEntries(p.WalletID, p.Amount.Float()), map[string]any{
 			"payout_id": payoutID, "seller_id": p.WalletID, "transfer_ref": ref,
 		}),
 	})
@@ -1742,7 +1743,7 @@ func (s *PaymentService) failPayout(ctx context.Context, payoutID string) error 
 		RefType:        "payout",
 		RefID:          payoutID,
 		Note:           "payout failed; balance returned to the seller",
-		Entries: withMeta(payoutFailedEntries(p.WalletID, p.Amount), map[string]any{
+		Entries: withMeta(payoutFailedEntries(p.WalletID, p.Amount.Float()), map[string]any{
 			"payout_id": payoutID, "seller_id": p.WalletID,
 		}),
 	})
