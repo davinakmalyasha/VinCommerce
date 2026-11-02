@@ -1540,3 +1540,12 @@ fail with the row intact, invalid edits rejected, owner edit lands as pending
 and visible in their own listing only, owner delete removes it. The first CI
 run caught the test asserting validation on the repository layer instead of
 the service; fixed in `be97880`.
+
+**Chat unread dot (`2c75cfe`).** The help button never signalled a waiting
+agent reply. `SessionsForUser` now carries each session's newest message via
+a LATERAL join (no schema change), the widget polls on the bell's 30s
+cadence, and a pure `hasUnreadAgentReply` rule dots the button when an agent
+line in an open session is newer than the last panel open. Run `41401220835`:
+9/9, `PASS: TestSessionListingCarriesTheNewestMessage` plus 4 new vitest
+(123/123). Order-scoped OrderChat is unchanged; anonymous visitors still get
+no widget.
