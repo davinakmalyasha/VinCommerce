@@ -85,9 +85,9 @@ func (r *ProductRepository) Search(ctx context.Context, f *domain.ProductFilter)
 	for rows.Next() {
 		var p domain.Product
 		var attrs []byte
-		var cap *float64
+		var cap *int64
 		var catName, brandName string
-		var minPrice *float64
+		var minPrice *int64
 		var imageURL *string
 		var imageCSV *string
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
@@ -107,7 +107,7 @@ func (r *ProductRepository) Search(ctx context.Context, f *domain.ProductFilter)
 			p.Brand = &domain.Brand{Name: brandName}
 		}
 		if minPrice != nil {
-			p.Variants = []*domain.ProductVariant{{Price: *minPrice}}
+			p.Variants = []*domain.ProductVariant{{Price: domain.IDR(*minPrice)}}
 		}
 		if imageURL != nil && *imageURL != "" {
 			p.Images = []*domain.ProductImage{{URL: *imageURL, IsPrimary: true}}
@@ -223,12 +223,17 @@ func (r *ProductRepository) loadDetail(ctx context.Context, p *domain.Product) (
 	for rows.Next() {
 		var v domain.ProductVariant
 		var attrs []byte
-		var cap *float64
-		if err := rows.Scan(&v.ID, &v.ProductID, &v.SKU, &v.Name, &v.Price, &cap, &v.Stock, &v.WeightGrams,
+		var price int64
+		var cap *int64
+		if err := rows.Scan(&v.ID, &v.ProductID, &v.SKU, &v.Name, &price, &cap, &v.Stock, &v.WeightGrams,
 			&v.ImageURL, &attrs, &v.IsActive); err != nil {
 			return nil, err
 		}
-		v.CompareAtPrice = cap
+		v.Price = domain.IDR(price)
+		if cap != nil {
+			compareAt := domain.IDR(*cap)
+			v.CompareAtPrice = &compareAt
+		}
 		if err := json.Unmarshal(attrs, &v.Attributes); err != nil {
 			return nil, err
 		}
@@ -284,9 +289,9 @@ func (r *ProductRepository) Related(ctx context.Context, productID string, limit
 	for rows.Next() {
 		var p domain.Product
 		var attrs []byte
-		var cap *float64
+		var cap *int64
 		var catName, brandName string
-		var minPrice *float64
+		var minPrice *int64
 		var imageURL *string
 		var imageCSV *string
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
@@ -305,7 +310,7 @@ func (r *ProductRepository) Related(ctx context.Context, productID string, limit
 			p.Brand = &domain.Brand{Name: brandName}
 		}
 		if minPrice != nil {
-			p.Variants = []*domain.ProductVariant{{Price: *minPrice}}
+			p.Variants = []*domain.ProductVariant{{Price: domain.IDR(*minPrice)}}
 		}
 		if imageCSV != nil && *imageCSV != "" {
 			p.Images = []*domain.ProductImage{{URL: strings.Split(*imageCSV, ",")[0], IsPrimary: true}}
@@ -340,7 +345,7 @@ func (r *ProductRepository) CreateWithVariants(ctx context.Context, p *domain.Pr
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO product_variants (id, product_id, sku, name, price, compare_at_price, stock, weight_grams, image_url, attributes, is_active)
 			VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), $7, $8, NULLIF($9, ''), $10, $11)`,
-			v.ID, p.ID, v.SKU, v.Name, v.Price, v.CompareAtPrice, v.Stock, v.WeightGrams, v.ImageURL, v.Attributes, v.IsActive); err != nil {
+			v.ID, p.ID, v.SKU, v.Name, int64(v.Price), nullIDR(v.CompareAtPrice), v.Stock, v.WeightGrams, v.ImageURL, v.Attributes, v.IsActive); err != nil {
 			return err
 		}
 	}
@@ -391,7 +396,7 @@ func (r *ProductRepository) UpdateWithVariants(ctx context.Context, p *domain.Pr
 				stock = $6, weight_grams = $7, image_url = NULLIF($8, ''), attributes = $9,
 				is_active = TRUE, updated_at = now()
 			WHERE product_id = $1 AND sku = $2`,
-			p.ID, v.SKU, v.Name, v.Price, v.CompareAtPrice, v.Stock, v.WeightGrams, v.ImageURL, v.Attributes)
+			p.ID, v.SKU, v.Name, int64(v.Price), nullIDR(v.CompareAtPrice), v.Stock, v.WeightGrams, v.ImageURL, v.Attributes)
 		if err != nil {
 			return err
 		}
@@ -399,7 +404,7 @@ func (r *ProductRepository) UpdateWithVariants(ctx context.Context, p *domain.Pr
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO product_variants (id, product_id, sku, name, price, compare_at_price, stock, weight_grams, image_url, attributes, is_active)
 				VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), $7, $8, NULLIF($9, ''), $10, TRUE)`,
-				uuid.NewString(), p.ID, v.SKU, v.Name, v.Price, v.CompareAtPrice, v.Stock, v.WeightGrams, v.ImageURL, v.Attributes); err != nil {
+				uuid.NewString(), p.ID, v.SKU, v.Name, int64(v.Price), nullIDR(v.CompareAtPrice), v.Stock, v.WeightGrams, v.ImageURL, v.Attributes); err != nil {
 				return err
 			}
 		}
@@ -455,11 +460,13 @@ func (r *ProductRepository) ListBySeller(ctx context.Context, sellerID string, p
 	for rows.Next() {
 		var p domain.Product
 		var attrs []byte
+		var minPrice int64
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
 			&p.Status, &attrs, &p.AvgRating, &p.RatingCount, &p.SoldCount,
-			&p.PublishedAt, &p.CreatedAt, &p.UpdatedAt, &p.Stock, &p.VariantCount, &p.MinPrice); err != nil {
+			&p.PublishedAt, &p.CreatedAt, &p.UpdatedAt, &p.Stock, &p.VariantCount, &minPrice); err != nil {
 			return nil, 0, err
 		}
+		p.MinPrice = domain.IDR(minPrice)
 		if err := json.Unmarshal(attrs, &p.Attributes); err != nil {
 			return nil, 0, err
 		}
@@ -818,9 +825,9 @@ func (r *ProductRepository) bestsellerQuery(ctx context.Context, query string, a
 	for rows.Next() {
 		var p domain.Product
 		var attrs []byte
-		var cap *float64
+		var cap *int64
 		var catName, brandName string
-		var minPrice *float64
+		var minPrice *int64
 		var imageURL *string
 		var imageCSV *string
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
@@ -833,7 +840,7 @@ func (r *ProductRepository) bestsellerQuery(ctx context.Context, query string, a
 			return nil, err
 		}
 		if minPrice != nil {
-			p.Variants = []*domain.ProductVariant{{Price: *minPrice}}
+			p.Variants = []*domain.ProductVariant{{Price: domain.IDR(*minPrice)}}
 		}
 		if imageCSV != nil && *imageCSV != "" {
 			p.Images = []*domain.ProductImage{{URL: strings.Split(*imageCSV, ",")[0], IsPrimary: true}}
@@ -947,12 +954,12 @@ func (r *ProductRepository) buildSearchWhere(f *domain.ProductFilter) (string, [
 		where = append(where, fmt.Sprintf("p.brand_id = ANY($%d)", len(args)))
 	}
 	if f.MinPrice != nil {
-		args = append(args, *f.MinPrice)
+		args = append(args, int64(*f.MinPrice))
 		where = append(where, fmt.Sprintf(
 			"p.id IN (SELECT DISTINCT product_id FROM product_variants WHERE is_active AND price >= $%d)", len(args)))
 	}
 	if f.MaxPrice != nil {
-		args = append(args, *f.MaxPrice)
+		args = append(args, int64(*f.MaxPrice))
 		where = append(where, fmt.Sprintf(
 			"p.id IN (SELECT DISTINCT product_id FROM product_variants WHERE is_active AND price <= $%d)", len(args)))
 	}
@@ -993,4 +1000,14 @@ func (r *ProductRepository) buildSearchOrder(f *domain.ProductFilter) string {
 		orderBy = "p.avg_rating DESC, p.rating_count DESC"
 	}
 	return orderBy
+}
+
+// nullIDR converts an optional amount for a query argument. pgx encodes plain
+// int64 deterministically; a named type or a nil pointer through NULLIF is
+// left to driver reflection, so this is explicit at the call site.
+func nullIDR(p *domain.IDR) any {
+	if p == nil {
+		return nil
+	}
+	return int64(*p)
 }

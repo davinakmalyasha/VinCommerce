@@ -148,8 +148,15 @@ const liveProductCols = `
 
 func scanLiveProduct(row interface{ Scan(...any) error }) (*domain.LiveProduct, error) {
 	var p domain.LiveProduct
-	err := row.Scan(&p.VariantID, &p.SessionID, &p.PriceOverride, &p.PinnedAt, &p.UnpinnedAt,
-		&p.ProductName, &p.VariantName, &p.ImageURL, &p.RegularPrice, &p.Stock)
+	var override *int64
+	var regular int64
+	err := row.Scan(&p.VariantID, &p.SessionID, &override, &p.PinnedAt, &p.UnpinnedAt,
+		&p.ProductName, &p.VariantName, &p.ImageURL, &regular, &p.Stock)
+	if override != nil {
+		o := domain.IDR(*override)
+		p.PriceOverride = &o
+	}
+	p.RegularPrice = domain.IDR(regular)
 	return &p, err
 }
 

@@ -49,9 +49,8 @@ func matchBundles(
 		if !matches {
 			continue
 		}
-		// b.Price is a catalogue price (still float until that slice); the
-		// subtotal is already IDR, so the conversion happens on the price.
-		discount := subtotals[b.SellerID] - domain.IDRFromFloat(b.Price)
+		// b.Price is a catalogue price, now IDR like the subtotal: no conversion.
+		discount := subtotals[b.SellerID] - b.Price
 		if discount <= 0 {
 			continue
 		}

@@ -77,7 +77,7 @@ func (r *WishlistRepository) List(ctx context.Context, userID string, page, page
 		var attrs []byte
 		var cap *float64
 		var catName, brandName string
-		var minPrice *float64
+		var minPrice *int64
 		var imageCSV *string
 		var variantID string
 		if err := rows.Scan(&p.ID, &p.SellerID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
@@ -91,7 +91,7 @@ func (r *WishlistRepository) List(ctx context.Context, userID string, page, page
 			return nil, 0, err
 		}
 		if minPrice != nil {
-			p.Variants = []*domain.ProductVariant{{ID: variantID, Price: *minPrice}}
+			p.Variants = []*domain.ProductVariant{{ID: variantID, Price: domain.IDR(*minPrice)}}
 		}
 		if imageCSV != nil && *imageCSV != "" {
 			p.Images = []*domain.ProductImage{{URL: strings.Split(*imageCSV, ",")[0], IsPrimary: true}}
@@ -135,19 +135,21 @@ func (r *WishlistRepository) FlashSaleItems(ctx context.Context, saleID string) 
 	items := []*domain.FlashSaleItem{}
 	for rows.Next() {
 		var it domain.FlashSaleItem
-		if err := rows.Scan(&it.ID, &it.FlashSaleID, &it.VariantID, &it.SalePrice, &it.InitialStock, &it.SoldCount,
-			&it.RegularPrice, &it.Stock, &it.VariantName, &it.SKU, &it.ImageURL,
+		var sale, regular int64
+		if err := rows.Scan(&it.ID, &it.FlashSaleID, &it.VariantID, &sale, &it.InitialStock, &it.SoldCount,
+			&regular, &it.Stock, &it.VariantName, &it.SKU, &it.ImageURL,
 			&it.ProductID, &it.ProductName, &it.ProductSlug); err != nil {
 			return nil, err
 		}
+		it.SalePrice, it.RegularPrice = domain.IDR(sale), domain.IDR(regular)
 		items = append(items, &it)
 	}
 	return items, rows.Err()
 }
 
 // FlashSalePriceFor returns the active flash sale price for a variant, if any.
-func (r *WishlistRepository) FlashSalePriceFor(ctx context.Context, variantID string) (*float64, error) {
-	var price float64
+func (r *WishlistRepository) FlashSalePriceFor(ctx context.Context, variantID string) (*domain.IDR, error) {
+	var price int64
 	err := r.pool.QueryRow(ctx, `
 		SELECT fi.sale_price
 		FROM flash_sale_items fi
@@ -160,7 +162,8 @@ func (r *WishlistRepository) FlashSalePriceFor(ctx context.Context, variantID st
 	if err != nil {
 		return nil, err
 	}
-	return &price, nil
+	out := domain.IDR(price)
+	return &out, nil
 }
 
 var _ = time.Second

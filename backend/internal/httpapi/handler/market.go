@@ -100,8 +100,12 @@ func (h *Market) CreateBundle(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
+	if !service.IsWholeIDR(req.Price) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_PRICE", "price must be whole rupiah"))
+		return
+	}
 	b, err := h.svc.CreateBundle(r.Context(), &domain.Bundle{
-		SellerID: user.ID, Name: req.Name, Description: req.Description, Price: req.Price, IsActive: true,
+		SellerID: user.ID, Name: req.Name, Description: req.Description, Price: domain.IDRFromFloat(req.Price), IsActive: true,
 	}, req.Items)
 	if err != nil {
 		writeErr(w, r, err)

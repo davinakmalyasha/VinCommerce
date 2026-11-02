@@ -78,7 +78,7 @@ type Product struct {
 	// queries do not select these.
 	Stock        int        `json:"stock,omitempty"`
 	VariantCount int        `json:"variant_count,omitempty"`
-	MinPrice     float64    `json:"min_price,omitempty"`
+	MinPrice     IDR        `json:"min_price,omitempty"`
 	PublishedAt  *time.Time `json:"published_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -96,8 +96,8 @@ type ProductVariant struct {
 	ProductID      string            `json:"product_id"`
 	SKU            string            `json:"sku"`
 	Name           string            `json:"name"`
-	Price          float64           `json:"price"`
-	CompareAtPrice *float64          `json:"compare_at_price,omitempty"`
+	Price          IDR               `json:"price"`
+	CompareAtPrice *IDR              `json:"compare_at_price,omitempty"`
 	Stock          int               `json:"stock"`
 	WeightGrams    int               `json:"weight_grams"`
 	ImageURL       string            `json:"image_url,omitempty"`
@@ -155,8 +155,8 @@ type ProductFilter struct {
 	CategorySlug string
 	BrandIDs     []string
 	AttrFilters  map[string][]string
-	MinPrice     *float64
-	MaxPrice     *float64
+	MinPrice     *IDR
+	MaxPrice     *IDR
 	Rating       *int
 	Sort         string // relevance | price_asc | price_desc | newest | bestseller | rating
 	Page         int
@@ -210,20 +210,20 @@ type FlashSale struct {
 
 // FlashSaleItem is a variant discounted during a flash sale.
 type FlashSaleItem struct {
-	ID           string  `json:"id"`
-	FlashSaleID  string  `json:"flash_sale_id"`
-	VariantID    string  `json:"variant_id"`
-	ProductID    string  `json:"product_id"`
-	ProductName  string  `json:"product_name"`
-	ProductSlug  string  `json:"product_slug"`
-	VariantName  string  `json:"variant_name"`
-	SKU          string  `json:"sku"`
-	ImageURL     string  `json:"image_url,omitempty"`
-	RegularPrice float64 `json:"regular_price"`
-	SalePrice    float64 `json:"sale_price"`
-	InitialStock int     `json:"initial_stock"`
-	SoldCount    int     `json:"sold_count"`
-	Stock        int     `json:"stock"`
+	ID           string `json:"id"`
+	FlashSaleID  string `json:"flash_sale_id"`
+	VariantID    string `json:"variant_id"`
+	ProductID    string `json:"product_id"`
+	ProductName  string `json:"product_name"`
+	ProductSlug  string `json:"product_slug"`
+	VariantName  string `json:"variant_name"`
+	SKU          string `json:"sku"`
+	ImageURL     string `json:"image_url,omitempty"`
+	RegularPrice IDR    `json:"regular_price"`
+	SalePrice    IDR    `json:"sale_price"`
+	InitialStock int    `json:"initial_stock"`
+	SoldCount    int    `json:"sold_count"`
+	Stock        int    `json:"stock"`
 }
 
 // ProductQA is a buyer question with an optional seller answer.
@@ -246,7 +246,7 @@ type Bundle struct {
 	SellerID    string       `json:"seller_id"`
 	Name        string       `json:"name"`
 	Description string       `json:"description"`
-	Price       float64      `json:"price"`
+	Price       IDR          `json:"price"`
 	IsActive    bool         `json:"is_active"`
 	CreatedAt   time.Time    `json:"created_at"`
 	Items       []BundleItem `json:"items,omitempty"`
@@ -257,11 +257,11 @@ type BundleItem struct {
 	VariantID string `json:"variant_id"`
 	Quantity  int    `json:"quantity"`
 	// Display hydration (public listing).
-	ProductName string  `json:"product_name,omitempty"`
-	VariantName string  `json:"variant_name,omitempty"`
-	ImageURL    string  `json:"image_url,omitempty"`
-	UnitPrice   float64 `json:"unit_price,omitempty"`
-	ProductSlug string  `json:"product_slug,omitempty"`
+	ProductName string `json:"product_name,omitempty"`
+	VariantName string `json:"variant_name,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	UnitPrice   IDR    `json:"unit_price,omitempty"`
+	ProductSlug string `json:"product_slug,omitempty"`
 }
 
 // PriceAlert watches a variant for a target price.
@@ -269,14 +269,14 @@ type PriceAlert struct {
 	ID          string    `json:"id"`
 	UserID      string    `json:"user_id"`
 	VariantID   string    `json:"variant_id"`
-	TargetPrice float64   `json:"target_price"`
+	TargetPrice IDR       `json:"target_price"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 
-	CurrentPrice float64 `json:"current_price,omitempty"`
-	ProductName  string  `json:"product_name,omitempty"`
-	ProductSlug  string  `json:"product_slug,omitempty"`
-	VariantName  string  `json:"variant_name,omitempty"`
+	CurrentPrice IDR    `json:"current_price,omitempty"`
+	ProductName  string `json:"product_name,omitempty"`
+	ProductSlug  string `json:"product_slug,omitempty"`
+	VariantName  string `json:"variant_name,omitempty"`
 }
 
 // BackInStockAlert notifies a user when an out-of-stock variant is restocked.

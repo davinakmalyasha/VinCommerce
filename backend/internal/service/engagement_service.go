@@ -32,7 +32,7 @@ func (s *EngagementService) SetStores(st *repository.StoreRepository) { s.stores
 type FeedItem struct {
 	Bucket    string          `json:"bucket"` // flash_deal | followed | bestseller
 	Product   *domain.Product `json:"product"`
-	SalePrice *float64        `json:"sale_price,omitempty"`
+	SalePrice *domain.IDR     `json:"sale_price,omitempty"`
 }
 
 // Feed mixes flash deals, followed-store drops and bestsellers into one

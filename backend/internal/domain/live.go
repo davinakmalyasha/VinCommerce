@@ -44,14 +44,14 @@ type LiveSession struct {
 type LiveProduct struct {
 	VariantID     string     `json:"variant_id"`
 	SessionID     string     `json:"session_id,omitempty"`
-	PriceOverride *float64   `json:"price_override,omitempty"`
+	PriceOverride *IDR       `json:"price_override,omitempty"`
 	PinnedAt      *time.Time `json:"pinned_at,omitempty"`
 	UnpinnedAt    *time.Time `json:"unpinned_at,omitempty"`
 
 	// enriched
-	ProductName  string  `json:"product_name,omitempty"`
-	VariantName  string  `json:"variant_name,omitempty"`
-	ImageURL     string  `json:"image_url,omitempty"`
-	RegularPrice float64 `json:"regular_price"`
-	Stock        int     `json:"stock"`
+	ProductName  string `json:"product_name,omitempty"`
+	VariantName  string `json:"variant_name,omitempty"`
+	ImageURL     string `json:"image_url,omitempty"`
+	RegularPrice IDR    `json:"regular_price"`
+	Stock        int    `json:"stock"`
 }

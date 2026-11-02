@@ -173,6 +173,30 @@ func (h *Seller) LowStock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"variants": items})
 }
 
+// toVariantInputs converts wire floats to whole rupiah, rejecting fractional
+// prices with a field-level error rather than rounding them silently.
+func toVariantInputs(variants []variantRequest) ([]service.VariantInput, error) {
+	out := make([]service.VariantInput, 0, len(variants))
+	for _, v := range variants {
+		if !service.IsWholeIDR(v.Price) {
+			return nil, domain.E(domain.KindInvalid, "BAD_PRICE", "price must be whole rupiah")
+		}
+		var compareAt *domain.IDR
+		if v.CompareAtPrice != nil {
+			if !service.IsWholeIDR(*v.CompareAtPrice) {
+				return nil, domain.E(domain.KindInvalid, "BAD_PRICE", "compare-at price must be whole rupiah")
+			}
+			c := domain.IDRFromFloat(*v.CompareAtPrice)
+			compareAt = &c
+		}
+		out = append(out, service.VariantInput{
+			SKU: v.SKU, Name: v.Name, Price: domain.IDRFromFloat(v.Price), CompareAtPrice: compareAt,
+			Stock: v.Stock, WeightGrams: v.WeightGrams, ImageURL: v.ImageURL, Attributes: v.Attributes, IsActive: true,
+		})
+	}
+	return out, nil
+}
+
 // CreateProduct handles POST /seller/products.
 func (h *Seller) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
@@ -181,12 +205,10 @@ func (h *Seller) CreateProduct(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	variants := make([]service.VariantInput, 0, len(req.Variants))
-	for _, v := range req.Variants {
-		variants = append(variants, service.VariantInput{
-			SKU: v.SKU, Name: v.Name, Price: v.Price, CompareAtPrice: v.CompareAtPrice,
-			Stock: v.Stock, WeightGrams: v.WeightGrams, ImageURL: v.ImageURL, Attributes: v.Attributes, IsActive: true,
-		})
+	variants, err := toVariantInputs(req.Variants)
+	if err != nil {
+		writeErr(w, r, err)
+		return
 	}
 	p, err := h.svc.CreateProduct(r.Context(), service.CreateProductInput{
 		SellerID: user.ID, Name: req.Name, CategoryID: req.CategoryID, BrandID: req.BrandID,
@@ -207,12 +229,10 @@ func (h *Seller) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	variants := make([]service.VariantInput, 0, len(req.Variants))
-	for _, v := range req.Variants {
-		variants = append(variants, service.VariantInput{
-			SKU: v.SKU, Name: v.Name, Price: v.Price, CompareAtPrice: v.CompareAtPrice,
-			Stock: v.Stock, WeightGrams: v.WeightGrams, ImageURL: v.ImageURL, Attributes: v.Attributes, IsActive: true,
-		})
+	variants, err := toVariantInputs(req.Variants)
+	if err != nil {
+		writeErr(w, r, err)
+		return
 	}
 	p, err := h.svc.UpdateProduct(r.Context(), user.ID, chi.URLParam(r, "id"), service.CreateProductInput{
 		Name: req.Name, CategoryID: req.CategoryID, BrandID: req.BrandID,

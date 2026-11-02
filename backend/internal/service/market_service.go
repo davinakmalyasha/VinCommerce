@@ -231,12 +231,12 @@ func (s *MarketService) Bundles(ctx context.Context, sellerID string) ([]*domain
 
 // WatchPrice registers a price alert.
 func (s *MarketService) WatchPrice(ctx context.Context, userID, variantID string, targetPrice float64) (*domain.PriceAlert, error) {
-	if targetPrice <= 0 {
-		return nil, domain.E(domain.KindInvalid, "BAD_PRICE", "target price must be positive")
+	if !IsWholeIDR(targetPrice) || targetPrice <= 0 {
+		return nil, domain.E(domain.KindInvalid, "BAD_PRICE", "target price must be positive whole rupiah")
 	}
 	a := &domain.PriceAlert{
 		ID: uuid.NewString(), UserID: userID, VariantID: variantID,
-		TargetPrice: targetPrice, Status: "active",
+		TargetPrice: domain.IDRFromFloat(targetPrice), Status: "active",
 	}
 	if err := s.market.CreatePriceAlert(ctx, a); err != nil {
 		return nil, err
@@ -581,6 +581,6 @@ func (s *MarketService) emailDisputeOutcome(ctx context.Context, disputeID, deci
 	}
 }
 
-func formatIDR(v float64) string {
-	return "Rp " + fmt.Sprintf("%.0f", v)
+func formatIDR(v domain.IDR) string {
+	return "Rp " + v.String()
 }

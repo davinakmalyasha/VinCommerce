@@ -14,7 +14,7 @@ func cartLine(sellerID, variantID string, qty int, subtotal domain.IDR) *domain.
 	}
 }
 
-func bundle(sellerID string, price float64, items ...domain.BundleItem) *domain.Bundle {
+func bundle(sellerID string, price domain.IDR, items ...domain.BundleItem) *domain.Bundle {
 	return &domain.Bundle{SellerID: sellerID, Price: price, IsActive: true, Items: items}
 }
 

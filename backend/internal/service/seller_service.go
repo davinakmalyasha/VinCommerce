@@ -398,12 +398,14 @@ type CreateProductInput struct {
 	Images      []string
 }
 
-// VariantInput is one SKU row from the seller form.
+// VariantInput is one SKU row from the seller form. Prices are IDR: the
+// handler converts (and rejects fractional input) and the CSV importer
+// parses integers, so by the time a price reaches the service it is whole.
 type VariantInput struct {
 	SKU            string
 	Name           string
-	Price          float64
-	CompareAtPrice *float64
+	Price          domain.IDR
+	CompareAtPrice *domain.IDR
 	Stock          int
 	WeightGrams    int
 	ImageURL       string
@@ -1608,13 +1610,14 @@ func (s *SellerService) ImportProductsCSV(ctx context.Context, sellerID string, 
 		name := strings.TrimSpace(row[0])
 		catSlug := strings.TrimSpace(row[1])
 		sku := strings.TrimSpace(row[2])
-		price, err1 := strconv.ParseFloat(strings.TrimSpace(row[3]), 64)
+		priceCents, err1 := strconv.ParseInt(strings.TrimSpace(row[3]), 10, 64)
 		stock, err2 := strconv.Atoi(strings.TrimSpace(row[4]))
-		if name == "" || err1 != nil || err2 != nil {
+		if name == "" || err1 != nil || err2 != nil || priceCents <= 0 {
 			result.Failed++
 			result.Errors = append(result.Errors, ImportRowError{Row: i + 1, Error: "nama, harga, atau stok tidak valid"})
 			continue
 		}
+		price := domain.IDR(priceCents)
 		weight := 0
 		if len(row) > 5 {
 			weight, _ = strconv.Atoi(strings.TrimSpace(row[5]))
@@ -1647,20 +1650,17 @@ func (s *SellerService) ImportProductsCSV(ctx context.Context, sellerID string, 
 
 var _ = time.Second
 
-// validateVariantMoney enforces whole-rupiah seller prices.
+// validateVariantMoney enforces positive seller prices.
 //
-// The database now refuses fractional money on the transactional tables; this
-// is the matching input check, so a bad price is a 400 with a field name
-// rather than a constraint violation from the order insert hours later.
+// Wholeness is structural now (IDR cannot carry sen), so this checks only
+// positivity. Fractional input is rejected at the boundary that produced it:
+// the handler for JSON, the CSV importer for files.
 func validateVariantMoney(v VariantInput) error {
 	if v.Price <= 0 {
 		return domain.E(domain.KindInvalid, "BAD_PRICE", "price must be positive")
 	}
-	if !IsWholeIDR(v.Price) {
-		return domain.E(domain.KindInvalid, "BAD_PRICE", "price must be whole rupiah")
-	}
-	if v.CompareAtPrice != nil && *v.CompareAtPrice > 0 && !IsWholeIDR(*v.CompareAtPrice) {
-		return domain.E(domain.KindInvalid, "BAD_PRICE", "compare-at price must be whole rupiah")
+	if v.CompareAtPrice != nil && *v.CompareAtPrice <= 0 {
+		return domain.E(domain.KindInvalid, "BAD_PRICE", "compare-at price must be positive")
 	}
 	return nil
 }

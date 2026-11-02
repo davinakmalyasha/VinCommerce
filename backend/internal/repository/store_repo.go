@@ -324,14 +324,14 @@ func (r *StoreRepository) RecentProductsFromFollowed(ctx context.Context, userID
 	items := []*domain.Product{}
 	for rows.Next() {
 		var p domain.Product
-		var minPrice *float64
+		var minPrice *int64
 		var imageURL *string
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.AvgRating, &p.RatingCount, &p.SoldCount,
 			&minPrice, &imageURL); err != nil {
 			return nil, err
 		}
 		if minPrice != nil {
-			p.Variants = []*domain.ProductVariant{{Price: *minPrice}}
+			p.Variants = []*domain.ProductVariant{{Price: domain.IDR(*minPrice)}}
 		}
 		if imageURL != nil && *imageURL != "" {
 			p.Images = []*domain.ProductImage{{URL: *imageURL, IsPrimary: true}}

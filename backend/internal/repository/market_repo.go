@@ -147,7 +147,7 @@ func (r *QARepository) CreateBundle(ctx context.Context, b *domain.Bundle, items
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO bundles (id, seller_id, name, description, price, is_active)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
-		b.ID, b.SellerID, b.Name, b.Description, b.Price, b.IsActive); err != nil {
+		b.ID, b.SellerID, b.Name, b.Description, int64(b.Price), b.IsActive); err != nil {
 		return err
 	}
 	for _, it := range items {
@@ -184,9 +184,11 @@ func (r *QARepository) Bundles(ctx context.Context, sellerID string) ([]*domain.
 	for rows.Next() {
 		var b domain.Bundle
 		var itemsJSON []byte
-		if err := rows.Scan(&b.ID, &b.SellerID, &b.Name, &b.Description, &b.Price, &b.IsActive, &b.CreatedAt, &itemsJSON); err != nil {
+		var price int64
+		if err := rows.Scan(&b.ID, &b.SellerID, &b.Name, &b.Description, &price, &b.IsActive, &b.CreatedAt, &itemsJSON); err != nil {
 			return nil, err
 		}
+		b.Price = domain.IDR(price)
 		if len(itemsJSON) > 0 {
 			_ = json.Unmarshal(itemsJSON, &b.Items)
 		}
@@ -222,7 +224,7 @@ func (r *QARepository) hydrateBundleItems(ctx context.Context, bundles []*domain
 
 	type variantInfo struct {
 		productName, variantName, imageURL string
-		price                              float64
+		price                              int64
 		slug                               string
 	}
 	info := map[string]variantInfo{}
@@ -242,7 +244,7 @@ func (r *QARepository) hydrateBundleItems(ctx context.Context, bundles []*domain
 				b.Items[i].ProductName = v.productName
 				b.Items[i].VariantName = v.variantName
 				b.Items[i].ImageURL = v.imageURL
-				b.Items[i].UnitPrice = v.price
+				b.Items[i].UnitPrice = domain.IDR(v.price)
 				b.Items[i].ProductSlug = v.slug
 			}
 		}
@@ -285,7 +287,7 @@ func (r *QARepository) BundleByID(ctx context.Context, bundleID string) (*domain
 func (r *QARepository) CreatePriceAlert(ctx context.Context, a *domain.PriceAlert) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO price_alerts (id, user_id, variant_id, target_price) VALUES ($1, $2, $3, $4)`,
-		a.ID, a.UserID, a.VariantID, a.TargetPrice)
+		a.ID, a.UserID, a.VariantID, int64(a.TargetPrice))
 	return err
 }
 
@@ -307,10 +309,12 @@ func (r *QARepository) PriceAlerts(ctx context.Context, userID string) ([]*domai
 	items := []*domain.PriceAlert{}
 	for rows.Next() {
 		var a domain.PriceAlert
-		if err := rows.Scan(&a.ID, &a.UserID, &a.VariantID, &a.TargetPrice, &a.Status, &a.CreatedAt,
-			&a.CurrentPrice, &a.ProductName, &a.ProductSlug, &a.VariantName); err != nil {
+		var target, current int64
+		if err := rows.Scan(&a.ID, &a.UserID, &a.VariantID, &target, &a.Status, &a.CreatedAt,
+			&current, &a.ProductName, &a.ProductSlug, &a.VariantName); err != nil {
 			return nil, err
 		}
+		a.TargetPrice, a.CurrentPrice = domain.IDR(target), domain.IDR(current)
 		items = append(items, &a)
 	}
 	return items, rows.Err()
@@ -344,10 +348,12 @@ func (r *QARepository) TriggeredAlerts(ctx context.Context, limit int) ([]*domai
 	items := []*domain.PriceAlert{}
 	for rows.Next() {
 		var a domain.PriceAlert
-		if err := rows.Scan(&a.ID, &a.UserID, &a.VariantID, &a.TargetPrice, &a.Status, &a.CreatedAt,
-			&a.CurrentPrice, &a.ProductName, &a.ProductSlug, &a.VariantName); err != nil {
+		var target, current int64
+		if err := rows.Scan(&a.ID, &a.UserID, &a.VariantID, &target, &a.Status, &a.CreatedAt,
+			&current, &a.ProductName, &a.ProductSlug, &a.VariantName); err != nil {
 			return nil, err
 		}
+		a.TargetPrice, a.CurrentPrice = domain.IDR(target), domain.IDR(current)
 		items = append(items, &a)
 	}
 	return items, rows.Err()
@@ -467,7 +473,7 @@ func (r *QARepository) AddFlashSaleItems(ctx context.Context, saleID string, ite
 			INSERT INTO flash_sale_items (id, flash_sale_id, variant_id, sale_price, initial_stock)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4)
 			ON CONFLICT (flash_sale_id, variant_id) DO UPDATE SET sale_price = EXCLUDED.sale_price`,
-			saleID, it.VariantID, it.SalePrice, it.InitialStock)
+			saleID, it.VariantID, int64(it.SalePrice), it.InitialStock)
 		if err != nil {
 			return err
 		}

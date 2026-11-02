@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/vincommerce/backend/internal/domain"
+)
 
 func TestNormalizeNPWPAcceptsTheFormatsPeopleType(t *testing.T) {
 	cases := map[string]string{
@@ -30,18 +34,23 @@ func TestNormalizeNPWPRejectsWrongLength(t *testing.T) {
 	}
 }
 
-func TestValidateVariantMoneyRejectsFractionalRupiah(t *testing.T) {
-	cmp := 1500.5
+func TestValidateVariantMoneyRejectsNonPositivePrices(t *testing.T) {
+	// Fractional prices used to be rejected here. They are unrepresentable now
+	// (VariantInput carries IDR), so rejection moved to the boundaries that
+	// produce input: the handler's toVariantInputs for JSON and ParseInt for
+	// CSV rows. This asserts what this layer still owns: positivity.
+	cmp := domain.IDR(1500)
+	zero := domain.IDR(0)
 	cases := []struct {
 		name string
 		in   VariantInput
 		ok   bool
 	}{
 		{"whole", VariantInput{Price: 1500}, true},
-		{"fractional", VariantInput{Price: 1500.5}, false},
+		{"with compare-at", VariantInput{Price: 1500, CompareAtPrice: &cmp}, true},
 		{"zero", VariantInput{Price: 0}, false},
 		{"negative", VariantInput{Price: -1}, false},
-		{"fractional compare-at", VariantInput{Price: 1500, CompareAtPrice: &cmp}, false},
+		{"non-positive compare-at", VariantInput{Price: 1500, CompareAtPrice: &zero}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

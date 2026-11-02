@@ -596,10 +596,8 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		}
 		// apply the active flash-sale price (if any) so the order matches the sale price
 		if s.wishlist != nil {
-			// FlashSalePriceFor still returns float (engagement slice); the
-			// comparison and assignment convert once, here.
-			if sp, err := s.wishlist.FlashSalePriceFor(ctx, l.VariantID); err == nil && sp != nil && domain.IDRFromFloat(*sp) < l.Price {
-				l.Price = domain.IDRFromFloat(*sp)
+			if sp, err := s.wishlist.FlashSalePriceFor(ctx, l.VariantID); err == nil && sp != nil && *sp < l.Price {
+				l.Price = *sp
 				l.Subtotal = l.Price * domain.IDR(l.Quantity)
 			}
 		}

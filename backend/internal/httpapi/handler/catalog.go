@@ -147,14 +147,18 @@ func (h *Product) Search(w http.ResponseWriter, r *http.Request) {
 	if brands := q.Get("brands"); brands != "" {
 		f.BrandIDs = strings.Split(brands, ",")
 	}
+	// Price filters with sen are ignored like any other unparseable value:
+	// IDR has no fractional prices to filter on.
 	if min := q.Get("min_price"); min != "" {
-		if v, err := strconv.ParseFloat(min, 64); err == nil {
-			f.MinPrice = &v
+		if v, err := strconv.ParseFloat(min, 64); err == nil && service.IsWholeIDR(v) {
+			minPrice := domain.IDRFromFloat(v)
+			f.MinPrice = &minPrice
 		}
 	}
 	if max := q.Get("max_price"); max != "" {
-		if v, err := strconv.ParseFloat(max, 64); err == nil {
-			f.MaxPrice = &v
+		if v, err := strconv.ParseFloat(max, 64); err == nil && service.IsWholeIDR(v) {
+			maxPrice := domain.IDRFromFloat(v)
+			f.MaxPrice = &maxPrice
 		}
 	}
 	if rating := q.Get("rating"); rating != "" {
