@@ -1575,3 +1575,10 @@ call sites (wrapped at the seam; each wrap names the next slice). Run
 `41425253940`: 9/9, top-up integration asserts exact integer movement, 46/46
 e2e proves payout and wallet JSON compatibility. Remaining: ledger entries,
 intents/refunds, orders/checkout, catalogue prices, coupons/shipping.
+
+**Ledger entries to IDR (`1c3286a`, anchor fix `85e342e`).** Entry amounts,
+Debit/Credit, all ten posting builders, the repo insert and every call site
+are now IDR; validateBalanced sums integers exactly, and normaliseEntries
+keeps zero-drop/negative-kept minus the rounding step. The first CI run
+failed on the M28 mutation anchor, which pins the capture call text -- fixed
+in `85e342e`. Run `41438874972`: 9/9 including the full mutation harness.
