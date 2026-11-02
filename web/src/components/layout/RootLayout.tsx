@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Header } from './Header'
 import { Footer } from './Footer'
 import { ChatWidget } from './ChatWidget'
+import { BottomNav } from './BottomNav'
 import { VerifyEmailBanner } from './VerifyEmailBanner'
 import { useSession } from '../../stores/session'
 import { DEFAULT_TITLES } from '../Seo'
@@ -40,10 +41,13 @@ export function RootLayout() {
       )}
       <VerifyEmailBanner />
       <Header />
-      <main className="flex-1">
+      {/* Bottom padding only on small screens: the tab bar overlays content,
+          and without it the footer and page-end actions sit underneath it. */}
+      <main className="flex-1 pb-20 md:pb-0">
         <Outlet />
       </main>
       <Footer />
+      <BottomNav />
       <ChatWidget />
     </div>
   )

@@ -113,7 +113,9 @@ export function ChatWidget() {
       <button
         type="button"
         onClick={toggle}
-        className="fixed bottom-6 right-4 sm:right-6 z-50 w-14 h-14 rounded-full bg-amber-500 text-white shadow-lg hover:bg-amber-600 flex items-center justify-center text-2xl"
+        // Raised above the bottom tab bar on small screens (md:hidden): at
+        // bottom-6 the button sat underneath the bar's right end.
+        className="fixed bottom-24 md:bottom-6 right-4 sm:right-6 z-50 w-14 h-14 rounded-full bg-amber-500 text-white shadow-lg hover:bg-amber-600 flex items-center justify-center text-2xl"
         title={unread ? 'Bantuan — ada balasan baru' : 'Bantuan'}
         aria-label={unread ? 'Bantuan — ada balasan baru' : 'Bantuan'}
         aria-expanded={open}
@@ -132,7 +134,7 @@ export function ChatWidget() {
       {open && (
         // `w-96` + `right-6` is 408px, wider than a 375px viewport: the panel
         // hung off the right edge and the close button was unreachable.
-        <div className="fixed bottom-24 right-4 sm:right-6 z-50 w-[calc(100vw-2rem)] sm:w-96 max-w-full h-[min(32rem,70vh)] bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden">
+        <div className="fixed bottom-40 md:bottom-24 right-4 sm:right-6 z-50 w-[calc(100vw-2rem)] sm:w-96 max-w-full h-[min(32rem,70vh)] bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden">
 
           <div className="bg-amber-500 text-white px-4 py-3 flex items-center justify-between">
             <div>
