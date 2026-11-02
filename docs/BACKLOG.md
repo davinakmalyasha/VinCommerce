@@ -1549,3 +1549,12 @@ line in an open session is newer than the last panel open. Run `41401220835`:
 9/9, `PASS: TestSessionListingCarriesTheNewestMessage` plus 4 new vitest
 (123/123). Order-scoped OrderChat is unchanged; anonymous visitors still get
 no widget.
+
+**Dark mode on the four light-only buyer surfaces (`c67e44d`).** Cart,
+checkout, orders and contact rendered white cards and inputs under `.dark`.
+Applied the repo's own tokens (cards `dark:bg-gray-900`, inputs
+`dark:bg-gray-800`, selected `dark:bg-amber-900/20`, gray-900 buttons invert)
+and gave bare `border` utilities explicit colors, since Tailwind v4 defaults
+them to currentColor. Light rendering is untouched: additive `dark:`
+variants only. Run `41407309322`: 9/9. No dark visual pass exists in CI, so
+this is token-consistent by construction, not screenshot-proven.
