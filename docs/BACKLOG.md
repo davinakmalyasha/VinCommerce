@@ -1558,3 +1558,11 @@ and gave bare `border` utilities explicit colors, since Tailwind v4 defaults
 them to currentColor. Light rendering is untouched: additive `dark:`
 variants only. Run `41407309322`: 9/9. No dark visual pass exists in CI, so
 this is token-consistent by construction, not screenshot-proven.
+
+**Mobile bottom tab bar (`9f4e960`).** Phones had no tab bar. Five tabs
+(Beranda, Cari, Keranjang with badge, Pesanan, Akun), `md:hidden`, safe-area
+padding, labelled landmark. The bar forced two collision fixes in the same
+commit: the chat button/panel move above it below `md`, and `main` gains
+mobile-only bottom padding. The badge reuses the shared cart key. Run
+`41412008455`: 9/9, 126/126 vitest (3 new). No small-viewport run exists, so
+this is class-and-state proven, not layout-proven.
