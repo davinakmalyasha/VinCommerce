@@ -1592,3 +1592,10 @@ real `"25000.00"` format, which first caught an over-strict integer parse).
 Run `41459234993`: 9/9 including the harness. The first run failed three
 mutation anchors (M1's injected resubmission no longer compiled, M3's SUM
 cast, M28's call shape) -- fixed in `3b4e1cd`.
+
+**Checkout engine (`17cd5d8`).** Order/OrderItem/CartLine totals, the Quote,
+allocateGlobal (integer floors, float only ranks remainders), shippingFee,
+insuranceFee, couponDiscount, bundle matching, loyalty math and claim structs
+are IDR; the claim tolerance is exact equality. Catalogue prices and coupon /
+shipping config stay float by mixed-semantics necessity. Run `41472179588`:
+9/9, bundle/quote and claim integration tests green, 46/46 e2e.
