@@ -1599,3 +1599,10 @@ insuranceFee, couponDiscount, bundle matching, loyalty math and claim structs
 are IDR; the claim tolerance is exact equality. Catalogue prices and coupon /
 shipping config stay float by mixed-semantics necessity. Run `41472179588`:
 9/9, bundle/quote and claim integration tests green, 46/46 e2e.
+
+**Catalogue prices (`6a4895b`).** Variant/compare-at prices, product
+min-price, search filters, flash-sale prices, bundle prices, price-alert
+targets and live overrides are IDR; reads fail loudly on legacy fractions,
+writes reject them per field at the boundary that produced them. Coupon
+Value stays float by mixed-semantics necessity. Run `41487230823`: 9/9,
+seed + seller/flash/bundle e2e green.
