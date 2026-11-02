@@ -1582,3 +1582,13 @@ are now IDR; validateBalanced sums integers exactly, and normaliseEntries
 keeps zero-drop/negative-kept minus the rounding step. The first CI run
 failed on the M28 mutation anchor, which pins the capture call text -- fixed
 in `85e342e`. Run `41438874972`: 9/9 including the full mutation harness.
+
+**Intents, refunds and gateway amounts (`466d3f8`, anchors `3b4e1cd`).**
+PaymentIntent splits, refund rows/plans, the cap and leg arithmetic, and all
+gateway structs are IDR; webhook comparisons are exact equality, and
+ExecuteRefund rejects fractional requests instead of rounding them. Midtrans
+parses its decimal strings but requires whole values (the tests encode the
+real `"25000.00"` format, which first caught an over-strict integer parse).
+Run `41459234993`: 9/9 including the harness. The first run failed three
+mutation anchors (M1's injected resubmission no longer compiled, M3's SUM
+cast, M28's call shape) -- fixed in `3b4e1cd`.
