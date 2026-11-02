@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../lib/api'
 import { useSession } from '../../stores/session'
 import { formatDate } from '../../lib/format'
+import { hasUnreadAgentReply, readChatSeenAt, writeChatSeenAt } from '../../lib/chat'
 
 interface ChatMessage {
   id: number
@@ -31,8 +32,17 @@ export function ChatWidget() {
 
   const { data: sessions } = useQuery({
     queryKey: ['chat-sessions'],
-    queryFn: async () => (await api.get<{ sessions: { id: string; status: string }[] }>('/chat/sessions')).data.sessions,
-    enabled: !!user && open,
+    queryFn: async () =>
+      (
+        await api.get<{
+          sessions: { id: string; status: string; last_message_at?: string; last_message_role?: string }[]
+        }>('/chat/sessions')
+      ).data.sessions,
+    // Always on (not only when the panel is open): the button badge needs the
+    // latest agent message even when the user never opens the panel. Same
+    // 30s cadence as the notification bell.
+    enabled: !!user,
+    refetchInterval: 30_000,
   })
 
   const { data: messages } = useQuery({
@@ -77,19 +87,45 @@ export function ChatWidget() {
     },
   })
 
+  // The badge compares against the last panel open, not against message reads:
+  // opening the panel marks the replies seen. Stored in localStorage so it
+  // survives a reload; a missing value (epoch) simply means "everything is new".
+  // Above the `!user` return: hooks must run in the same order every render.
+  const [seenAt, setSeenAt] = useState(() => readChatSeenAt())
+
   if (!user) return null
+
+  const toggle = () => {
+    setOpen((was) => {
+      if (!was) {
+        writeChatSeenAt()
+        setSeenAt(Date.now())
+        // The just-read replies must clear immediately, not at the next poll.
+        queryClient.invalidateQueries({ queryKey: ['chat-sessions'] })
+      }
+      return !was
+    })
+  }
+  const unread = !open && hasUnreadAgentReply(sessions, seenAt)
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
         className="fixed bottom-6 right-4 sm:right-6 z-50 w-14 h-14 rounded-full bg-amber-500 text-white shadow-lg hover:bg-amber-600 flex items-center justify-center text-2xl"
-        title="Bantuan"
+        title={unread ? 'Bantuan — ada balasan baru' : 'Bantuan'}
+        aria-label={unread ? 'Bantuan — ada balasan baru' : 'Bantuan'}
         aria-expanded={open}
         aria-haspopup="dialog"
       >
         {open ? '✕' : '💬'}
+        {unread && (
+          <span
+            aria-hidden="true"
+            className="absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-red-600 border-2 border-white"
+          />
+        )}
       </button>
 
 

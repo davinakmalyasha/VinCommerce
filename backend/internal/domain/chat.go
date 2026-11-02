@@ -20,6 +20,11 @@ type ChatSession struct {
 	Type      string     `json:"type"`
 	CreatedAt time.Time  `json:"created_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+	// LastMessageAt/LastMessageRole describe the newest message in the session,
+	// if any. Populated on the customer's own listing only, so the widget can
+	// show a "new reply" dot without fetching every session's history.
+	LastMessageAt   *time.Time `json:"last_message_at,omitempty"`
+	LastMessageRole string     `json:"last_message_role,omitempty"`
 
 	UserName string `json:"user_name,omitempty"`
 }

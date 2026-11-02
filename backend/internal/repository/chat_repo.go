@@ -72,17 +72,40 @@ func (r *ChatRepository) SessionByID(ctx context.Context, sessionID string) (*do
 }
 
 // SessionsForUser lists a customer's sessions.
+//
+// The LATERAL join attaches each session's newest message without a second
+// query per session. A separate scan (not scanSessions) because the staff
+// queue and the by-id lookup do not need -- and must not pay for -- the join.
 func (r *ChatRepository) SessionsForUser(ctx context.Context, userID string) ([]*domain.ChatSession, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT s.id, s.user_id, s.agent_id, s.status, s.source, s.created_at, s.closed_at, u.full_name
+		SELECT s.id, s.user_id, s.agent_id, s.status, s.source, s.created_at, s.closed_at, u.full_name,
+		       lm.created_at, COALESCE(lm.sender_role, '')
 		FROM chat_sessions s
 		JOIN users u ON u.id = s.user_id
+		LEFT JOIN LATERAL (
+			SELECT m.created_at, m.sender_role
+			  FROM chat_messages m
+			 WHERE m.session_id = s.id
+			 ORDER BY m.created_at DESC
+			 LIMIT 1
+		) lm ON true
 		WHERE s.user_id = $1 ORDER BY s.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanSessions(rows)
+
+	out := []*domain.ChatSession{}
+	for rows.Next() {
+		var s domain.ChatSession
+		if err := rows.Scan(&s.ID, &s.UserID, &s.AgentID, &s.Status, &s.Source,
+			&s.CreatedAt, &s.ClosedAt, &s.UserName,
+			&s.LastMessageAt, &s.LastMessageRole); err != nil {
+			return nil, err
+		}
+		out = append(out, &s)
+	}
+	return out, rows.Err()
 }
 
 // OpenSessions lists the unclaimed/claimed open queue (staff).
