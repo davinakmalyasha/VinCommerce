@@ -1606,3 +1606,8 @@ targets and live overrides are IDR; reads fail loudly on legacy fractions,
 writes reject them per field at the boundary that produced them. Coupon
 Value stays float by mixed-semantics necessity. Run `41487230823`: 9/9,
 seed + seller/flash/bundle e2e green.
+
+**Holds and reservations (`23ff275`).** Hold/release transfers, hold
+requests, reservation rows and the releasable query are IDR; the `::float8`
+cast is gone and callers pass struct fields with no wraps left (one remains
+at the payout-request boundary, converted at entry). Run `41494446842`: 9/9.
