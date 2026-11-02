@@ -1527,3 +1527,16 @@ reply it should.
 
 Still open and not claimed: buyer edit/delete of their own review (no
 endpoints exist yet), which is the remaining half of this gap.
+
+**Buyer review edit/delete (`483bf2e`, test fix `be97880`).** Reviews were
+write-once. `PUT /products/reviews/{id}` and `DELETE /products/reviews/{id}`
+plus `GET /products/reviews/mine` back a new "Ulasan saya" page with inline
+edit, two-step delete, status chips and the seller reply. Ownership is the row
+guard (missing id and somebody else's give the same answer); an edit reuses
+the create validation and returns the review to `pending`, with the rating
+trigger keeping aggregates. Run `41393832558`: 9/9,
+`PASS: TestBuyerCanEditAndDeleteOnlyTheirOwnReview` — stranger edit/delete
+fail with the row intact, invalid edits rejected, owner edit lands as pending
+and visible in their own listing only, owner delete removes it. The first CI
+run caught the test asserting validation on the repository layer instead of
+the service; fixed in `be97880`.
