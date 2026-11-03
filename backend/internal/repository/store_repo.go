@@ -657,6 +657,26 @@ func (r *StoreRepository) SetReturnStatus(ctx context.Context, returnID, status,
 	return nil
 }
 
+// WithdrawReturn closes a buyer's own claim that no decision or money has
+// touched yet. The status predicate is the whole guard: a claim the seller
+// already approved beyond this point, refunded, or rejected takes a
+// different path. Notes are deliberately untouched -- wiping the seller's
+// note would destroy the audit trail of why it was approved.
+func (r *StoreRepository) WithdrawReturn(ctx context.Context, returnID string) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE return_requests SET status = 'closed', resolution = 'none',
+			resolved_at = now(), updated_at = now()
+		WHERE id = $1 AND status IN ('requested', 'approved')`, returnID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.E(domain.KindConflict, "RETURN_STATE_CHANGED",
+			"this return can no longer be withdrawn; it was already decided or refunded")
+	}
+	return nil
+}
+
 func (r *StoreRepository) returnBy(ctx context.Context, where string, arg any) (*domain.ReturnRequest, error) {
 	var req domain.ReturnRequest
 	var evidence []byte

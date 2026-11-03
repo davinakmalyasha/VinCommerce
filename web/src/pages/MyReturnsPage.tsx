@@ -59,6 +59,21 @@ export function MyReturnsPage() {
   })
   const [toast, setToast] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
+  const [confirmWithdraw, setConfirmWithdraw] = useState<string | null>(null)
+
+  const withdraw = useMutation({
+    mutationFn: async (returnId: string) => api.delete(`/returns/${returnId}`),
+    onSuccess: () => {
+      setConfirmWithdraw(null)
+      queryClient.invalidateQueries({ queryKey: ['my-returns'] })
+      setToast({ tone: 'ok', text: 'Retur dibatalkan. Dana penjual yang ditahan sudah dilepas.' })
+    },
+    onError: (e: Error) => {
+      setConfirmWithdraw(null)
+      setToast({ tone: 'err', text: e.message || 'Gagal membatalkan retur.' })
+    },
+  })
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 space-y-5">
       <div>
@@ -110,6 +125,26 @@ export function MyReturnsPage() {
               <button type="button" onClick={() => setDisputeFor(r.id)} className="text-xs text-red-600 hover:underline">
                 Tidak setuju? Eskalasi jadi sengketa
               </button>
+            )}
+            {(r.status === 'requested' || r.status === 'approved') && confirmWithdraw !== r.id && (
+              <button type="button" onClick={() => setConfirmWithdraw(r.id)} className="text-xs text-gray-500 hover:underline">
+                Batalkan pengajuan ini
+              </button>
+            )}
+            {confirmWithdraw === r.id && (
+              <div className="space-y-2 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="text-xs text-gray-600">Batalkan retur ini? Dana penjual yang ditahan akan dilepas kembali.</p>
+                <div className="flex gap-2">
+                  <button type="button"
+                    onClick={() => withdraw.mutate(r.id)}
+                    disabled={withdraw.isPending}
+                    className="px-4 py-2 rounded-lg bg-gray-900 text-white text-xs disabled:opacity-50"
+                  >
+                    Ya, batalkan
+                  </button>
+                  <button type="button" onClick={() => setConfirmWithdraw(null)} className="px-4 py-2 rounded-lg border text-xs">Tidak</button>
+                </div>
+              </div>
             )}
             {disputeFor === r.id && (
               <div className="space-y-2 bg-red-50 border border-red-100 rounded-lg p-3">

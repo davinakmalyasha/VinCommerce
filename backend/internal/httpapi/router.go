@@ -395,6 +395,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Use(authMw)
 			r.Get("/", buyerReturns.List)
 			r.Post("/", buyerReturns.Request)
+			r.Delete("/{id}", buyerReturns.Withdraw)
 		})
 
 		r.Route("/admin", func(r chi.Router) {

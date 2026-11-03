@@ -1110,6 +1110,44 @@ func (s *SellerService) MyReturns(ctx context.Context, buyerID string) ([]*domai
 	return s.stores.ReturnsByBuyer(ctx, buyerID)
 }
 
+// WithdrawReturn lets a buyer cancel their own claim while no decision or
+// money has touched it yet.
+//
+// The hold releases FIRST through the same claim-journal-wallet path as the
+// scheduled job, so the seller's balance is spendable immediately rather
+// than after the lag. A missing hold is fine (some wirings take none) and
+// the lag job covers leftovers. The status write is predicated on
+// (requested, approved) in the repository, so a seller decision landing
+// between the load and the write fails instead of resurrecting a decided
+// claim.
+func (s *SellerService) WithdrawReturn(ctx context.Context, returnID, buyerID string) error {
+	req, err := s.stores.ReturnByID(ctx, returnID)
+	if err != nil {
+		return err
+	}
+	if req.BuyerID != buyerID {
+		return domain.E(domain.KindForbidden, "NOT_OWNED", "return does not belong to user")
+	}
+	if req.Status != domain.ReturnRequested && req.Status != domain.ReturnApproved {
+		return domain.E(domain.KindConflict, "RETURN_STATE_CHANGED",
+			"this return can no longer be withdrawn; it was already decided or refunded")
+	}
+	if s.paymentSvc != nil {
+		if err := s.paymentSvc.ReleaseLiveHold(ctx, req.OrderID, HoldReturn); err != nil {
+			return err
+		}
+	}
+	if err := s.stores.WithdrawReturn(ctx, returnID); err != nil {
+		return err
+	}
+	if s.notifs != nil {
+		_ = s.notifs.Notify(ctx, req.SellerID, "order", "Retur dibatalkan pembeli",
+			"Klaim retur ditarik kembali; dana yang ditahan sudah dilepas.",
+			map[string]any{"order_id": req.OrderID})
+	}
+	return nil
+}
+
 // SellerReturns lists claims on the seller's orders.
 func (s *SellerService) SellerReturns(ctx context.Context, sellerID, status string) ([]*domain.ReturnRequest, error) {
 	return s.stores.ReturnsBySeller(ctx, sellerID, status)

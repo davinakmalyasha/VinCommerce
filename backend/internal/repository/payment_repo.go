@@ -1379,6 +1379,31 @@ func (r *PaymentRepository) MarkReservationReleasedTx(ctx context.Context, q Que
 	return tag.RowsAffected() > 0, nil
 }
 
+// LiveReservationForOrder finds the unreleased hold of one kind on an order,
+// or nil when there is none. A missing hold is normal (the request path runs
+// without a payment service in some wirings), so callers treat nil as
+// "nothing to release", not as an error.
+func (r *PaymentRepository) LiveReservationForOrder(ctx context.Context, orderID, kind string) (*SellerReservation, error) {
+	var res SellerReservation
+	var amount int64
+	err := r.pool.QueryRow(ctx, `
+		SELECT sr.id::text, sr.seller_id::text, sr.order_id::text,
+		       sr.amount, sr.kind, COALESCE(sr.note, '')
+		  FROM seller_reservations sr
+		 WHERE sr.order_id = $1::uuid AND sr.kind = $2 AND sr.released_at IS NULL
+		 ORDER BY sr.created_at DESC
+		 LIMIT 1`, orderID, kind).
+		Scan(&res.ID, &res.SellerID, &res.OrderID, &amount, &res.Kind, &res.Note)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	res.Amount = domain.IDR(amount)
+	return &res, nil
+}
+
 // ReserveSellerPendingTx holds back a balance that is not yet releasable.
 //
 // The three non-payout kinds exist because the fraud they prevent is the same in

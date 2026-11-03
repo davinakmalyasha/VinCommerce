@@ -809,6 +809,16 @@ func (h *BuyerReturns) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"returns": items})
 }
 
+// Withdraw handles DELETE /returns/{id} — buyer cancels their own undecided claim.
+func (h *BuyerReturns) Withdraw(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	if err := h.svc.WithdrawReturn(r.Context(), chi.URLParam(r, "id"), user.ID); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"withdrawn": true})
+}
+
 // Admin exposes admin moderation endpoints.
 type Admin struct {
 	svc *service.SellerService

@@ -1871,6 +1871,23 @@ func (s *PaymentService) releaseOneReservation(ctx context.Context, res *reposit
 	return tx.Commit(ctx)
 }
 
+// ReleaseLiveHold releases the unreleased hold of one kind on an order, if
+// any. A missing hold is success, not an error: the request path runs
+// without a payment service in some wirings, and the lag job covers
+// leftovers. The money moves through the same claim-journal-wallet path as
+// the scheduled release, so a withdrawn return frees the seller's balance
+// immediately instead of after the lag.
+func (s *PaymentService) ReleaseLiveHold(ctx context.Context, orderID, kind string) error {
+	res, err := s.payments.LiveReservationForOrder(ctx, orderID, kind)
+	if err != nil {
+		return err
+	}
+	if res == nil {
+		return nil
+	}
+	return s.releaseOneReservation(ctx, res)
+}
+
 // SetPayoutLag sets the platform-wide payout lag. A per-seller override, when one
 // exists, still wins; this is the default for everyone else.
 func (s *PaymentService) SetPayoutLag(days int) error {
