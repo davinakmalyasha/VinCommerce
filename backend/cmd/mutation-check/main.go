@@ -368,7 +368,7 @@ func main() {
 			label: "M1: onRefunded resubmits via RefundOrder (THE DOUBLE-REFUND)",
 			file:  svcFile,
 			old:   "\t_, err := s.RecordProviderRefund(ctx, providerRefundEvent{",
-			new: "\t_ = s.RefundOrder(ctx, intent.OrderID, \"gateway refund\", true, amount.Float())\n" +
+			new: "\t_ = s.RefundOrder(ctx, intent.OrderID, \"gateway refund\", true, amount)\n" +
 				"\t_, err := s.RecordProviderRefund(ctx, providerRefundEvent{",
 			expect: "",
 		},
