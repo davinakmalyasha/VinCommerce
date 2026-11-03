@@ -1253,7 +1253,7 @@ func (s *SellerService) RefundReturn(ctx context.Context, returnID string, note 
 	// the leg derivation and the status transition are identical to every other
 	// refund. This is the non-reversible-method branch; gateway methods never
 	// reach it (see refundRoutedThroughGateway).
-	if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, domain.IDRFromFloat(req.Amount),
+	if err := s.paymentSvc.RefundOrderInTx(ctx, tx, req.OrderID, req.Amount,
 		"return refund: "+returnID); err != nil {
 		return err
 	}

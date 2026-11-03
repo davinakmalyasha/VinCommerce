@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -1310,7 +1309,7 @@ func (r *PaymentRepository) ReleasableReservations(
 // refund: an audit trail nobody can read is not an audit trail.
 func (r *PaymentRepository) SellerHeldTotal(
 	ctx context.Context, q Querier, liveOnly bool, limit int,
-) (float64, []*SellerHoldRow, error) {
+) (domain.IDR, []*SellerHoldRow, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -1319,7 +1318,7 @@ func (r *PaymentRepository) SellerHeldTotal(
 		       COALESCE(sr.order_id::text, ''),
 		       sr.kind,
 		       COALESCE(sr.note, ''),
-		       sr.amount::float8,
+		       sr.amount,
 		       sr.created_at,
 		       sr.released_at
 		  FROM seller_reservations sr
@@ -1331,14 +1330,16 @@ func (r *PaymentRepository) SellerHeldTotal(
 	}
 	defer rows.Close()
 
-	total := 0.0
+	var total domain.IDR
 	out := []*SellerHoldRow{}
 	for rows.Next() {
 		var h SellerHoldRow
+		var amount int64
 		if err := rows.Scan(&h.SellerID, &h.OrderID, &h.Kind, &h.Note,
-			&h.Amount, &h.CreatedAt, &h.ReleasedAt); err != nil {
+			&amount, &h.CreatedAt, &h.ReleasedAt); err != nil {
 			return 0, nil, err
 		}
+		h.Amount = domain.IDR(amount)
 		// A released hold is money the seller HAS, so counting it into "held"
 		// would overstate the platform's restriction on itself.
 		if h.ReleasedAt == nil {
@@ -1346,13 +1347,8 @@ func (r *PaymentRepository) SellerHeldTotal(
 		}
 		out = append(out, &h)
 	}
-	return moneyRound(total), out, rows.Err()
+	return total, out, rows.Err()
 }
-
-// moneyRound keeps the total on whole rupiah, matching every other money value in
-// the system. Summing float64 and then rounding once is what keeps a total of many
-// held amounts from ending in a sen the platform does not have.
-func moneyRound(v float64) float64 { return math.Round(v) }
 
 // SellerHoldRow is one hold, as an operator reads it.
 type SellerHoldRow struct {
@@ -1360,7 +1356,7 @@ type SellerHoldRow struct {
 	OrderID    string     `json:"order_id,omitempty"`
 	Kind       string     `json:"hold_kind"`
 	Note       string     `json:"note,omitempty"`
-	Amount     float64    `json:"amount"`
+	Amount     domain.IDR `json:"amount"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ReleasedAt *time.Time `json:"released_at,omitempty"`
 }

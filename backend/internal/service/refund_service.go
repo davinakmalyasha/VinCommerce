@@ -297,7 +297,7 @@ func (s *PaymentService) refundRecordedForProviderKey(
 // still accounted for and an operator can see the write-off, rather than the
 // money silently vanishing into an expense.
 func (s *PaymentService) ExecuteRefund(
-	ctx context.Context, orderID, reason string, refundToBuyer bool, amount float64, requestedBy string,
+	ctx context.Context, orderID, reason string, refundToBuyer bool, amount domain.IDR, requestedBy string,
 ) (*repository.Refund, error) {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
@@ -316,14 +316,7 @@ func (s *PaymentService) ExecuteRefund(
 	// therefore cannot both read the same remaining balance: the second blocks on
 	// the lock and then sees the first one's row.
 	//
-	// The requested amount arrives as float (handler JSON) and is converted
-	// once, here. A fractional request is rejected rather than rounded: the
-	// refund would otherwise move a different amount than the operator typed.
-	if amount != 0 && !IsWholeIDR(amount) {
-		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT",
-			"refund amount must be whole rupiah")
-	}
-	refund, plan, err := s.reserveRefund(ctx, intent, reason, refundToBuyer, domain.IDRFromFloat(amount), requestedBy)
+	refund, plan, err := s.reserveRefund(ctx, intent, reason, refundToBuyer, amount, requestedBy)
 	if err != nil {
 		return nil, err
 	}

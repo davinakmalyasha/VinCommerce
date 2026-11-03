@@ -51,9 +51,9 @@ type GatewaySettlement struct {
 	SettlementRef string
 	SettledOn     time.Time
 	Kind          string
-	Gross         float64
-	Fee           float64
-	Net           float64
+	Gross         domain.IDR
+	Fee           domain.IDR
+	Net           domain.IDR
 	Currency      string
 	Raw           map[string]any
 	JournalID     string
@@ -99,7 +99,7 @@ func (r *PaymentRepository) RecordSettlement(ctx context.Context, q Querier, s *
 		    (gateway, settlement_ref, settled_on, kind, gross, fee, net, currency, raw)
 		VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (gateway, kind, settlement_ref) DO NOTHING`,
-		s.Gateway, s.SettlementRef, s.SettledOn, s.Kind, s.Gross, s.Fee, s.Net, s.Currency, raw)
+		s.Gateway, s.SettlementRef, s.SettledOn, s.Kind, int64(s.Gross), int64(s.Fee), int64(s.Net), s.Currency, raw)
 	if err != nil {
 		return false, err
 	}
@@ -207,8 +207,8 @@ type SettlementMatch struct {
 	GatewaySettlement
 	// JournalTotal is what the journal actually recorded, and AmountDelta is the
 	// signed difference against what the gateway reported.
-	JournalTotal float64
-	AmountDelta  float64
+	JournalTotal domain.IDR
+	AmountDelta  domain.IDR
 	IsMatched    bool
 	TxType       string
 }
@@ -238,11 +238,14 @@ func (r *PaymentRepository) SettlementMatches(ctx context.Context, unreconciledO
 	out := []*SettlementMatch{}
 	for rows.Next() {
 		var m SettlementMatch
+		var gross, fee, net, total, delta int64
 		if err := rows.Scan(&m.ID, &m.Gateway, &m.SettlementRef, &m.SettledOn, &m.Kind,
-			&m.Gross, &m.Fee, &m.Net, &m.JournalID, &m.ReconciledAt,
-			&m.TxType, &m.JournalTotal, &m.AmountDelta, &m.IsMatched); err != nil {
+			&gross, &fee, &net, &m.JournalID, &m.ReconciledAt,
+			&m.TxType, &total, &delta, &m.IsMatched); err != nil {
 			return nil, err
 		}
+		m.Gross, m.Fee, m.Net = domain.IDR(gross), domain.IDR(fee), domain.IDR(net)
+		m.JournalTotal, m.AmountDelta = domain.IDR(total), domain.IDR(delta)
 		m.Currency = "IDR"
 		out = append(out, &m)
 	}
@@ -285,8 +288,9 @@ const settlementMatchSelect = `
 func scanSettlement(row rowScanner) (*GatewaySettlement, error) {
 	var s GatewaySettlement
 	var raw []byte
+	var gross, fee, net int64
 	if err := row.Scan(&s.ID, &s.Gateway, &s.SettlementRef, &s.SettledOn, &s.Kind,
-		&s.Gross, &s.Fee, &s.Net, &s.Currency, &raw, &s.JournalID, &s.ReconciledAt, &s.CreatedAt); err != nil {
+		&gross, &fee, &net, &s.Currency, &raw, &s.JournalID, &s.ReconciledAt, &s.CreatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -295,5 +299,6 @@ func scanSettlement(row rowScanner) (*GatewaySettlement, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &s.Raw)
 	}
+	s.Gross, s.Fee, s.Net = domain.IDR(gross), domain.IDR(fee), domain.IDR(net)
 	return &s, nil
 }

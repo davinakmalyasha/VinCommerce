@@ -232,9 +232,11 @@ func TestHeldBalancesAreReportedSeparatelyFromEscrow(t *testing.T) {
 	if !strings.Contains(fn, "$1::boolean = false OR") {
 		t.Errorf("the released view is not reachable:\n%s", fn)
 	}
-	// Whole rupiah, like every other money total in the system.
-	if !strings.Contains(fn, "return moneyRound(total)") {
-		t.Errorf("the held total is not rounded to whole rupiah:\n%s\n"+
+	// Whole rupiah by type: the total sums IDR, so there is no rounding step
+	// left to assert -- the old pin named a moneyRound call that no longer
+	// exists because there is nothing left to round.
+	if !strings.Contains(fn, "return total, out, rows.Err()") {
+		t.Errorf("the held total is not returned as an integer sum:\n%s\n"+
 			"summing float64 across many holds otherwise ends in a sen the platform "+
 			"does not have", fn)
 	}

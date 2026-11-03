@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/repository"
 )
 
@@ -86,21 +87,17 @@ func TestReportCountsEveryOffenderButNamesOnlyTheFirstFew(t *testing.T) {
 }
 
 func TestAmountsAgreeWithinOneRupiah(t *testing.T) {
+	// Exact equality now: both sides are whole rupiah, so there is no tolerance
+	// left to have a boundary. A nonzero delta of any size is a genuine
+	// discrepancy. (Fractional deltas cannot be expressed as arguments anymore
+	// -- they fail to compile -- which retires the old sub-rupiah cases.)
 	cases := []struct {
-		delta float64
+		delta domain.IDR
 		want  bool
 	}{
 		{0, true},
-		{0.4, true},
-		{0.999, true},
-		{-0.999, true},
-		// One rupiah is the boundary and is NOT agreed: the tolerance is
-		// "less than a rupiah", because these are whole-rupiah figures and a
-		// whole rupiah of disagreement is a whole rupiah of missing money.
 		{1, false},
 		{-1, false},
-		{1.01, false},
-		{-1.01, false},
 		{500, false},
 		{-500, false},
 		{100000, false},
@@ -121,11 +118,11 @@ func TestAmountsAgreeWithinOneRupiah(t *testing.T) {
 func TestTheToleranceDoesNotScaleWithTheAmount(t *testing.T) {
 	// A discrepancy proportional to the size of the transaction, on an amount
 	// large enough that a percentage-based check would forgive it.
-	const huge = 100_000_000.0
-	const smallPercentOfHuge = huge * 0.001 // 0.1%, i.e. Rp100,000
+	const huge domain.IDR = 100_000_000
+	const smallPercentOfHuge = huge / 1000 // 0.1%, i.e. Rp100,000
 
 	if amountsAgree(smallPercentOfHuge) {
-		t.Errorf("a Rp%.0f discrepancy (0.1%% of Rp%.0f) was forgiven; the tolerance "+
+		t.Errorf("a Rp%v discrepancy (0.1%% of Rp%v) was forgiven; the tolerance "+
 			"must be absolute, not relative", smallPercentOfHuge, huge)
 	}
 	// And the same absolute discrepancy on a small amount is equally rejected --

@@ -683,11 +683,13 @@ func (r *StoreRepository) returnBy(ctx context.Context, where string, arg any) (
 }
 
 func (r *StoreRepository) loadReturnAmount(ctx context.Context, req *domain.ReturnRequest) (*domain.ReturnRequest, error) {
+	var amount int64
 	if err := r.pool.QueryRow(ctx,
-		`SELECT total FROM order_items WHERE id = $1`, req.OrderItemID).Scan(&req.Amount); err != nil &&
+		`SELECT total FROM order_items WHERE id = $1`, req.OrderItemID).Scan(&amount); err != nil &&
 		!errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
+	req.Amount = domain.IDR(amount)
 	return req, nil
 }
 

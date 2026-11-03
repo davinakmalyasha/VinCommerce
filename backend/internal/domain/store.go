@@ -93,8 +93,8 @@ type ReturnRequest struct {
 	RequestedAt  time.Time  `json:"requested_at"`
 	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
 
-	ItemName string  `json:"item_name,omitempty"`
-	Amount   float64 `json:"amount,omitempty"`
+	ItemName string `json:"item_name,omitempty"`
+	Amount   IDR    `json:"amount,omitempty"`
 }
 
 // MaxReturnEvidence caps how many photos a return claim may attach. Three is

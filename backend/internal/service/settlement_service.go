@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
+	"github.com/vincommerce/backend/internal/domain"
 	"github.com/vincommerce/backend/internal/repository"
 )
 
@@ -120,7 +120,10 @@ const maxReportSamples = 10
 //
 // One rupiah covers the float64 round-trip through `NUMERIC`, which is exact for
 // values this small but is not a licence to be vague.
-func amountsAgree(delta float64) bool { return math.Abs(delta) < 1.0 }
+// amountsAgree is exact equality: both sides are whole rupiah now, so the
+// sub-rupiah tolerance this replaced forgave nothing real -- and a nonzero
+// delta of any size is a genuine discrepancy.
+func amountsAgree(delta domain.IDR) bool { return delta == 0 }
 
 // settlementRefFor builds the idempotency key for a settlement lookup.
 //
@@ -141,12 +144,12 @@ func describeUnmatched(m *repository.SettlementMatch) string {
 	if ref == "" {
 		ref = "(no reference)"
 	}
-	return fmt.Sprintf("%s %s Rp%.0f settled %s ref=%s -- no journal records this movement",
+	return fmt.Sprintf("%s %s Rp%v settled %s ref=%s -- no journal records this movement",
 		m.Gateway, m.Kind, m.Net, m.SettledOn.Format("2006-01-02"), ref)
 }
 
 // describeDiscrepant renders a matched movement whose amount disagrees.
 func describeDiscrepant(m *repository.SettlementMatch) string {
-	return fmt.Sprintf("%s %s ref=%s: gateway says Rp%.0f, ledger recorded Rp%.0f (delta Rp%.0f)",
+	return fmt.Sprintf("%s %s ref=%s: gateway says Rp%v, ledger recorded Rp%v (delta Rp%v)",
 		m.Gateway, m.Kind, m.SettlementRef, m.Net, m.JournalTotal, m.AmountDelta)
 }

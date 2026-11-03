@@ -1135,7 +1135,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 //
 //  3. It marked the intent `refunded` and the order `refunded` even for a
 //     partial refund, so a second legitimate refund could never be applied.
-func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason string, refundToBuyer bool, amount float64) error {
+func (s *PaymentService) RefundOrder(ctx context.Context, orderID string, reason string, refundToBuyer bool, amount domain.IDR) error {
 	intent, err := s.payments.IntentByOrder(ctx, orderID)
 	if err != nil {
 		return err
@@ -2068,7 +2068,7 @@ func walletReasonForHold(kind string) (string, error) {
 // The rows are returned alongside the total on purpose. A total tells an operator
 // something is held; the rows tell them whose money and why, which is the part
 // that can be acted on. A total alone is a number to worry about.
-func (s *PaymentService) HeldOutstanding(ctx context.Context, liveOnly bool, limit int) (float64, []*repository.SellerHoldRow, error) {
+func (s *PaymentService) HeldOutstanding(ctx context.Context, liveOnly bool, limit int) (domain.IDR, []*repository.SellerHoldRow, error) {
 	if s.payments == nil {
 		return 0, nil, domain.E(domain.KindConflict, "PAYMENTS_UNAVAILABLE",
 			"the payment service is not wired, so held balances cannot be reported")
