@@ -305,6 +305,37 @@ func (s *SupportService) RateTicket(ctx context.Context, ticketID, requesterID s
 	return s.support.RateTicket(ctx, ticketID, rating)
 }
 
+// NotifyOverdueSla pings the assignee of every open ticket past its SLA.
+//
+// A ping is recorded per ticket and not repeated within 24h: without the
+// guard an hourly job turns one overdue ticket into 24 daily pings and the
+// agent mutes the category. Notification failure for one ticket must not
+// skip the rest; the ping is marked only when the notify succeeds, so a
+// failed notify is retried on the next run rather than silently dropped.
+func (s *SupportService) NotifyOverdueSla(ctx context.Context, limit int) (int, error) {
+	overdue, err := s.support.OverdueTickets(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	pinged := 0
+	for _, t := range overdue {
+		if s.notifications == nil {
+			continue
+		}
+		if err := s.notifications.Notify(ctx, t.Assignee, "ticket",
+			"SLA lewat: "+t.TicketNumber,
+			"Tiket \""+t.Subject+"\" melewati target respons.",
+			map[string]any{"ticket_id": t.ID}); err != nil {
+			continue
+		}
+		if err := s.support.MarkSlaPinged(ctx, t.ID); err != nil {
+			continue
+		}
+		pinged++
+	}
+	return pinged, nil
+}
+
 // TicketQueue lists open tickets (staff).
 func (s *SupportService) TicketQueue(ctx context.Context, status string) ([]*domain.SupportTicket, error) {
 	return s.support.TicketsByStatus(ctx, status)

@@ -57,6 +57,7 @@ type SupportTicket struct {
 	Status       string     `json:"status"`
 	AssignedTo   *string    `json:"assigned_to,omitempty"`
 	SlaDueAt     *time.Time `json:"sla_due_at,omitempty"`
+	SlaPingedAt  *time.Time `json:"sla_pinged_at,omitempty"`
 	Rating       *int       `json:"rating,omitempty"`
 	RatedAt      *time.Time `json:"rated_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`

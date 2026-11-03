@@ -455,3 +455,51 @@ func (r *SupportRepository) RateTicket(ctx context.Context, ticketID string, rat
 	}
 	return nil
 }
+
+// OverdueTicket is an open ticket past its SLA that owns an agent to ping.
+type OverdueTicket struct {
+	ID           string
+	TicketNumber string
+	Subject      string
+	Assignee     string
+}
+
+// OverdueTickets lists open/in_progress tickets past their SLA that have an
+// assignee and have not been pinged in the last 24h. Unassigned tickets are
+// excluded on purpose: nobody owns them, so a ping has no recipient, and the
+// staff queue already surfaces them.
+func (r *SupportRepository) OverdueTickets(ctx context.Context, limit int) ([]*OverdueTicket, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, ticket_number, subject, assigned_to
+		FROM support_tickets
+		WHERE sla_due_at IS NOT NULL AND sla_due_at < now()
+		  AND status IN ('open', 'in_progress')
+		  AND assigned_to IS NOT NULL
+		  AND (sla_pinged_at IS NULL OR sla_pinged_at < now() - INTERVAL '24 hours')
+		ORDER BY sla_due_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*OverdueTicket{}
+	for rows.Next() {
+		var t OverdueTicket
+		if err := rows.Scan(&t.ID, &t.TicketNumber, &t.Subject, &t.Assignee); err != nil {
+			return nil, err
+		}
+		out = append(out, &t)
+	}
+	return out, rows.Err()
+}
+
+// MarkSlaPinged records that a breach ping went out.
+func (r *SupportRepository) MarkSlaPinged(ctx context.Context, ticketID string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE support_tickets SET sla_pinged_at = now() WHERE id = $1`, ticketID)
+	return err
+}

@@ -65,6 +65,14 @@ const (
 	// payment instruction would be a scheduled outbound transfer, so the batch stays
 	// DRAFT until a person approves it.
 	TaskBuildPayoutBatches = "payouts:build_batches"
+	// TaskTicketSlaCheck pings the assignee of open tickets past their SLA.
+	//
+	// The ping is per-ticket per-day, recorded on the ticket: without the
+	// guard an hourly job turns one overdue ticket into a daily mailstorm and
+	// the agent mutes the category, which is how an SLA monitor disables
+	// itself. Unassigned overdue tickets are excluded -- nobody owns them, so
+	// a ping has no recipient, and the staff queue already surfaces them.
+	TaskTicketSlaCheck = "support:sla_check"
 )
 
 // Deps is everything the worker needs.
@@ -90,6 +98,9 @@ type Deps struct {
 	// Payment and Ledger drive the money reconciliation jobs.
 	Payment *service.PaymentService
 	Ledger  *service.LedgerService
+	// Support drives the ticket SLA breach check. Nil disables the job rather
+	// than failing the boot, like every other optional dependency here.
+	Support *service.SupportService
 	// Mail delivers the transactional emails whose producers have already
 	// returned. A nil client does not disable the task; it makes the handler
 	// FAIL, because a queue that drains while nothing is delivered is worse
@@ -209,6 +220,10 @@ func jobSpecs(d Deps) []jobSpec {
 		// withdrawable.
 		{"@hourly", TaskReleasePayoutReservations, "default", 3 * time.Hour},
 		{"@daily", TaskBuildPayoutBatches, "default", 25 * time.Hour},
+		// SLA breaches are per-ticket per-day pings, so hourly is frequent
+		// enough without being noisy; the low queue fits a notification-only
+		// job that moves no money.
+		{"@hourly", TaskTicketSlaCheck, "low", 3 * time.Hour},
 	}
 
 	// A job whose service is absent is dropped rather than registered against a
@@ -220,6 +235,7 @@ func jobSpecs(d Deps) []jobSpec {
 		TaskReconcileLedger:           d.Ledger != nil,
 		TaskReconcileSettlements:      d.Payment != nil,
 		TaskReleasePayoutReservations: d.Payment != nil && d.Ledger != nil,
+		TaskTicketSlaCheck:            d.Support != nil,
 	}
 	out := make([]jobSpec, 0, len(all))
 	for _, j := range all {
@@ -285,6 +301,12 @@ func New(d Deps) (*Server, error) {
 	mux.HandleFunc(TaskSellerPresence, withTimeout(sellerPresenceHandler(seller, logger)))
 	if sessions != nil {
 		mux.HandleFunc(TaskSessionPurge, withTimeout(sessionPurgeHandler(sessions, logger)))
+	}
+	if d.Support != nil {
+		mux.HandleFunc(TaskTicketSlaCheck, withTimeout(ticketSlaCheckHandler(d.Support, logger)))
+	} else {
+		logger.Warn("support service not wired: overdue ticket SLAs will never ping " +
+			"their assignee, so breaches sit in the queue unnoticed")
 	}
 	// The money reconciliation jobs. Registered only when their service is
 	// present, and the ABSENCE is logged: a worker that silently does not
@@ -826,6 +848,26 @@ func sessionPurgeHandler(sessions *repository.SessionRepository, logger *slog.Lo
 		if purged > 0 {
 			logger.Info("purged expired refresh sessions", "count", purged)
 		}
+		return nil
+	}
+}
+
+// ticketSlaCheckHandler pings assignees of tickets past their SLA.
+//
+// Zero is the normal steady state and is logged like the payout-release job:
+// a breach monitor that is silent when clean is indistinguishable from one
+// that is not running, and the difference is the whole point of the job.
+func ticketSlaCheckHandler(support *service.SupportService, logger *slog.Logger) func(context.Context, *asynq.Task) error {
+	return func(ctx context.Context, t *asynq.Task) error {
+		pinged, err := support.NotifyOverdueSla(ctx, 100)
+		if err != nil {
+			return err
+		}
+		if pinged == 0 {
+			logger.Info("no ticket SLA breaches to ping")
+			return nil
+		}
+		logger.Info("pinged ticket SLA breaches", "count", pinged)
 		return nil
 	}
 }

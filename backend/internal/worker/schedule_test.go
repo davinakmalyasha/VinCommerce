@@ -30,6 +30,7 @@ func fullDeps() Deps {
 		Sessions: &repository.SessionRepository{},
 		Payment:  &service.PaymentService{},
 		Ledger:   &service.LedgerService{},
+		Support:  &service.SupportService{},
 	}
 }
 
