@@ -47,4 +47,11 @@ describe('staff reply wiring', () => {
     expect(console_).toContain('{ body, internal }')
     expect(console_).not.toContain('is_internal: internal')
   })
+
+  it('offers self-service actions for the linked order', () => {
+    const contact = read('pages/ContactPage.tsx')
+    expect(contact).toContain('Banyak masalah selesai tanpa tiket')
+    expect(contact).toContain('/tracking/${selected.tracking_number}')
+    expect(contact).toContain('openDocument(`/orders/${selected.id}/invoice`)')
+  })
 })

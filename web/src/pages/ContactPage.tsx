@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, openDocument } from '../lib/api'
 import { useSession } from '../stores/session'
 import { FileUpload } from '../components/FileUpload'
 import type { Order } from '../types'
@@ -126,6 +126,43 @@ export function ContactPage() {
               </select>
             </div>
           </div>
+          {(() => {
+            const selected = orders?.find((o) => o.id === form.order_id)
+            if (!selected) return null
+            return (
+              <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+                <p className="text-sm font-medium mb-1">
+                  {selected.order_number} · <span className="text-gray-500">{selected.status}</span>
+                </p>
+                <p className="text-xs text-gray-500 mb-3">
+                  Banyak masalah selesai tanpa tiket — coba dulu:
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    to={`/orders/${selected.id}`}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-xs hover:border-amber-400"
+                  >
+                    Lihat pesanan
+                  </Link>
+                  {selected.tracking_number && (
+                    <Link
+                      to={`/tracking/${selected.tracking_number}`}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-xs hover:border-amber-400"
+                    >
+                      Lacak paket
+                    </Link>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void openDocument(`/orders/${selected.id}/invoice`)}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-gray-200 text-xs hover:border-amber-400"
+                  >
+                    Unduh invoice
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
           <div>
             <label htmlFor="contact-message" className="text-sm font-medium block mb-1">Pesan</label>
             <textarea
