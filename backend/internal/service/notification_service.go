@@ -81,3 +81,8 @@ func (s *NotificationService) UnreadCount(ctx context.Context, userID string) (i
 func (s *NotificationService) MarkRead(ctx context.Context, userID string, id int64) error {
 	return s.repo.MarkRead(ctx, userID, id)
 }
+
+// MarkMany marks exactly the given notification ids read.
+func (s *NotificationService) MarkMany(ctx context.Context, userID string, ids []int64) error {
+	return s.repo.MarkMany(ctx, userID, ids)
+}

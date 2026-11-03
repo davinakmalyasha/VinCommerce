@@ -195,3 +195,17 @@ func (r *NotificationRepository) MarkRead(ctx context.Context, userID string, id
 		WHERE user_id = $1 AND read_at IS NULL`, userID)
 	return err
 }
+
+// MarkMany marks exactly the given notification ids read, scoped to the user.
+// This is what makes per-group "mark read" honest: the old handler ignored the
+// request body, so the bell's "mark the visible rows" marked the whole account
+// including rows the user never saw.
+func (r *NotificationRepository) MarkMany(ctx context.Context, userID string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE notifications SET read_at = now()
+		WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL`, userID, ids)
+	return err
+}

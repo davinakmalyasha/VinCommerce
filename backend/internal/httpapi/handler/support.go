@@ -352,9 +352,35 @@ func (h *Notifications) Unread(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"unread": count})
 }
 
-// MarkRead handles POST /notifications/read{?id=}.
+// MarkRead handles POST /notifications/read{?id=} with an optional {ids} body.
+//
+// The web bell and the notifications page both POST {ids} for the rows they
+// actually render. The old handler read only ?id= and ignored the body, so a
+// scoped "mark the visible rows" silently marked the entire account — including
+// rows the user never saw. A non-empty ids body now marks exactly those rows;
+// the ?id= / mark-all behavior is kept for older clients.
 func (h *Notifications) MarkRead(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if r.ContentLength > 0 {
+		// A present-but-malformed body must fail, not fall through to
+		// mark-all: silently marking the whole account read on a client typo
+		// is exactly the bug this handler is being fixed for.
+		if err := decode(r, &body); err != nil {
+			writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+			return
+		}
+	}
+	if len(body.IDs) > 0 {
+		if err := h.svc.MarkMany(r.Context(), user.ID, body.IDs); err != nil {
+			writeErr(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"read": true})
+		return
+	}
 	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 	if err := h.svc.MarkRead(r.Context(), user.ID, id); err != nil {
 		writeErr(w, r, err)

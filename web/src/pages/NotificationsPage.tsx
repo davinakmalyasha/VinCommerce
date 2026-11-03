@@ -17,13 +17,32 @@ interface Notification {
   created_at: string
 }
 
+const TYPE_LABELS: Record<string, string> = {
+  order: 'Pesanan',
+  payment: 'Pembayaran',
+  price_alert: 'Turun harga',
+  back_in_stock: 'Stok kembali',
+  store_new_product: 'Produk baru toko diikuti',
+  low_stock: 'Stok menipis',
+  marketing: 'Promo',
+  cart_recovery: 'Pengingat keranjang',
+  moderation: 'Moderasi',
+  ticket: 'Tiket dukungan',
+}
+
 export function NotificationsPage() {
   const { user } = useSession()
   const queryClient = useQueryClient()
+  const [filter, setFilter] = useState('all')
 
   const notificationsQuery = useQuery({
-    queryKey: ['notifications-all'],
-    queryFn: async () => (await api.get<{ notifications: Notification[] }>('/notifications?limit=50')).data.notifications,
+    queryKey: ['notifications-all', filter],
+    queryFn: async () =>
+      (
+        await api.get<{ notifications: Notification[] }>(
+          `/notifications?limit=50${filter === 'all' ? '' : `&type=${encodeURIComponent(filter)}`}`,
+        )
+      ).data.notifications,
     enabled: !!user,
   })
   const data = notificationsQuery.data
@@ -41,10 +60,16 @@ export function NotificationsPage() {
   if (!user) return <Navigate to="/login" replace />
 
   const unreadIds = (data ?? []).filter((n) => !n.read_at).map((n) => n.id)
+  const groups = (data ?? []).reduce<Record<string, Notification[]>>((acc, n) => {
+    const key = n.type || 'other'
+    acc[key] = acc[key] ? [...acc[key], n] : [n]
+    return acc
+  }, {})
+  const groupKeys = Object.keys(groups).sort()
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold">Notifikasi</h1>
         {unreadIds.length > 0 && (
           <button
@@ -57,13 +82,57 @@ export function NotificationsPage() {
           </button>
         )}
       </div>
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
+        <button
+          type="button"
+          onClick={() => setFilter('all')}
+          aria-pressed={filter === 'all'}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap ${
+            filter === 'all' ? 'bg-amber-500 text-white' : 'bg-white border border-gray-200 hover:border-amber-400'
+          }`}
+        >
+          Semua
+        </button>
+        {Object.keys(TYPE_LABELS).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setFilter(filter === t ? 'all' : t)}
+            aria-pressed={filter === t}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap ${
+              filter === t ? 'bg-amber-500 text-white' : 'bg-white border border-gray-200 hover:border-amber-400'
+            }`}
+          >
+            {TYPE_LABELS[t]}
+          </button>
+        ))}
+      </div>
       {error && (
         <p role="alert" className="text-sm text-red-600 mb-3 bg-red-50 dark:bg-red-950/40 rounded-lg p-2.5">{error}</p>
       )}
       <QueryState query={notificationsQuery} label="notifikasi" className="!text-left">
-        <div className="space-y-2">
+        <div className="space-y-5">
           {data?.length === 0 && <p className="text-gray-500 text-sm">Belum ada notifikasi.</p>}
-          {data?.map((n) => {
+          {groupKeys.map((key) => {
+            const items = groups[key]
+            const unreadInGroup = items.filter((n) => !n.read_at).map((n) => n.id)
+            return (
+              <section key={key}>
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="text-sm font-bold text-gray-500">{TYPE_LABELS[key] ?? key}</h2>
+                  {unreadInGroup.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => markAll.mutate(unreadInGroup)}
+                      disabled={markAll.isPending}
+                      className="text-xs text-amber-600 hover:underline disabled:opacity-50"
+                    >
+                      Tandai grup dibaca
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {items.map((n) => {
             const href = notificationHref(n.data)
             const content = (
               <div
@@ -85,6 +154,10 @@ export function NotificationsPage() {
               </Link>
             ) : (
               <div key={n.id}>{content}</div>
+            )
+                  })}
+                </div>
+              </section>
             )
           })}
         </div>
