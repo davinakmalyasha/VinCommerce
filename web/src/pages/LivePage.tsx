@@ -204,10 +204,10 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-3">
             <div className="aspect-video bg-black rounded-2xl overflow-hidden">
-              {session?.status === 'live' && session.youtube_video_id ? (
+              {session?.youtube_video_id && (session.status === 'live' || session.status === 'ended') ? (
                 <iframe
                   title={session.title}
-                  src={`https://www.youtube.com/embed/${session.youtube_video_id}?autoplay=1`}
+                  src={`https://www.youtube.com/embed/${session.youtube_video_id}${session.status === 'live' ? '?autoplay=1' : ''}`}
                   allow="accelerometer; autoplay; encrypted-media; picture-in-picture"
                   allowFullScreen
                   className="w-full h-full"
@@ -226,6 +226,9 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                 )}
                 <h1 className="text-lg font-bold">{session?.title}</h1>
               </div>
+              {session?.status === 'ended' && session.youtube_video_id && (
+                <p className="text-xs text-gray-500 mt-1">⏺ Rekaman siaran — produk di bawah mungkin sudah tidak tersedia.</p>
+              )}
               <p className="text-xs text-gray-500 mt-1">
                 {session?.seller_name} · 👁 {session?.viewer_count ?? session?.viewer_peak ?? 0} menonton · ❤️ {session?.like_count ?? 0} suka
               </p>

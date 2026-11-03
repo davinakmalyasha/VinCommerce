@@ -26,6 +26,8 @@ export function SellerLiveStudio() {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState('')
   const [videoId, setVideoId] = useState('')
+  const [thumbnail, setThumbnail] = useState('')
+  const [scheduledAt, setScheduledAt] = useState('')
   const [managing, setManaging] = useState<string | null>(null)
 
   const { data } = useQuery({
@@ -36,10 +38,17 @@ export function SellerLiveStudio() {
 
   const create = useMutation({
     mutationFn: async () =>
-      api.post('/seller/live', { title, youtube_video_id: videoId }),
+      api.post('/seller/live', {
+        title,
+        youtube_video_id: videoId,
+        thumbnail_url: thumbnail || undefined,
+        scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+      }),
     onSuccess: () => {
       setTitle('')
       setVideoId('')
+      setThumbnail('')
+      setScheduledAt('')
       queryClient.invalidateQueries({ queryKey: ['seller-live'] })
     },
     onError: (e: Error) => setError(e.message || 'Gagal membuat sesi live'),
@@ -82,6 +91,22 @@ export function SellerLiveStudio() {
           value={videoId}
           onChange={(e) => setVideoId(e.target.value.trim())}
           placeholder="YouTube video ID (untuk stream)"
+          className="px-3 py-2 border rounded-lg text-sm outline-none"
+        />
+        <label htmlFor="live-thumbnail" className="sr-only">URL thumbnail</label>
+        <input
+          id="live-thumbnail"
+          value={thumbnail}
+          onChange={(e) => setThumbnail(e.target.value.trim())}
+          placeholder="URL thumbnail (opsional)"
+          className="px-3 py-2 border rounded-lg text-sm outline-none"
+        />
+        <label htmlFor="live-scheduled" className="sr-only">Jadwal mulai</label>
+        <input
+          id="live-scheduled"
+          type="datetime-local"
+          value={scheduledAt}
+          onChange={(e) => setScheduledAt(e.target.value)}
           className="px-3 py-2 border rounded-lg text-sm outline-none"
         />
         <button type="button"

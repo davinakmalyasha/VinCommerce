@@ -33,3 +33,19 @@ describe('live like backend', () => {
     expect(repo).toContain('ON CONFLICT DO NOTHING')
   })
 })
+
+describe('live replay and scheduling', () => {
+  // Ended streams kept their YouTube ID but rendered a static "berakhir"
+  // panel; the recording they already had was unwatchable.
+  it('embeds the recording for ended streams with a video', () => {
+    expect(page).toContain("session.status === 'ended'")
+    expect(page).toContain('Rekaman siaran')
+  })
+
+  it('sends the thumbnail and schedule fields the API already accepts', () => {
+    const studio = read('pages/seller/SellerLiveStudio.tsx')
+    expect(studio).toContain('thumbnail_url')
+    expect(studio).toContain('scheduled_at')
+    expect(studio).toContain('datetime-local')
+  })
+})
