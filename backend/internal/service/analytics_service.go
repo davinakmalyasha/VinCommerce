@@ -122,3 +122,8 @@ func (s *AnalyticsService) report(ctx context.Context, from, to time.Time, selle
 func (s *AnalyticsService) RecordView(ctx context.Context, productID string, userID *string) error {
 	return s.analytics.RecordProductView(ctx, productID, userID)
 }
+
+// RecentViews lists the user's most recently viewed products.
+func (s *AnalyticsService) RecentViews(ctx context.Context, userID string, limit int) ([]*repository.ViewedProduct, error) {
+	return s.analytics.RecentViews(ctx, userID, limit)
+}

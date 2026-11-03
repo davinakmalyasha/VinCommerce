@@ -93,6 +93,7 @@ const WalletPage = lazyOf(() => import('./pages/WalletPage'), 'WalletPage')
 const DiscoverFeedPage = lazyOf(() => import('./pages/DiscoverFeedPage'), 'DiscoverFeedPage')
 const InviteLandingPage = lazyOf(() => import('./pages/InviteLandingPage'), 'InviteLandingPage')
 const LivePage = lazyOf(() => import('./pages/LivePage'), 'LivePage')
+const HistoryPage = lazyOf(() => import('./pages/HistoryPage'), 'HistoryPage')
 const SupportConsole = lazyOf(() => import('./pages/support/SupportConsole'), 'SupportConsole')
 const NotFoundPage = lazyOf(() => import('./pages/NotFoundPage'), 'NotFoundPage')
 
@@ -146,6 +147,7 @@ export const router = createBrowserRouter([
       { path: 'notifications', element: route(<NotificationsPage />, 'Notifikasi') },
       { path: 'flash-sales', element: route(<FlashSalePage />, 'Flash sale') },
       { path: 'live', element: route(<LivePage />, 'Live') },
+      { path: 'history', element: route(<HistoryPage />, 'Terakhir dilihat') },
       { path: 'support', element: route(<SupportConsole />, 'Bantuan') },
       { path: 'tracking/:number', element: route(<TrackingPage />, 'Lacak pesanan') },
       { path: 'vouchers', element: route(<VouchersPage />, 'Voucher') },

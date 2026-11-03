@@ -180,6 +180,55 @@ func (r *AnalyticsRepository) RecordProductView(ctx context.Context, productID s
 	return err
 }
 
+// ViewedProduct is one product the user recently looked at, with just enough
+// to render a card and a link. Inactive products are included with their
+// status: a history that silently drops a viewed product reads as data loss,
+// and the product page already handles inactive states.
+type ViewedProduct struct {
+	ProductID string     `json:"product_id"`
+	Slug      string     `json:"slug"`
+	Name      string     `json:"name"`
+	Status    string     `json:"status"`
+	ImageURL  string     `json:"image_url,omitempty"`
+	Price     domain.IDR `json:"price"`
+	ViewedAt  time.Time  `json:"viewed_at"`
+}
+
+// RecentViews lists the user's most recently viewed products, newest first.
+func (r *AnalyticsRepository) RecentViews(ctx context.Context, userID string, limit int) ([]*ViewedProduct, error) {
+	if limit < 1 || limit > 30 {
+		limit = 20
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT v.product_id, p.slug, p.name, p.status,
+		       COALESCE((SELECT url FROM product_images WHERE product_id = p.id ORDER BY is_primary DESC, position LIMIT 1), ''),
+		       COALESCE((SELECT price FROM product_variants WHERE product_id = p.id AND is_active ORDER BY price LIMIT 1), 0),
+		       MAX(v.created_at) AS viewed_at
+		FROM product_views v
+		JOIN products p ON p.id = v.product_id
+		WHERE v.user_id = $1
+		GROUP BY v.product_id, p.slug, p.name, p.status
+		ORDER BY viewed_at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []*ViewedProduct{}
+	for rows.Next() {
+		var item ViewedProduct
+		var price int64
+		if err := rows.Scan(&item.ProductID, &item.Slug, &item.Name, &item.Status,
+			&item.ImageURL, &price, &item.ViewedAt); err != nil {
+			return nil, err
+		}
+		item.Price = domain.IDR(price)
+		out = append(out, &item)
+	}
+	return out, rows.Err()
+}
+
 // FunnelStep is one stage of the conversion funnel.
 type FunnelStep struct {
 	Label string  `json:"label"`

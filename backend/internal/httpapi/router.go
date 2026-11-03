@@ -483,6 +483,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.With(rateLimiter.Limit(120, time.Minute, ipKey)).
 			Post("/shipping/tracking/webhook/{carrier}", carrierH.Webhook)
 		r.With(optionalAuthMw).Get("/recommendations", engagement.Recommended)
+		r.With(authMw).Get("/history", analyticsH.History)
 
 		// livestream commerce
 		r.With(flagMw("live_commerce")).Get("/live", liveH.List)

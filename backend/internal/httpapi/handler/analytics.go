@@ -59,6 +59,17 @@ func (h *Analytics) PendingCounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, counts)
 }
 
+// History handles GET /history — the buyer's recently viewed products.
+func (h *Analytics) History(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	items, err := h.svc.RecentViews(r.Context(), user.ID, intQuery(r.URL.Query().Get("limit"), 20))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"products": items})
+}
+
 // Platform handles GET /admin/analytics.
 func (h *Analytics) Platform(w http.ResponseWriter, r *http.Request) {
 	from, to := rangeFromQuery(r)
