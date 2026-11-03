@@ -19,6 +19,30 @@ correctness and operability.
 > | P1-3 | Search English-stem, bestsellers not personalised | Closed — `09a8351`, `6c1013f` |
 > | P2-1 | No backup/PITR, no TLS terminator in-repo | Partly closed — backup drill + TLS terminator verified; PITR still open |
 > | P2-2 | Return evidence had no UI and no validation | Closed — `9e250e6` |
+>
+> **Amazon-parity pass (Nov 2026, all CI-green at push time).**
+> | Slice | What | Commits |
+> |---|---|---|
+> | Account devices | Sessions list + per-session revoke + logout-all (backend already existed, UI was missing) | `6688c31` |
+> | Help votes | `helpful_count` + `help_article_helpful`, toggle endpoint + UI (migration 00063) | `cc7e980` |
+> | Notifications | Grouped feed + type filter; `MarkMany` so mark-read honors the `{ids}` body both callers already sent (migration-free) | `8ec4188` |
+> | Ticket attachments | `ticket_messages.attachments` validated like return evidence (migration 00064); fixed `/support` console posting `is_internal` instead of `internal` (every staff reply failed) | `32d5c09` |
+> | Live likes | `like_count` + `live_likes`, toggle + SSE fan-out (migration 00065) | `d3e8ab4` |
+> | Ticket rating | 1–5 CSAT on resolved/closed, owner-only (migration 00066) | `4c20961` |
+> | Browsing history | `GET /history` over `product_views` + `/history` page, guests keep local list (migration 00067, index) | `a802a18` |
+> | Live viewers | SSE disconnect decrements; peak is max(peak, live) not joins-per-+1 | `05fd329` |
+> | Contact quick actions | Order status + detail/tracking/invoice shortcuts in the ticket form | `d978ed4` |
+> | Ticket SLA | `sla_due_at` per priority + overdue flags (migration 00068); hourly breach ping to assignees, per-ticket per-day guard (migration 00069) | `8b89baf`, `a98fd48` |
+> | Q&A pings | Seller notified on ask, asker on answer; new `qa` pref category | `e8b7ed9` |
+> | Live replay | Ended rooms embed their recording; studio sends thumbnail + schedule | `8557558` |
+> | Withdraw return | Buyer cancels undecided claims; hold releases via the scheduled path, predicated close | `9712176` |
+>
+> Still open after this pass (each with a reason, not an oversight):
+> guest tickets (spam risk without captcha), delete-account (destructive,
+> needs an anonymization design), saved payment-methods UI (gateway-bound),
+> carrier label/rate adapters + payout rails (credential-bound), live chat
+> moderation roster (chat is name-based and ephemeral — banning needs
+> identity in the chat flow first).
 
 * **[closed] Migrations `0032`-`00051` had never been executed.** They now apply
   cleanly against a scratch database, verified by `backend/scripts/migration-dryrun.py`.
