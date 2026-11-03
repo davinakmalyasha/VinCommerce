@@ -20,7 +20,7 @@ ENV VITE_MIDTRANS_CLIENT_KEY=${VITE_MIDTRANS_CLIENT_KEY}
 ENV VITE_MIDTRANS_SNAP_URL=${VITE_MIDTRANS_SNAP_URL}
 RUN npm run build
 
-FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS runtime
+FROM nginx:1.31-alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606 AS runtime
 
 # The final stage ran as root: nginx master bound :80 (a privileged port, which
 # is *why* it was root) and then spawned workers as `nginx`, but the container's
