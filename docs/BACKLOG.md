@@ -1611,3 +1611,10 @@ seed + seller/flash/bundle e2e green.
 requests, reservation rows and the releasable query are IDR; the `::float8`
 cast is gone and callers pass struct fields with no wraps left (one remains
 at the payout-request boundary, converted at entry). Run `41494446842`: 9/9.
+
+**Reports, payout input, rate cards, dashboards (`9c84559`, format fix
+`442f575`).** Trial-balance/drift/imbalance rows, BalanceOf/EscrowOutstanding,
+the payout input, commission/shipping/free-shipping cards, seller dashboards
+and analytics aggregates are IDR; reconcile queries compare exactly with no
+epsilon. The tail run first failed the Format check on struct-tag alignment
+-- fixed whitespace-only in `442f575`. Run `41592093934`: 9/9, 46/46 e2e.
