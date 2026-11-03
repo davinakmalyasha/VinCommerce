@@ -182,7 +182,7 @@ function TicketReply({ ticketId }: { ticketId: string }) {
   })
 
   const send = useMutation({
-    mutationFn: async () => api.post(`/tickets/${ticketId}/messages`, { body, is_internal: internal }),
+    mutationFn: async () => api.post(`/tickets/${ticketId}/messages`, { body, internal }),
     onSuccess: () => {
       setBody('')
       queryClient.invalidateQueries({ queryKey: ['ticket-detail', ticketId] })

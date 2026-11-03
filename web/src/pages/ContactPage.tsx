@@ -3,11 +3,13 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useSession } from '../stores/session'
+import { FileUpload } from '../components/FileUpload'
 import type { Order } from '../types'
 
 export function ContactPage() {
   const { user } = useSession()
   const [form, setForm] = useState({ subject: '', category: 'general', priority: 'normal', order_id: '', message: '' })
+  const [attachments, setAttachments] = useState<string[]>([])
   const [done, setDone] = useState<string | null>(null)
 
   const { data: orders } = useQuery({
@@ -24,6 +26,7 @@ export function ContactPage() {
         priority: form.priority,
         order_id: form.order_id || undefined,
         message: form.message,
+        attachments: attachments.length > 0 ? attachments : undefined,
       }),
     onSuccess: (res) => setDone(res.data.ticket.ticket_number),
   })
@@ -134,6 +137,30 @@ export function ContactPage() {
               placeholder="Jelaskan masalahmu secara detail..."
               className="w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-amber-400 dark:bg-gray-800"
             />
+          </div>
+          <div>
+            <span className="text-sm font-medium block mb-1">Lampiran foto (opsional, maks. 3)</span>
+            <div className="space-y-2">
+              {attachments.map((url, i) => (
+                <FileUpload
+                  key={url}
+                  id={`contact-attachment-${i}`}
+                  value={url}
+                  label="Tambah foto"
+                  onChange={(next) =>
+                    setAttachments((prev) => (next ? prev.map((u, j) => (j === i ? next : u)) : prev.filter((_, j) => j !== i)))
+                  }
+                />
+              ))}
+              {attachments.length < 3 && (
+                <FileUpload
+                  id="contact-attachment-new"
+                  value=""
+                  label="Tambah foto"
+                  onChange={(next) => next && setAttachments((prev) => [...prev, next])}
+                />
+              )}
+            </div>
           </div>
           {submit.isError && <p role="alert" className="text-sm text-red-600">Gagal membuat tiket. Coba lagi.</p>}
           <button

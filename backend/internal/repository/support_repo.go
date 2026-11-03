@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
@@ -292,11 +293,14 @@ func (r *SupportRepository) CreateTicket(ctx context.Context, t *domain.SupportT
 
 // AddMessage appends a ticket message and bumps the ticket.
 func (r *SupportRepository) AddMessage(ctx context.Context, m *domain.TicketMessage) error {
+	if m.Attachments == nil {
+		m.Attachments = []string{}
+	}
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO ticket_messages (ticket_id, author_id, author_role, body, is_internal)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO ticket_messages (ticket_id, author_id, author_role, body, attachments, is_internal)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING created_at`,
-		m.TicketID, m.AuthorID, m.AuthorRole, m.Body, m.IsInternal).Scan(&m.CreatedAt)
+		m.TicketID, m.AuthorID, m.AuthorRole, m.Body, m.Attachments, m.IsInternal).Scan(&m.CreatedAt)
 	if err != nil {
 		return err
 	}
@@ -330,7 +334,7 @@ func (r *SupportRepository) Messages(ctx context.Context, ticketID string, staff
 		where += ` AND m.is_internal = FALSE`
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT m.id, m.ticket_id, m.author_id, m.author_role, m.body, m.is_internal, m.created_at, u.full_name
+		SELECT m.id, m.ticket_id, m.author_id, m.author_role, m.body, m.attachments, m.is_internal, m.created_at, u.full_name
 		FROM ticket_messages m
 		JOIN users u ON u.id = m.author_id
 		WHERE `+where+`
@@ -343,9 +347,11 @@ func (r *SupportRepository) Messages(ctx context.Context, ticketID string, staff
 	items := []*domain.TicketMessage{}
 	for rows.Next() {
 		var m domain.TicketMessage
-		if err := rows.Scan(&m.ID, &m.TicketID, &m.AuthorID, &m.AuthorRole, &m.Body, &m.IsInternal, &m.CreatedAt, &m.AuthorName); err != nil {
+		var attachments []byte
+		if err := rows.Scan(&m.ID, &m.TicketID, &m.AuthorID, &m.AuthorRole, &m.Body, &attachments, &m.IsInternal, &m.CreatedAt, &m.AuthorName); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(attachments, &m.Attachments)
 		items = append(items, &m)
 	}
 	return items, rows.Err()

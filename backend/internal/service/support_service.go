@@ -19,6 +19,10 @@ type SupportService struct {
 	users         *repository.UserRepository
 	mailer        *mail.Client
 	webURL        string
+	// publicBaseURL is APP_BASE_URL, used to validate that ticket attachments
+	// point at a file this service uploaded. Empty is safe: then only the
+	// relative `/uploads/...` form is accepted.
+	publicBaseURL string
 }
 
 // NewSupportService creates a SupportService.
@@ -34,6 +38,9 @@ func (s *SupportService) SetUsers(u *repository.UserRepository) { s.users = u }
 
 // SetMailer enables agent-reply emails.
 func (s *SupportService) SetMailer(m *mail.Client, webURL string) { s.mailer = m; s.webURL = webURL }
+
+// SetPublicBaseURL tells the service which host its uploads live on.
+func (s *SupportService) SetPublicBaseURL(baseURL string) { s.publicBaseURL = baseURL }
 
 // --- help content ---
 
@@ -102,12 +109,13 @@ func (s *SupportService) ToggleArticleHelpful(ctx context.Context, articleID, us
 
 // CreateTicketInput for opening a support ticket.
 type CreateTicketInput struct {
-	UserID   string
-	OrderID  string
-	Subject  string
-	Category string
-	Priority string
-	Message  string
+	UserID      string
+	OrderID     string
+	Subject     string
+	Category    string
+	Priority    string
+	Message     string
+	Attachments []string
 }
 
 // OpenTicket creates a ticket with the first message.
@@ -143,6 +151,10 @@ func (s *SupportService) OpenTicket(ctx context.Context, in CreateTicketInput) (
 	if err != nil {
 		return nil, err
 	}
+	attachments, err := domain.NormalizeEvidenceURLs(in.Attachments, s.publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	ticket := &domain.SupportTicket{
 		ID:           uuid.NewString(),
 		TicketNumber: fmt.Sprintf("TCK-%d", seq),
@@ -158,7 +170,7 @@ func (s *SupportService) OpenTicket(ctx context.Context, in CreateTicketInput) (
 	}
 	msg := &domain.TicketMessage{
 		TicketID: ticket.ID, AuthorID: in.UserID, AuthorRole: "customer",
-		Body: strings.TrimSpace(in.Message), IsInternal: false,
+		Body: strings.TrimSpace(in.Message), Attachments: attachments, IsInternal: false,
 	}
 	if err := s.support.AddMessage(ctx, msg); err != nil {
 		return nil, err
@@ -189,13 +201,17 @@ func (s *SupportService) TicketMessages(ctx context.Context, ticketID string, st
 }
 
 // ReplyMessage posts a message on a ticket.
-func (s *SupportService) ReplyMessage(ctx context.Context, ticketID, authorID, authorRole, body string, internal bool) (*domain.TicketMessage, error) {
+func (s *SupportService) ReplyMessage(ctx context.Context, ticketID, authorID, authorRole, body string, internal bool, attachments []string) (*domain.TicketMessage, error) {
 	if strings.TrimSpace(body) == "" {
 		return nil, domain.E(domain.KindInvalid, "MESSAGE_REQUIRED", "message is required")
 	}
+	files, err := domain.NormalizeEvidenceURLs(attachments, s.publicBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	msg := &domain.TicketMessage{
 		TicketID: ticketID, AuthorID: authorID, AuthorRole: authorRole,
-		Body: strings.TrimSpace(body), IsInternal: internal,
+		Body: strings.TrimSpace(body), Attachments: files, IsInternal: internal,
 	}
 	if err := s.support.AddMessage(ctx, msg); err != nil {
 		return nil, err

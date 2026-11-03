@@ -324,6 +324,7 @@ func Build(ctx context.Context, d Deps) (*Services, error) {
 
 	supportSvc.SetUsers(r.Users)
 	supportSvc.SetMailer(d.Mailer, cfg.App.WebURL)
+	supportSvc.SetPublicBaseURL(cfg.App.BaseURL)
 	supportSvc.SetNotificationService(notificationSvc)
 
 	analyticsSvc.SetOrders(r.Orders)

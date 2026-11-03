@@ -3,12 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { formatDate } from '../lib/format'
+import { FileUpload } from '../components/FileUpload'
 
 interface TicketMessage {
   id: number
   author_role: string
   author_name: string
   body: string
+  attachments?: string[]
   is_internal: boolean
   created_at: string
 }
@@ -27,6 +29,7 @@ export function TicketDetailPage() {
   const { id } = useParams()
   const queryClient = useQueryClient()
   const [body, setBody] = useState('')
+  const [attachments, setAttachments] = useState<string[]>([])
 
   const { data } = useQuery({
     queryKey: ['ticket', id],
@@ -34,9 +37,11 @@ export function TicketDetailPage() {
   })
 
   const reply = useMutation({
-    mutationFn: async () => api.post(`/tickets/${id}/messages`, { body }),
+    mutationFn: async () =>
+      api.post(`/tickets/${id}/messages`, { body, attachments: attachments.length > 0 ? attachments : undefined }),
     onSuccess: () => {
       setBody('')
+      setAttachments([])
       queryClient.invalidateQueries({ queryKey: ['ticket', id] })
       queryClient.invalidateQueries({ queryKey: ['my-tickets'] })
     },
@@ -79,6 +84,15 @@ export function TicketDetailPage() {
               <span className="text-xs text-gray-400">{formatDate(m.created_at)}</span>
             </div>
             <p className="text-sm text-gray-700 whitespace-pre-line">{m.body}</p>
+            {(m.attachments ?? []).length > 0 && (
+              <div className="flex gap-2 mt-2 flex-wrap">
+                {(m.attachments ?? []).map((url) => (
+                  <a key={url} href={url} target="_blank" rel="noreferrer">
+                    <img src={url} alt="Lampiran tiket" className="w-20 h-20 rounded-lg object-cover border border-gray-200" />
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -94,6 +108,28 @@ export function TicketDetailPage() {
             placeholder="Tulis balasan..."
             className="w-full px-4 py-3 border rounded-xl text-sm outline-none focus:border-amber-400"
           />
+          <div className="mt-2 space-y-2">
+            <span className="text-xs text-gray-500 block">Lampiran foto (opsional, maks. 3)</span>
+            {attachments.map((url, i) => (
+              <FileUpload
+                key={url}
+                id={`ticket-attachment-${i}`}
+                value={url}
+                label="Tambah foto"
+                onChange={(next) =>
+                  setAttachments((prev) => (next ? prev.map((u, j) => (j === i ? next : u)) : prev.filter((_, j) => j !== i)))
+                }
+              />
+            ))}
+            {attachments.length < 3 && (
+              <FileUpload
+                id="ticket-attachment-new"
+                value=""
+                label="Tambah foto"
+                onChange={(next) => next && setAttachments((prev) => [...prev, next])}
+              />
+            )}
+          </div>
           <button type="button"
             onClick={() => reply.mutate()}
             disabled={reply.isPending || !body.trim()}

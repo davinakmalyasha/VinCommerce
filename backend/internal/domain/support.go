@@ -66,13 +66,14 @@ type SupportTicket struct {
 
 // TicketMessage is one reply in a ticket thread.
 type TicketMessage struct {
-	ID         int64     `json:"id"`
-	TicketID   string    `json:"ticket_id"`
-	AuthorID   string    `json:"author_id"`
-	AuthorRole string    `json:"author_role"`
-	Body       string    `json:"body"`
-	IsInternal bool      `json:"is_internal"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	TicketID    string    `json:"ticket_id"`
+	AuthorID    string    `json:"author_id"`
+	AuthorRole  string    `json:"author_role"`
+	Body        string    `json:"body"`
+	Attachments []string  `json:"attachments,omitempty"`
+	IsInternal  bool      `json:"is_internal"`
+	CreatedAt   time.Time `json:"created_at"`
 
 	AuthorName string `json:"author_name,omitempty"`
 }

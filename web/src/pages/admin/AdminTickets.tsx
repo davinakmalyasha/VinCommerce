@@ -19,6 +19,7 @@ interface TicketMessage {
   author_role: string
   author_name: string
   body: string
+  attachments?: string[]
   is_internal: boolean
   created_at: string
 }
@@ -154,6 +155,15 @@ export function AdminTickets() {
                       {m.author_name} {m.is_internal && <span className="text-gray-400">· internal</span>}
                     </p>
                     <p className="whitespace-pre-line">{m.body}</p>
+                    {(m.attachments ?? []).length > 0 && (
+                      <div className="flex gap-2 mt-2 flex-wrap">
+                        {(m.attachments ?? []).map((url) => (
+                          <a key={url} href={url} target="_blank" rel="noreferrer">
+                            <img src={url} alt="Lampiran tiket" className="w-16 h-16 rounded-lg object-cover border border-gray-200" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

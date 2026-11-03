@@ -139,11 +139,12 @@ func (h *Support) ToggleHelpful(w http.ResponseWriter, r *http.Request) {
 // --- tickets ---
 
 type ticketCreateRequest struct {
-	OrderID  string `json:"order_id,omitempty"`
-	Subject  string `json:"subject"`
-	Category string `json:"category"`
-	Priority string `json:"priority"`
-	Message  string `json:"message"`
+	OrderID     string   `json:"order_id,omitempty"`
+	Subject     string   `json:"subject"`
+	Category    string   `json:"category"`
+	Priority    string   `json:"priority"`
+	Message     string   `json:"message"`
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 // OpenTicket handles POST /tickets.
@@ -157,6 +158,7 @@ func (h *Support) OpenTicket(w http.ResponseWriter, r *http.Request) {
 	t, err := h.svc.OpenTicket(r.Context(), service.CreateTicketInput{
 		UserID: user.ID, OrderID: req.OrderID, Subject: req.Subject,
 		Category: req.Category, Priority: req.Priority, Message: req.Message,
+		Attachments: req.Attachments,
 	})
 	if err != nil {
 		writeErr(w, r, err)
@@ -194,8 +196,9 @@ func (h *Support) TicketDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 type ticketMessageRequest struct {
-	Body     string `json:"body"`
-	Internal bool   `json:"internal,omitempty"`
+	Body        string   `json:"body"`
+	Attachments []string `json:"attachments,omitempty"`
+	Internal    bool     `json:"internal,omitempty"`
 }
 
 // Reply handles POST /tickets/{id}/messages.
@@ -220,7 +223,7 @@ func (h *Support) Reply(w http.ResponseWriter, r *http.Request) {
 	if staff {
 		role = "agent"
 	}
-	msg, err := h.svc.ReplyMessage(r.Context(), t.ID, user.ID, role, req.Body, req.Internal)
+	msg, err := h.svc.ReplyMessage(r.Context(), t.ID, user.ID, role, req.Body, req.Internal, req.Attachments)
 	if err != nil {
 		writeErr(w, r, err)
 		return
