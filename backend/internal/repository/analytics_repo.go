@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vincommerce/backend/internal/db"
+	"github.com/vincommerce/backend/internal/domain"
 )
 
 // AnalyticsRepository computes platform and seller reports.
@@ -44,10 +45,10 @@ func (r *AnalyticsRepository) PendingCounts(ctx context.Context) (*PendingCounts
 
 // SalesPoint is one day's aggregated sales.
 type SalesPoint struct {
-	Day        time.Time `json:"day"`
-	GMV        float64   `json:"gmv"`
-	OrderCount int       `json:"order_count"`
-	ItemCount  int       `json:"item_count"`
+	Day        time.Time  `json:"day"`
+	GMV        domain.IDR `json:"gmv"`
+	OrderCount int        `json:"order_count"`
+	ItemCount  int        `json:"item_count"`
 }
 
 // SalesSeries aggregates sales per day within a range.
@@ -60,7 +61,7 @@ func (r *AnalyticsRepository) SalesSeries(ctx context.Context, from, to time.Tim
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT date_trunc('day', o.created_at)::date AS day,
-		       COALESCE(SUM(o.total_amount), 0)::float8,
+		       COALESCE(SUM(o.total_amount), 0),
 		       COUNT(*)::int,
 		       COALESCE(SUM((SELECT COALESCE(SUM(quantity), 0) FROM order_items oi WHERE oi.order_id = o.id)), 0)::int
 		FROM orders o
@@ -75,9 +76,11 @@ func (r *AnalyticsRepository) SalesSeries(ctx context.Context, from, to time.Tim
 	points := []*SalesPoint{}
 	for rows.Next() {
 		var p SalesPoint
-		if err := rows.Scan(&p.Day, &p.GMV, &p.OrderCount, &p.ItemCount); err != nil {
+		var gmv int64
+		if err := rows.Scan(&p.Day, &gmv, &p.OrderCount, &p.ItemCount); err != nil {
 			return nil, err
 		}
+		p.GMV = domain.IDR(gmv)
 		points = append(points, &p)
 	}
 	return points, rows.Err()
@@ -85,12 +88,12 @@ func (r *AnalyticsRepository) SalesSeries(ctx context.Context, from, to time.Tim
 
 // Summary is the platform/seller overview snapshot.
 type Summary struct {
-	GMV          float64 `json:"gmv"`
-	OrderCount   int     `json:"order_count"`
-	BuyerCount   int     `json:"buyer_count"`
-	ProductCount int     `json:"product_count"`
-	StoreCount   int     `json:"store_count"`
-	AvgOrder     float64 `json:"avg_order"`
+	GMV          domain.IDR `json:"gmv"`
+	OrderCount   int        `json:"order_count"`
+	BuyerCount   int        `json:"buyer_count"`
+	ProductCount int        `json:"product_count"`
+	StoreCount   int        `json:"store_count"`
+	AvgOrder     domain.IDR `json:"avg_order"`
 }
 
 // Overview computes the headline metrics.
@@ -103,14 +106,16 @@ func (r *AnalyticsRepository) Overview(ctx context.Context, from, to time.Time, 
 	}
 
 	s := &Summary{}
+	var gmv, avg int64
 	if err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(o.total_amount), 0)::float8, COUNT(*)::int,
+		SELECT COALESCE(SUM(o.total_amount), 0), COUNT(*)::int,
 		       COUNT(DISTINCT o.buyer_id)::int,
-		       COALESCE(SUM(o.total_amount) / NULLIF(COUNT(*), 0), 0)::float8
+		       COALESCE(SUM(o.total_amount) / NULLIF(COUNT(*), 0), 0)
 		FROM orders o WHERE `+where, args...).
-		Scan(&s.GMV, &s.OrderCount, &s.BuyerCount, &s.AvgOrder); err != nil {
+		Scan(&gmv, &s.OrderCount, &s.BuyerCount, &avg); err != nil {
 		return nil, err
 	}
+	s.GMV, s.AvgOrder = domain.IDR(gmv), domain.IDR(avg)
 
 	if sellerID == "" {
 		if err := r.pool.QueryRow(ctx, `
@@ -125,10 +130,10 @@ func (r *AnalyticsRepository) Overview(ctx context.Context, from, to time.Time, 
 
 // TopProduct is a bestseller row.
 type TopProduct struct {
-	ProductID string  `json:"product_id"`
-	Name      string  `json:"name"`
-	Quantity  int     `json:"quantity"`
-	Revenue   float64 `json:"revenue"`
+	ProductID string     `json:"product_id"`
+	Name      string     `json:"name"`
+	Quantity  int        `json:"quantity"`
+	Revenue   domain.IDR `json:"revenue"`
 }
 
 // TopProducts ranks products by quantity sold.
@@ -143,7 +148,7 @@ func (r *AnalyticsRepository) TopProducts(ctx context.Context, from, to time.Tim
 		where += ` AND oi.seller_id = $4`
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT oi.product_id, oi.product_name, SUM(oi.quantity)::int, SUM(oi.total)::float8
+		SELECT oi.product_id, oi.product_name, SUM(oi.quantity)::int, SUM(oi.total)
 		FROM order_items oi
 		JOIN orders o ON o.id = oi.order_id
 		WHERE `+where+`
@@ -158,9 +163,11 @@ func (r *AnalyticsRepository) TopProducts(ctx context.Context, from, to time.Tim
 	items := []*TopProduct{}
 	for rows.Next() {
 		var p TopProduct
-		if err := rows.Scan(&p.ProductID, &p.Name, &p.Quantity, &p.Revenue); err != nil {
+		var revenue int64
+		if err := rows.Scan(&p.ProductID, &p.Name, &p.Quantity, &revenue); err != nil {
 			return nil, err
 		}
+		p.Revenue = domain.IDR(revenue)
 		items = append(items, &p)
 	}
 	return items, rows.Err()
@@ -181,22 +188,22 @@ type FunnelStep struct {
 }
 
 // CommissionEarned sums platform commission income (escrow releases) in the range.
-func (r *AnalyticsRepository) CommissionEarned(ctx context.Context, from, to time.Time) (float64, error) {
-	var total float64
+func (r *AnalyticsRepository) CommissionEarned(ctx context.Context, from, to time.Time) (domain.IDR, error) {
+	var total int64
 	err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0)::float8
+		SELECT COALESCE(SUM(amount), 0)
 		FROM wallet_transactions
 		WHERE reason = 'commission' AND created_at >= $1 AND created_at < $2`,
 		from, to).Scan(&total)
-	return total, err
+	return domain.IDR(total), err
 }
 
 // TopSeller is GMV per seller.
 type TopSeller struct {
-	SellerID string  `json:"seller_id"`
-	Name     string  `json:"name"`
-	GMV      float64 `json:"gmv"`
-	Orders   int     `json:"orders"`
+	SellerID string     `json:"seller_id"`
+	Name     string     `json:"name"`
+	GMV      domain.IDR `json:"gmv"`
+	Orders   int        `json:"orders"`
 }
 
 // TopSellers ranks sellers by GMV in the range.
@@ -205,7 +212,7 @@ func (r *AnalyticsRepository) TopSellers(ctx context.Context, from, to time.Time
 		limit = 10
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT o.seller_id, u.full_name, SUM(o.total_amount)::float8, COUNT(*)::int
+		SELECT o.seller_id, u.full_name, SUM(o.total_amount), COUNT(*)::int
 		FROM orders o
 		JOIN users u ON u.id = o.seller_id
 		WHERE o.created_at >= $1 AND o.created_at < $2 AND o.status NOT IN ('cancelled')
@@ -220,9 +227,11 @@ func (r *AnalyticsRepository) TopSellers(ctx context.Context, from, to time.Time
 	items := []*TopSeller{}
 	for rows.Next() {
 		var s TopSeller
-		if err := rows.Scan(&s.SellerID, &s.Name, &s.GMV, &s.Orders); err != nil {
+		var gmv int64
+		if err := rows.Scan(&s.SellerID, &s.Name, &gmv, &s.Orders); err != nil {
 			return nil, err
 		}
+		s.GMV = domain.IDR(gmv)
 		items = append(items, &s)
 	}
 	return items, rows.Err()
@@ -321,9 +330,9 @@ func (r *AnalyticsRepository) Funnel(ctx context.Context, from, to time.Time, se
 
 // CategorySales is revenue by category.
 type CategorySales struct {
-	Category string  `json:"category"`
-	Revenue  float64 `json:"revenue"`
-	Quantity int     `json:"quantity"`
+	Category string     `json:"category"`
+	Revenue  domain.IDR `json:"revenue"`
+	Quantity int        `json:"quantity"`
 }
 
 // CategorySalesBy aggregates order revenue per product category.
@@ -335,7 +344,7 @@ func (r *AnalyticsRepository) CategorySalesBy(ctx context.Context, from, to time
 		where += ` AND oi.seller_id = $3`
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT COALESCE(c.name, 'Tanpa kategori'), SUM(oi.total)::float8, SUM(oi.quantity)::int
+		SELECT COALESCE(c.name, 'Tanpa kategori'), SUM(oi.total), SUM(oi.quantity)::int
 		FROM order_items oi
 		JOIN orders o ON o.id = oi.order_id
 		LEFT JOIN products p ON p.id = oi.product_id
@@ -351,9 +360,11 @@ func (r *AnalyticsRepository) CategorySalesBy(ctx context.Context, from, to time
 	items := []*CategorySales{}
 	for rows.Next() {
 		var c CategorySales
-		if err := rows.Scan(&c.Category, &c.Revenue, &c.Quantity); err != nil {
+		var revenue int64
+		if err := rows.Scan(&c.Category, &revenue, &c.Quantity); err != nil {
 			return nil, err
 		}
+		c.Revenue = domain.IDR(revenue)
 		items = append(items, &c)
 	}
 	return items, rows.Err()
@@ -361,15 +372,15 @@ func (r *AnalyticsRepository) CategorySalesBy(ctx context.Context, from, to time
 
 // PaymentSplit is GMV per payment method.
 type PaymentSplit struct {
-	Method  string  `json:"method"`
-	Revenue float64 `json:"revenue"`
-	Count   int     `json:"count"`
+	Method  string     `json:"method"`
+	Revenue domain.IDR `json:"revenue"`
+	Count   int        `json:"count"`
 }
 
 // PaymentSplitBy aggregates paid GMV per payment method (platform-wide).
 func (r *AnalyticsRepository) PaymentSplitBy(ctx context.Context, from, to time.Time) ([]*PaymentSplit, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT COALESCE(pi.method, 'unknown'), SUM(pi.amount)::float8, COUNT(*)::int
+		SELECT COALESCE(pi.method, 'unknown'), SUM(pi.amount), COUNT(*)::int
 		FROM payment_intents pi
 		WHERE pi.status = 'captured'
 		  AND pi.created_at >= $1 AND pi.created_at < $2
@@ -383,9 +394,11 @@ func (r *AnalyticsRepository) PaymentSplitBy(ctx context.Context, from, to time.
 	items := []*PaymentSplit{}
 	for rows.Next() {
 		var p PaymentSplit
-		if err := rows.Scan(&p.Method, &p.Revenue, &p.Count); err != nil {
+		var revenue int64
+		if err := rows.Scan(&p.Method, &revenue, &p.Count); err != nil {
 			return nil, err
 		}
+		p.Revenue = domain.IDR(revenue)
 		items = append(items, &p)
 	}
 	return items, rows.Err()

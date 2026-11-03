@@ -666,7 +666,7 @@ func (s *PaymentService) buildRefundPlan(
 		pct, fixed := intent.CommissionRatePct, intent.CommissionRateFixed
 		if !intent.CommissionSnapshotPresent {
 			if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
-				pct, fixed = cfg.Pct, domain.IDRFromFloat(cfg.Fixed)
+				pct, fixed = cfg.Pct, cfg.Fixed
 			}
 		}
 		fee, sellerAmount = repository.Commission(pct, fixed, intent.Amount)
@@ -1030,7 +1030,7 @@ func (s *PaymentService) ReleaseEscrow(ctx context.Context, orderID string) erro
 			if ferr != nil {
 				return ferr
 			}
-			pct, fixed = cfg.Pct, domain.IDRFromFloat(cfg.Fixed)
+			pct, fixed = cfg.Pct, cfg.Fixed
 		}
 		fee, sellerAmount = repository.Commission(pct, fixed, intent.Amount)
 		if err := s.payments.ApplyFeeTx(ctx, q, intent.ID, fee, sellerAmount); err != nil {
@@ -1496,7 +1496,7 @@ func (s *PaymentService) DisputeSplitCredit(ctx context.Context, orderID, disput
 	if maxCredit <= 0 {
 		cfg, err := s.payments.ActiveFee(ctx)
 		if err == nil {
-			fee, _ := repository.Commission(cfg.Pct, domain.IDRFromFloat(cfg.Fixed), intent.Amount)
+			fee, _ := repository.Commission(cfg.Pct, cfg.Fixed, intent.Amount)
 			maxCredit = fee
 		}
 	}
@@ -1575,11 +1575,10 @@ func (s *PaymentService) WalletTransactions(ctx context.Context, userID string, 
 // The debit and the payout row are written in ONE transaction so a failure
 // can never leave money debited with no payout record. The instant
 // "sent" simulation only runs in development (sandboxAutoSend).
-func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amount float64, bankName, bankAccount string) (*domain.Payout, error) {
-	if !IsWholeIDR(amount) || amount <= 0 {
-		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive whole rupiah")
+func (s *PaymentService) RequestPayout(ctx context.Context, userID string, payoutAmount domain.IDR, bankName, bankAccount string) (*domain.Payout, error) {
+	if payoutAmount <= 0 {
+		return nil, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be positive")
 	}
-	payoutAmount := domain.IDRFromFloat(amount)
 	if strings.TrimSpace(bankName) == "" || strings.TrimSpace(bankAccount) == "" {
 		return nil, domain.E(domain.KindInvalid, "BANK_REQUIRED", "bank name and account number are required")
 	}
@@ -1617,7 +1616,7 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 	// Real marketplaces hold the balance for a T+n lag with no open return or
 	// dispute, and this row is what makes that hold visible and releasable rather
 	// than implicit in a balance column.
-	if err := s.payments.ReserveSellerPending(ctx, tx.PgTx(), userID, payout.ID, domain.IDRFromFloat(amount)); err != nil {
+	if err := s.payments.ReserveSellerPending(ctx, tx.PgTx(), userID, payout.ID, payoutAmount); err != nil {
 		return nil, err
 	}
 	// Payout journal, inside the payout transaction.
@@ -1634,7 +1633,7 @@ func (s *PaymentService) RequestPayout(ctx context.Context, userID string, amoun
 		RefID:          payout.ID,
 		Note:           "payout requested; balance moved to the payout pipeline",
 		Entries: withMeta(payoutRequestedEntries(userID, payout.Amount), map[string]any{
-			"payout_id": payout.ID, "seller_id": userID, "amount": amount,
+			"payout_id": payout.ID, "seller_id": userID, "amount": payoutAmount,
 		}),
 	})
 	if err := tx.Commit(ctx); err != nil {

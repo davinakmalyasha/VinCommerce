@@ -349,7 +349,7 @@ func (r *PaymentRepository) CreateIntentTx(ctx context.Context, q Querier, in *d
 		// Nothing supplied: read the active card.
 		if cfg, err := r.ActiveFeeTx(ctx, q); err == nil && cfg != nil {
 			in.CommissionRatePct = cfg.Pct
-			in.CommissionRateFixed = domain.IDRFromFloat(cfg.Fixed)
+			in.CommissionRateFixed = cfg.Fixed
 			// Present even when the card is (0, 0): a 0% rate that was READ is a
 			// real snapshot and must survive an admin change before delivery.
 			in.CommissionSnapshotPresent = true
@@ -1461,28 +1461,30 @@ func (r *PaymentRepository) ReserveSellerPendingTx(
 
 // PlatformFee is the active commission configuration.
 type PlatformFee struct {
-	ID        string    `json:"id"`
-	Pct       float64   `json:"pct"`
-	Fixed     float64   `json:"fixed"`
-	IsActive  bool      `json:"is_active"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+	Pct       float64    `json:"pct"`
+	Fixed     domain.IDR `json:"fixed"`
+	IsActive  bool       `json:"is_active"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // ActiveFee returns the active commission config.
 func (r *PaymentRepository) ActiveFee(ctx context.Context) (*PlatformFee, error) {
 	var f PlatformFee
+	var fixed int64
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, pct, fixed, is_active, updated_at FROM platform_fees WHERE is_active ORDER BY updated_at DESC LIMIT 1`).
-		Scan(&f.ID, &f.Pct, &f.Fixed, &f.IsActive, &f.UpdatedAt)
+		Scan(&f.ID, &f.Pct, &fixed, &f.IsActive, &f.UpdatedAt)
+	f.Fixed = domain.IDR(fixed)
 	return &f, err
 }
 
 // SetFee updates the commission config (admin).
-func (r *PaymentRepository) SetFee(ctx context.Context, pct, fixed float64) error {
+func (r *PaymentRepository) SetFee(ctx context.Context, pct float64, fixed domain.IDR) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE platform_fees SET is_active = FALSE WHERE is_active = TRUE;
 		INSERT INTO platform_fees (id, pct, fixed, is_active) VALUES (gen_random_uuid(), $1, $2, TRUE);`,
-		pct, fixed)
+		pct, int64(fixed))
 	return err
 }
 
@@ -1543,9 +1545,11 @@ func (r *PaymentRepository) ApplyFee(ctx context.Context, intentID string, fee, 
 // ActiveFeeTx returns the active commission config inside a transaction.
 func (r *PaymentRepository) ActiveFeeTx(ctx context.Context, q Querier) (*PlatformFee, error) {
 	var f PlatformFee
+	var fixed int64
 	err := q.QueryRow(ctx, `
 		SELECT id, pct, fixed, is_active, updated_at FROM platform_fees WHERE is_active ORDER BY updated_at DESC LIMIT 1`).
-		Scan(&f.ID, &f.Pct, &f.Fixed, &f.IsActive, &f.UpdatedAt)
+		Scan(&f.ID, &f.Pct, &fixed, &f.IsActive, &f.UpdatedAt)
+	f.Fixed = domain.IDR(fixed)
 	return &f, err
 }
 

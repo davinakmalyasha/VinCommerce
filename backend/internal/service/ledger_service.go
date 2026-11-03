@@ -332,7 +332,7 @@ func validateBalanced(entries []LedgerEntry) error {
 // Before this existed the only way to approximate it was to sum captured-but-not-
 // released payment intents, which silently omits COD in transit, disputes, and any
 // balance a refund has already drawn down.
-func (s *LedgerService) EscrowOutstanding(ctx context.Context, q repository.Querier) (float64, error) {
+func (s *LedgerService) EscrowOutstanding(ctx context.Context, q repository.Querier) (domain.IDR, error) {
 	return s.ledger.BalanceOf(ctx, q, AccEscrowHeld)
 }
 

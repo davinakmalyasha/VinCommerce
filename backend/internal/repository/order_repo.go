@@ -945,9 +945,11 @@ func (r *OrderRepository) ShippingMethodsAll(ctx context.Context, activeOnly boo
 	methods := []*domain.ShippingMethod{}
 	for rows.Next() {
 		var m domain.ShippingMethod
-		if err := rows.Scan(&m.ID, &m.Code, &m.Name, &m.BaseFee, &m.PerKgFee, &m.MinDays, &m.MaxDays, &m.IsActive); err != nil {
+		var base, perKg int64
+		if err := rows.Scan(&m.ID, &m.Code, &m.Name, &base, &perKg, &m.MinDays, &m.MaxDays, &m.IsActive); err != nil {
 			return nil, err
 		}
+		m.BaseFee, m.PerKgFee = domain.IDR(base), domain.IDR(perKg)
 		methods = append(methods, &m)
 	}
 	return methods, rows.Err()
@@ -958,7 +960,7 @@ func (r *OrderRepository) CreateShippingMethod(ctx context.Context, m *domain.Sh
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO shipping_methods (id, code, name, base_fee, per_kg_fee, min_days, max_days, is_active)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		m.ID, m.Code, m.Name, m.BaseFee, m.PerKgFee, m.MinDays, m.MaxDays, m.IsActive)
+		m.ID, m.Code, m.Name, int64(m.BaseFee), int64(m.PerKgFee), m.MinDays, m.MaxDays, m.IsActive)
 	return mapPgConflict(err, domain.E(domain.KindConflict, "CODE_TAKEN", "shipping code already exists"), nil)
 }
 
@@ -1134,21 +1136,22 @@ func (r *OrderRepository) DeliveredBefore(ctx context.Context, cutoff time.Time,
 
 // SellerDashboard holds seller KPIs computed by the repo.
 type SellerDashboard struct {
-	TotalSales     float64 `json:"total_sales"`
-	OrderCount     int     `json:"order_count"`
-	PendingOrders  int     `json:"pending_orders"`
-	ProductsActive int     `json:"products_active"`
-	ProductsDraft  int     `json:"products_draft"`
+	TotalSales     domain.IDR `json:"total_sales"`
+	OrderCount     int        `json:"order_count"`
+	PendingOrders  int        `json:"pending_orders"`
+	ProductsActive int        `json:"products_active"`
+	ProductsDraft  int        `json:"products_draft"`
 }
 
 // Dashboard aggregates seller KPIs.
 func (r *OrderRepository) Dashboard(ctx context.Context, sellerID string) (*SellerDashboard, error) {
 	d := &SellerDashboard{}
+	var total int64
 	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(total_amount), 0), COUNT(*)::int,
 		       COUNT(*) FILTER (WHERE status = 'pending')::int
 		FROM orders WHERE seller_id = $1 AND status NOT IN ('cancelled')`, sellerID).
-		Scan(&d.TotalSales, &d.OrderCount, &d.PendingOrders); err != nil {
+		Scan(&total, &d.OrderCount, &d.PendingOrders); err != nil {
 		return nil, err
 	}
 	if err := r.pool.QueryRow(ctx, `
@@ -1157,6 +1160,7 @@ func (r *OrderRepository) Dashboard(ctx context.Context, sellerID string) (*Sell
 		Scan(&d.ProductsActive, &d.ProductsDraft); err != nil {
 		return nil, err
 	}
+	d.TotalSales = domain.IDR(total)
 	return d, nil
 }
 

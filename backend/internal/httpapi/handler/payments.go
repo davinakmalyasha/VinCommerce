@@ -212,7 +212,13 @@ func (h *Wallet) RequestPayout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	payout, err := h.svc.RequestPayout(r.Context(), user.ID, req.Amount, req.BankName, req.BankAccount)
+	// Whole rupiah by contract; a fractional request is rejected, not rounded
+	// to a different amount than the seller typed.
+	if !service.IsWholeIDR(req.Amount) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_AMOUNT", "amount must be whole rupiah"))
+		return
+	}
+	payout, err := h.svc.RequestPayout(r.Context(), user.ID, domain.IDRFromFloat(req.Amount), req.BankName, req.BankAccount)
 	if err != nil {
 		writeErr(w, r, err)
 		return

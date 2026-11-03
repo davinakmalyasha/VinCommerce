@@ -219,12 +219,12 @@ func (h *AdminOps) PublicShipping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type opt struct {
-		Code     string  `json:"code"`
-		Name     string  `json:"name"`
-		BaseFee  float64 `json:"base_fee"`
-		PerKgFee float64 `json:"per_kg_fee"`
-		MinDays  int     `json:"min_days"`
-		MaxDays  int     `json:"max_days"`
+		Code     string     `json:"code"`
+		Name     string     `json:"name"`
+		BaseFee  domain.IDR `json:"base_fee"`
+		PerKgFee domain.IDR `json:"per_kg_fee"`
+		MinDays  int        `json:"min_days"`
+		MaxDays  int        `json:"max_days"`
 	}
 	out := make([]opt, 0, len(items))
 	for _, m := range items {
@@ -252,8 +252,14 @@ func (h *AdminOps) CreateShipping(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
+	// Whole rupiah by contract; a fractional fee is rejected, not rounded
+	// into a rate the platform charges every order.
+	if !service.IsWholeIDR(req.BaseFee) || !service.IsWholeIDR(req.PerKgFee) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_PRICE", "fees must be whole rupiah"))
+		return
+	}
 	m, err := h.svc.CreateShippingMethod(r.Context(), &domain.ShippingMethod{
-		Code: req.Code, Name: req.Name, BaseFee: req.BaseFee, PerKgFee: req.PerKgFee,
+		Code: req.Code, Name: req.Name, BaseFee: domain.IDRFromFloat(req.BaseFee), PerKgFee: domain.IDRFromFloat(req.PerKgFee),
 		MinDays: req.MinDays, MaxDays: req.MaxDays, IsActive: true,
 	})
 	if err != nil {
@@ -324,7 +330,11 @@ func (h *AdminOps) SetCommission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	if err := h.svc.SetCommissionConfig(r.Context(), req.Pct, req.Fixed); err != nil {
+	if !service.IsWholeIDR(req.Fixed) {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_PRICE", "fixed fee must be whole rupiah"))
+		return
+	}
+	if err := h.svc.SetCommissionConfig(r.Context(), req.Pct, domain.IDRFromFloat(req.Fixed)); err != nil {
 		writeErr(w, r, err)
 		return
 	}

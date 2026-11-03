@@ -456,10 +456,10 @@ func (s *OrderService) MergeCart(ctx context.Context, userID, guestCartID string
 // FreeShippingStatus describes one seller bundle's progress toward that
 // store's free-shipping threshold (cart upsell banner).
 type FreeShippingStatus struct {
-	SellerID  string     `json:"seller_id"`
-	Name      string     `json:"name"`
-	Subtotal  domain.IDR `json:"subtotal"`
-	Threshold *float64   `json:"threshold,omitempty"`
+	SellerID  string      `json:"seller_id"`
+	Name      string      `json:"name"`
+	Subtotal  domain.IDR  `json:"subtotal"`
+	Threshold *domain.IDR `json:"threshold,omitempty"`
 }
 
 // FreeShippingStatus computes per-seller progress toward free shipping.
@@ -789,8 +789,8 @@ func (s *OrderService) QuoteCheckout(ctx context.Context, userID, cartID, coupon
 		}
 		// method fees are config floats until the catalogue slice; quoted
 		// fees are IDR from the first computation.
-		baseFee, perKgFee := domain.IDRFromFloat(method.BaseFee), domain.IDRFromFloat(method.PerKgFee)
-		if freeThreshold != nil && bundleSubtotal >= domain.IDRFromFloat(*freeThreshold) {
+		baseFee, perKgFee := method.BaseFee, method.PerKgFee
+		if freeThreshold != nil && bundleSubtotal >= *freeThreshold {
 			quote.Shipping = append(quote.Shipping, &ShippingQuote{
 				MethodID: method.ID, Code: method.Code, Name: method.Name,
 				BaseFee: baseFee, PerKgFee: perKgFee,

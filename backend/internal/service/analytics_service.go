@@ -45,7 +45,7 @@ type Report struct {
 	CategorySales    []*repository.CategorySales `json:"category_sales"`
 	PaymentSplit     []*repository.PaymentSplit  `json:"payment_split"`
 	BuyerCohorts     []*repository.BuyerCohort   `json:"buyer_cohorts"`
-	CommissionEarned float64                     `json:"commission_earned"`
+	CommissionEarned domain.IDR                  `json:"commission_earned"`
 	TopSellers       []*repository.TopSeller     `json:"top_sellers"`
 	CouponStats      []*repository.CouponStat    `json:"coupon_stats"`
 }

@@ -153,10 +153,10 @@ func (h *Analytics) writeCSV(w http.ResponseWriter, report *service.Report) {
 	for _, p := range report.SalesSeries {
 		_ = cw.Write([]string{
 			p.Day.Format("2006-01-02"),
-			strconv.FormatFloat(p.GMV, 'f', 2, 64),
+			strconv.FormatInt(int64(p.GMV), 10),
 			strconv.Itoa(p.OrderCount),
 			strconv.Itoa(p.ItemCount),
 		})
 	}
-	_ = cw.Write([]string{"total_gmv", strconv.FormatFloat(report.Summary.GMV, 'f', 2, 64), "orders", strconv.Itoa(report.Summary.OrderCount)})
+	_ = cw.Write([]string{"total_gmv", strconv.FormatInt(int64(report.Summary.GMV), 10), "orders", strconv.Itoa(report.Summary.OrderCount)})
 }

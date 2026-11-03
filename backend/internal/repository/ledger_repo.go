@@ -294,8 +294,8 @@ func (r *LedgerRepository) ensureUserAccount(
 //
 // This is the number behind `held_balance` and `balance` on `wallets`: the
 // escrow question, answerable as a query instead of a guess.
-func (r *LedgerRepository) BalanceOf(ctx context.Context, q Querier, accountCode string) (float64, error) {
-	var bal float64
+func (r *LedgerRepository) BalanceOf(ctx context.Context, q Querier, accountCode string) (domain.IDR, error) {
+	var bal int64
 	err := q.QueryRow(ctx,
 		`SELECT balance FROM account_balances WHERE account_code = $1 AND currency = 'IDR'`,
 		accountCode).Scan(&bal)
@@ -305,7 +305,7 @@ func (r *LedgerRepository) BalanceOf(ctx context.Context, q Querier, accountCode
 		// personal one, so a miss genuinely means the account has no activity.
 		return 0, nil
 	}
-	return bal, err
+	return domain.IDR(bal), err
 }
 
 // TrialBalance returns every account's balance, ordered by code.
@@ -324,9 +324,11 @@ func (r *LedgerRepository) TrialBalance(ctx context.Context, q Querier) ([]domai
 	out := []domain.TrialBalanceRow{}
 	for rows.Next() {
 		var t domain.TrialBalanceRow
-		if err := rows.Scan(&t.AccountCode, &t.Name, &t.Class, &t.NormalSide, &t.IsSystem, &t.Balance); err != nil {
+		var balance int64
+		if err := rows.Scan(&t.AccountCode, &t.Name, &t.Class, &t.NormalSide, &t.IsSystem, &balance); err != nil {
 			return nil, err
 		}
+		t.Balance = domain.IDR(balance)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -349,10 +351,12 @@ func (r *LedgerRepository) JournalEntries(ctx context.Context, q Querier, journa
 	for rows.Next() {
 		var e domain.LedgerEntryRow
 		var raw []byte
-		if err := rows.Scan(&e.ID, &e.JournalID, &e.AccountCode, &e.Amount, &e.Side,
+		var amount int64
+		if err := rows.Scan(&e.ID, &e.JournalID, &e.AccountCode, &amount, &e.Side,
 			&e.Currency, &raw, &e.CreatedAt); err != nil {
 			return nil, err
 		}
+		e.Amount = domain.IDR(amount)
 		if len(raw) > 0 {
 			_ = json.Unmarshal(raw, &e.Metadata)
 		}
@@ -435,15 +439,15 @@ func (r *LedgerRepository) reconcileBalances(ctx context.Context, q Querier) ([]
 			       e.currency,
 			       SUM(CASE WHEN a.normal_side = 'debit'  THEN  e.amount
 			                WHEN a.normal_side = 'credit' THEN -e.amount
-			                ELSE 0 END)::float8 AS expected
+			                ELSE 0 END) AS expected
 			  FROM ledger_entries e
 			  JOIN ledger_accounts a ON a.code = e.account_code
 			 GROUP BY e.account_code, e.currency
 		)
-		SELECT b.account_code, b.balance::float8, COALESCE(rc.expected, 0)
+		SELECT b.account_code, b.balance, COALESCE(rc.expected, 0)
 		  FROM account_balances b
 		  LEFT JOIN recomputed rc ON rc.account_code = b.account_code AND rc.currency = b.currency
-		 WHERE abs(b.balance - COALESCE(rc.expected, 0)) > 0.004
+		 WHERE b.balance <> COALESCE(rc.expected, 0)
 		 ORDER BY b.account_code`)
 	if err != nil {
 		return nil, err
@@ -453,9 +457,11 @@ func (r *LedgerRepository) reconcileBalances(ctx context.Context, q Querier) ([]
 	out := []domain.DriftRow{}
 	for rows.Next() {
 		var d domain.DriftRow
-		if err := rows.Scan(&d.AccountCode, &d.Cached, &d.Expected); err != nil {
+		var cached, expected int64
+		if err := rows.Scan(&d.AccountCode, &cached, &expected); err != nil {
 			return nil, err
 		}
+		d.Cached, d.Expected = domain.IDR(cached), domain.IDR(expected)
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -464,8 +470,8 @@ func (r *LedgerRepository) reconcileBalances(ctx context.Context, q Querier) ([]
 func (r *LedgerRepository) unbalancedJournals(ctx context.Context, q Querier) ([]domain.UnbalancedJournal, error) {
 	rows, err := q.Query(ctx, `
 		SELECT j.id, j.idempotency_key, j.tx_type,
-		       COALESCE(SUM(e.amount) FILTER (WHERE e.side = 'debit'), 0)::float8,
-		       COALESCE(SUM(e.amount) FILTER (WHERE e.side = 'credit'), 0)::float8
+		       COALESCE(SUM(e.amount) FILTER (WHERE e.side = 'debit'), 0),
+		       COALESCE(SUM(e.amount) FILTER (WHERE e.side = 'credit'), 0)
 		  FROM ledger_journals j
 		  LEFT JOIN ledger_entries e ON e.journal_id = j.id
 		 GROUP BY j.id, j.idempotency_key, j.tx_type
@@ -481,9 +487,12 @@ func (r *LedgerRepository) unbalancedJournals(ctx context.Context, q Querier) ([
 	out := []domain.UnbalancedJournal{}
 	for rows.Next() {
 		var u domain.UnbalancedJournal
-		if err := rows.Scan(&u.JournalID, &u.IdempotencyKey, &u.TxType, &u.Debits, &u.Credits); err != nil {
+		var debits, credits int64
+		if err := rows.Scan(&u.JournalID, &u.IdempotencyKey, &u.TxType, &debits, &credits); err != nil {
 			return nil, err
 		}
+		u.Debits, u.Credits = domain.IDR(debits), domain.IDR(credits)
+		u.Imbalance = u.Debits - u.Credits
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -499,10 +508,10 @@ func (r *LedgerRepository) reconcileWallets(ctx context.Context, q Querier) ([]d
 	// about the one movement it was extended to cover.
 	rows, err := q.Query(ctx, `
 		SELECT w.user_id,
-		       w.balance::float8,
-		       (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))::float8,
-		       w.held_balance::float8,
-		       COALESCE(held.balance, 0)::float8
+		       w.balance,
+		       COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0),
+		       w.held_balance,
+		       COALESCE(held.balance, 0)
 		  FROM wallets w
 		  LEFT JOIN account_balances ab
 		         ON ab.account_code = $1 || w.user_id::text AND ab.currency = 'IDR'
@@ -510,8 +519,8 @@ func (r *LedgerRepository) reconcileWallets(ctx context.Context, q Querier) ([]d
 		         ON wb.account_code = $3 || w.user_id::text AND wb.currency = 'IDR'
 		  LEFT JOIN account_balances held
 		         ON held.account_code = $2 || w.user_id::text AND held.currency = 'IDR'
-		 WHERE abs(w.balance - (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))) > 0.004
-		    OR abs(w.held_balance - COALESCE(held.balance, 0)) > 0.004
+		 WHERE w.balance <> (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))
+		    OR w.held_balance <> COALESCE(held.balance, 0)
 		 ORDER BY abs(w.balance - (COALESCE(ab.balance, 0) + COALESCE(wb.balance, 0))) DESC
 		 LIMIT 100`,
 		personalAccountPrefix, "seller_held:", walletAccountPrefix)
@@ -523,10 +532,13 @@ func (r *LedgerRepository) reconcileWallets(ctx context.Context, q Querier) ([]d
 	out := []domain.WalletDrift{}
 	for rows.Next() {
 		var d domain.WalletDrift
-		if err := rows.Scan(&d.UserID, &d.WalletBalance, &d.LedgerBalance,
-			&d.WalletHeld, &d.LedgerHeld); err != nil {
+		var wallet, ledger, held, ledgerHeld int64
+		if err := rows.Scan(&d.UserID, &wallet, &ledger,
+			&held, &ledgerHeld); err != nil {
 			return nil, err
 		}
+		d.WalletBalance, d.LedgerBalance = domain.IDR(wallet), domain.IDR(ledger)
+		d.WalletHeld, d.LedgerHeld = domain.IDR(held), domain.IDR(ledgerHeld)
 		out = append(out, d)
 	}
 	return out, rows.Err()

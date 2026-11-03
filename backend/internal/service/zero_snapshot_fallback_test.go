@@ -51,7 +51,7 @@ func TestReleaseEscrowDoesNotTreatAnAbsentSnapshotAsZeroPercent(t *testing.T) {
 	// is the same defect wearing a hat -- and mutation checking proved it, twice:
 	// the obvious mutants did not even compile (`cfg` became unused), so the
 	// negative assertion was never exercised.
-	if !strings.Contains(fallback, "pct, fixed = cfg.Pct, domain.IDRFromFloat(cfg.Fixed)") {
+	if !strings.Contains(fallback, "pct, fixed = cfg.Pct, cfg.Fixed") {
 		t.Errorf("the fallback does not assign the active rate to both pct and fixed.\n%s\n"+
 			"Anything else here means either zero (commission never charged on legacy "+
 			"intents) or a partial rate", fallback)

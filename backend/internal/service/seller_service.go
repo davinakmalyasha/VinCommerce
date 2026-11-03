@@ -366,7 +366,7 @@ func (s *SellerService) AuditLog(ctx context.Context, actorID, action string, li
 }
 
 // SetFreeShipping updates the store's free-shipping threshold.
-func (s *SellerService) SetFreeShipping(ctx context.Context, ownerID string, threshold *float64) error {
+func (s *SellerService) SetFreeShipping(ctx context.Context, ownerID string, threshold *domain.IDR) error {
 	if _, err := s.stores.ByOwner(ctx, ownerID); err != nil {
 		return err
 	}
@@ -374,7 +374,7 @@ func (s *SellerService) SetFreeShipping(ctx context.Context, ownerID string, thr
 }
 
 // SetCommissionConfig updates the platform fee (admin).
-func (s *SellerService) SetCommissionConfig(ctx context.Context, pct, fixed float64) error {
+func (s *SellerService) SetCommissionConfig(ctx context.Context, pct float64, fixed domain.IDR) error {
 	if pct < 0 || pct > 50 {
 		return domain.E(domain.KindInvalid, "BAD_PCT", "commission percent must be between 0 and 50")
 	}
@@ -933,13 +933,15 @@ func (s *SellerService) ListSellerProducts(ctx context.Context, sellerID string,
 
 // SellerStats is the dashboard summary.
 type SellerStats struct {
-	TotalSales     float64 `json:"total_sales"`
-	OrderCount     int     `json:"order_count"`
-	PendingOrders  int     `json:"pending_orders"`
-	ProductsActive int     `json:"products_active"`
-	ProductsDraft  int     `json:"products_draft"`
-	WalletBalance  float64 `json:"wallet_balance"`
-	AvgOrderValue  float64 `json:"avg_order_value"`
+	TotalSales     domain.IDR `json:"total_sales"`
+	OrderCount     int        `json:"order_count"`
+	PendingOrders  int        `json:"pending_orders"`
+	ProductsActive int        `json:"products_active"`
+	ProductsDraft  int        `json:"products_draft"`
+	WalletBalance  domain.IDR `json:"wallet_balance"`
+	// AvgOrderValue is floored to whole rupiah by integer division -- an
+	// average is indicative, and a fractional average is not spendable.
+	AvgOrderValue domain.IDR `json:"avg_order_value"`
 }
 
 // Dashboard returns seller KPIs.
@@ -957,11 +959,10 @@ func (s *SellerService) Dashboard(ctx context.Context, sellerID string) (*Seller
 	}
 	wallet, err := s.payments.Wallet(ctx, sellerID)
 	if err == nil {
-		// SellerStats still reports floats until the dashboard slice migrates.
-		stats.WalletBalance = wallet.Balance.Float()
+		stats.WalletBalance = wallet.Balance
 	}
 	if stats.OrderCount > 0 {
-		stats.AvgOrderValue = stats.TotalSales / float64(stats.OrderCount)
+		stats.AvgOrderValue = stats.TotalSales / domain.IDR(stats.OrderCount)
 	}
 	return stats, nil
 }

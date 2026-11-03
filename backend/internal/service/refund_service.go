@@ -624,7 +624,7 @@ func (s *PaymentService) refundPlanFor(
 		// to the active rate. Recomputing from today's rate would reverse a
 		// commission that was never charged.
 		if cfg, ferr := s.payments.ActiveFeeTx(ctx, q); ferr == nil {
-			fee, sellerAmount = repository.Commission(cfg.Pct, domain.IDRFromFloat(cfg.Fixed), cap.Amount)
+			fee, sellerAmount = repository.Commission(cfg.Pct, cfg.Fixed, cap.Amount)
 		}
 	}
 
@@ -859,7 +859,7 @@ func (s *PaymentService) TrialBalance(ctx context.Context) ([]domain.TrialBalanc
 // Before the ledger it could only be approximated by summing captured-but-not-
 // released intents, which silently omits COD in transit, disputes, and any balance
 // a refund has already drawn down.
-func (s *PaymentService) EscrowOutstanding(ctx context.Context) (float64, error) {
+func (s *PaymentService) EscrowOutstanding(ctx context.Context) (domain.IDR, error) {
 	if s.ledger == nil {
 		return 0, domain.E(domain.KindConflict, "LEDGER_UNAVAILABLE",
 			"the ledger is not wired, so escrow cannot be reported")

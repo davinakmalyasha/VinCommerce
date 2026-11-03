@@ -210,8 +210,8 @@ type ShippingMethod struct {
 	ID       string  `json:"id"`
 	Code     string  `json:"code"`
 	Name     string  `json:"name"`
-	BaseFee  float64 `json:"base_fee"`
-	PerKgFee float64 `json:"per_kg_fee"`
+	BaseFee  IDR     `json:"base_fee"`
+	PerKgFee IDR     `json:"per_kg_fee"`
 	MinDays  int     `json:"min_days"`
 	MaxDays  int     `json:"max_days"`
 	IsActive bool    `json:"is_active"`

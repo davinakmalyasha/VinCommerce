@@ -31,21 +31,29 @@ func NewStoreRepository(pool *db.Pool) *StoreRepository {
 func (r *StoreRepository) Pool() *db.Pool { return r.pool }
 
 // FreeShippingThreshold returns the seller's free-shipping threshold (nil if unset).
-func (r *StoreRepository) FreeShippingThreshold(ctx context.Context, ownerID string) (*float64, error) {
-	var t *float64
+func (r *StoreRepository) FreeShippingThreshold(ctx context.Context, ownerID string) (*domain.IDR, error) {
+	var t *int64
 	err := r.pool.QueryRow(ctx,
 		`SELECT free_shipping_threshold FROM stores WHERE owner_id = $1`, ownerID).Scan(&t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.E(domain.KindNotFound, "NO_STORE", "seller has no store")
 	}
-	return t, err
+	if err != nil || t == nil {
+		return nil, err
+	}
+	out := domain.IDR(*t)
+	return &out, nil
 }
 
 // SetFreeShippingThreshold updates the store's threshold.
-func (r *StoreRepository) SetFreeShippingThreshold(ctx context.Context, ownerID string, threshold *float64) error {
+func (r *StoreRepository) SetFreeShippingThreshold(ctx context.Context, ownerID string, threshold *domain.IDR) error {
+	var v any
+	if threshold != nil {
+		v = int64(*threshold)
+	}
 	_, err := r.pool.Exec(ctx, `
 		UPDATE stores SET free_shipping_threshold = NULLIF($2, 0), updated_at = now() WHERE owner_id = $1`,
-		ownerID, threshold)
+		ownerID, v)
 	return err
 }
 

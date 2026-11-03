@@ -327,7 +327,16 @@ func (h *Seller) SetFreeShipping(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
 		return
 	}
-	if err := h.svc.SetFreeShipping(r.Context(), user.ID, req.Threshold); err != nil {
+	var threshold *domain.IDR
+	if req.Threshold != nil {
+		if !service.IsWholeIDR(*req.Threshold) {
+			writeErr(w, r, domain.E(domain.KindInvalid, "BAD_PRICE", "threshold must be whole rupiah"))
+			return
+		}
+		t := domain.IDRFromFloat(*req.Threshold)
+		threshold = &t
+	}
+	if err := h.svc.SetFreeShipping(r.Context(), user.ID, threshold); err != nil {
 		writeErr(w, r, err)
 		return
 	}

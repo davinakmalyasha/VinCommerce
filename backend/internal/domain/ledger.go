@@ -45,7 +45,7 @@ type LedgerEntryRow struct {
 	ID          int64          `json:"id"`
 	JournalID   string         `json:"journal_id"`
 	AccountCode string         `json:"account_code"`
-	Amount      float64        `json:"amount"`
+	Amount      IDR            `json:"amount"`
 	Side        string         `json:"side"`
 	Currency    string         `json:"currency"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
@@ -63,15 +63,15 @@ type TrialBalanceRow struct {
 	Class       string  `json:"class,omitempty"`
 	NormalSide  string  `json:"normal_side,omitempty"`
 	IsSystem    bool    `json:"is_system"`
-	Balance     float64 `json:"balance"`
+	Balance     IDR     `json:"balance"`
 }
 
 // DriftRow is a cached balance that disagrees with the entries it was derived
 // from.
 type DriftRow struct {
-	AccountCode string  `json:"account_code"`
-	Cached      float64 `json:"cached"`
-	Expected    float64 `json:"expected"`
+	AccountCode string `json:"account_code"`
+	Cached      IDR    `json:"cached"`
+	Expected    IDR    `json:"expected"`
 }
 
 // UnbalancedJournal is a journal whose debits and credits do not sum equal.
@@ -83,9 +83,9 @@ type UnbalancedJournal struct {
 	JournalID      string  `json:"journal_id"`
 	IdempotencyKey string  `json:"idempotency_key"`
 	TxType         string  `json:"tx_type"`
-	Debits         float64 `json:"debits"`
-	Credits        float64 `json:"credits"`
-	Imbalance      float64 `json:"imbalance"`
+	Debits         IDR     `json:"debits"`
+	Credits        IDR     `json:"credits"`
+	Imbalance      IDR     `json:"imbalance"`
 }
 
 // WalletDrift is a user whose `wallets` row -- the balance the application
@@ -94,11 +94,11 @@ type UnbalancedJournal struct {
 // This is the drift a user would notice: a seller whose ledger says Rp50,000 and
 // whose wallet says Rp0.
 type WalletDrift struct {
-	UserID        string  `json:"user_id"`
-	WalletBalance float64 `json:"wallet_balance"`
-	LedgerBalance float64 `json:"ledger_balance"`
-	WalletHeld    float64 `json:"wallet_held"`
-	LedgerHeld    float64 `json:"ledger_held"`
+	UserID        string `json:"user_id"`
+	WalletBalance IDR    `json:"wallet_balance"`
+	LedgerBalance IDR    `json:"ledger_balance"`
+	WalletHeld    IDR    `json:"wallet_held"`
+	LedgerHeld    IDR    `json:"ledger_held"`
 }
 
 // LedgerReconciliation is the report that proves the ledger is right.
