@@ -29,6 +29,15 @@ describe('ticket attachments UI', () => {
     const svc = readBackend(join('internal', 'service', 'support_service.go'))
     expect(svc).toContain('NormalizeEvidenceURLs')
   })
+
+  it('rates only resolved tickets with a 1-5 score', () => {
+    const svc = readBackend(join('internal', 'service', 'support_service.go'))
+    expect(svc).toContain('RateTicket')
+    expect(svc).toContain('NOT_RESOLVED')
+    const page = read('pages/TicketDetailPage.tsx')
+    expect(page).toContain('/rating')
+    expect(page).toContain('Nilai ${s} dari 5')
+  })
 })
 
 describe('staff reply wiring', () => {

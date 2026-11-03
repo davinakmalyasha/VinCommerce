@@ -56,6 +56,8 @@ type SupportTicket struct {
 	Priority     string     `json:"priority"`
 	Status       string     `json:"status"`
 	AssignedTo   *string    `json:"assigned_to,omitempty"`
+	Rating       *int       `json:"rating,omitempty"`
+	RatedAt      *time.Time `json:"rated_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`

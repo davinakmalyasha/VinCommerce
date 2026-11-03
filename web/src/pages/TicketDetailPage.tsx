@@ -22,6 +22,7 @@ interface Ticket {
   category: string
   priority: string
   status: string
+  rating?: number | null
   created_at: string
 }
 
@@ -44,6 +45,13 @@ export function TicketDetailPage() {
       setAttachments([])
       queryClient.invalidateQueries({ queryKey: ['ticket', id] })
       queryClient.invalidateQueries({ queryKey: ['my-tickets'] })
+    },
+  })
+
+  const rate = useMutation({
+    mutationFn: async (rating: number) => api.post(`/tickets/${id}/rating`, { rating }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ticket', id] })
     },
   })
 
@@ -137,6 +145,32 @@ export function TicketDetailPage() {
           >
             {reply.isPending ? 'Mengirim...' : 'Balas'}
           </button>
+        </div>
+      )}
+
+      {(ticket.status === 'resolved' || ticket.status === 'closed') && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 mt-4">
+          <p className="text-sm font-medium mb-2">Bagaimana penanganan tiket ini?</p>
+          {ticket.rating ? (
+            <p className="text-sm text-gray-600">
+              {'★'.repeat(ticket.rating)}{'☆'.repeat(5 - ticket.rating)} Terima kasih atas penilaianmu!
+            </p>
+          ) : (
+            <div className="flex gap-1.5">
+              {[1, 2, 3, 4, 5].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => rate.mutate(s)}
+                  disabled={rate.isPending}
+                  aria-label={`Nilai ${s} dari 5`}
+                  className="text-2xl text-amber-400 hover:scale-110 disabled:opacity-50"
+                >
+                  ★
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

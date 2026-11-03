@@ -261,6 +261,29 @@ func (s *SupportService) AssignTicket(ctx context.Context, ticketID, agentID str
 	return s.support.AssignTicket(ctx, ticketID, agentID)
 }
 
+// RateTicket records the customer's satisfaction score.
+//
+// Only the ticket owner may rate, and only once staff had a chance to
+// respond (resolved/closed). Rating an open ticket would score the queue
+// time, not the resolution.
+func (s *SupportService) RateTicket(ctx context.Context, ticketID, requesterID string, rating int) error {
+	if rating < 1 || rating > 5 {
+		return domain.E(domain.KindInvalid, "BAD_RATING", "rating must be 1-5")
+	}
+	t, err := s.support.TicketByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	if t.UserID != requesterID {
+		return domain.E(domain.KindForbidden, "NOT_OWNED", "ticket does not belong to user")
+	}
+	if t.Status != domain.TicketResolved && t.Status != domain.TicketClosed {
+		return domain.E(domain.KindConflict, "NOT_RESOLVED",
+			"you can rate this ticket once it is resolved")
+	}
+	return s.support.RateTicket(ctx, ticketID, rating)
+}
+
 // TicketQueue lists open tickets (staff).
 func (s *SupportService) TicketQueue(ctx context.Context, status string) ([]*domain.SupportTicket, error) {
 	return s.support.TicketsByStatus(ctx, status)

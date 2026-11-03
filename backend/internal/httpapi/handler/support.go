@@ -275,6 +275,23 @@ func (h *Support) Assign(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"assigned": true})
 }
 
+// Rate handles POST /tickets/{id}/rating {rating} (owner only).
+func (h *Support) Rate(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	var req struct {
+		Rating int `json:"rating"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, r, domain.E(domain.KindInvalid, "BAD_JSON", err.Error()))
+		return
+	}
+	if err := h.svc.RateTicket(r.Context(), chi.URLParam(r, "id"), user.ID, req.Rating); err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"rated": true})
+}
+
 // Notifications exposes the persisted notification feed.
 type Notifications struct {
 	svc *service.NotificationService

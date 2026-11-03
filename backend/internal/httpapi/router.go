@@ -544,6 +544,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Post("/", support.OpenTicket)
 			r.Get("/{id}", support.TicketDetail)
 			r.Post("/{id}/messages", support.Reply)
+			r.Post("/{id}/rating", support.Rate)
 		})
 
 		r.Route("/support", func(r chi.Router) {
