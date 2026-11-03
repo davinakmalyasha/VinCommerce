@@ -129,6 +129,7 @@ function ProfileTab() {
 
 function SecurityTab() {
   const { user } = useSession()
+  const queryClient = useQueryClient()
   const [cur, setCur] = useState('')
   const [next, setNext] = useState('')
   const [msg, setMsg] = useState('')
@@ -177,6 +178,29 @@ function SecurityTab() {
     queryKey: ['backup-codes'],
     queryFn: async () => (await api.get<{ total: number; remaining: number }>('/auth/2fa/backup-codes')).data,
     enabled: !!user?.two_factor_enabled,
+  })
+
+  const { data: sessions } = useQuery({
+    queryKey: ['auth-sessions'],
+    queryFn: async () => (await api.get<{ sessions: AuthSession[] }>('/auth/sessions')).data.sessions,
+  })
+
+  const revokeSession = useMutation({
+    mutationFn: async (sessionId: string) => api.post('/auth/sessions/revoke', { session_id: sessionId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auth-sessions'] })
+      setMsg('Sesi perangkat dicabut.')
+    },
+    onError: (e: Error) => setMsg(e.message),
+  })
+
+  const logoutAll = useMutation({
+    mutationFn: async () => api.post('/auth/logout-all'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auth-sessions'] })
+      setMsg('Semua sesi lain telah diakhiri.')
+    },
+    onError: (e: Error) => setMsg(e.message),
   })
 
   return (
@@ -301,8 +325,56 @@ function SecurityTab() {
           </div>
         )}
       </div>
+
+      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-6 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Perangkat & Sesi Masuk</h2>
+          {(sessions?.length ?? 0) > 0 && (
+            <button type="button"
+              onClick={() => logoutAll.mutate()}
+              disabled={logoutAll.isPending}
+              className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm disabled:opacity-50"
+            >
+              {logoutAll.isPending ? 'Mengakhiri...' : 'Akhiri semua sesi lain'}
+            </button>
+          )}
+        </div>
+        <p className="text-sm text-gray-500">
+          Setiap perangkat yang masuk memakai sesi refresh token terpisah. Cabut sesi yang tidak dikenal untuk mengamankan akun.
+        </p>
+        {!sessions && <p className="text-sm text-gray-500">Memuat sesi...</p>}
+        {sessions?.length === 0 && <p className="text-sm text-gray-500">Tidak ada sesi aktif lain.</p>}
+        {sessions?.map((s) => (
+          <div key={s.id} className="flex items-start justify-between border-b border-gray-50 dark:border-gray-800 pb-3 last:border-0">
+            <div>
+              <p className="text-sm font-medium">{s.device_name || 'Perangkat tidak dikenal'}</p>
+              <p className="text-xs text-gray-500">
+                {s.ip_address ? `${s.ip_address} · ` : ''}{s.user_agent ? s.user_agent.slice(0, 60) : 'user agent tidak tercatat'}
+              </p>
+              <p className="text-xs text-gray-400">Terakhir dipakai: {new Date(s.last_used_at).toLocaleString('id-ID')}</p>
+            </div>
+            <button type="button"
+              onClick={() => revokeSession.mutate(s.id)}
+              disabled={revokeSession.isPending}
+              className="text-xs text-red-500 hover:underline disabled:opacity-50"
+            >
+              Cabut
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   )
+}
+
+interface AuthSession {
+  id: string
+  device_name?: string
+  ip_address?: string
+  user_agent?: string
+  created_at: string
+  last_used_at: string
+  expires_at: string
 }
 
 interface RestockAlert {
