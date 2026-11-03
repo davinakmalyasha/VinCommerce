@@ -29,6 +29,7 @@ type LiveSession struct {
 	YoutubeVideoID string     `json:"youtube_video_id,omitempty"`
 	Status         string     `json:"status"`
 	ViewerPeak     int        `json:"viewer_peak"`
+	LikeCount      int        `json:"like_count"`
 	ScheduledAt    *time.Time `json:"scheduled_at,omitempty"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	EndedAt        *time.Time `json:"ended_at,omitempty"`

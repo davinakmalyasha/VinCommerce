@@ -495,6 +495,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		// already had the correct order, which is how the inconsistency survived:
 		// two adjacent routes, same flag, opposite middleware order.
 		r.With(authMw, flagMw("live_commerce")).Post("/live/{id}/chat", liveH.ChatPost)
+		r.With(authMw, flagMw("live_commerce")).Post("/live/{id}/like", liveH.Like)
 		r.With(authMw, flagMw("live_commerce")).Get("/stream/live/{id}", streamH.Live)
 		r.With(optionalAuthMw).Get("/stores/{slug}", seller.PublicStore)
 		r.With(authMw).Post("/stores/{id}/follow", seller.FollowStore)

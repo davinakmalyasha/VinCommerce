@@ -13,6 +13,7 @@ interface LiveSession {
   thumbnail_url?: string
   status: 'scheduled' | 'live' | 'ended'
   viewer_peak: number
+  like_count: number
 }
 
 interface LiveProduct {
@@ -150,6 +151,9 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                 setChat((c) => [...c.slice(-40), { user: ev.user, body: ev.body }])
                 queryClient.invalidateQueries({ queryKey: ['live-pinned', sessionId] })
               }
+              if (ev.type === 'like') {
+                queryClient.invalidateQueries({ queryKey: ['live', sessionId] })
+              }
               if (ev.type === 'session.status') {
                 queryClient.invalidateQueries({ queryKey: ['live-sessions'] })
               }
@@ -176,6 +180,12 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
   const sendChat = useMutation({
     mutationFn: async () => api.post(`/live/${sessionId}/chat`, { body: input }),
     onSuccess: () => setInput(''),
+  })
+
+  const like = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ liked: boolean; like_count: number }>(`/live/${sessionId}/like`)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['live', sessionId] }),
   })
 
   const addToCart = useMutation({
@@ -216,8 +226,15 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                 <h1 className="text-lg font-bold">{session?.title}</h1>
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                {session?.seller_name} · 👁 {session?.viewer_peak ?? 0} penonton
+                {session?.seller_name} · 👁 {session?.viewer_peak ?? 0} penonton · ❤️ {session?.like_count ?? 0} suka
               </p>
+              <button type="button"
+                onClick={() => like.mutate()}
+                disabled={like.isPending}
+                className="mt-2 px-4 py-2 rounded-lg border border-rose-300 text-rose-600 text-sm font-medium hover:bg-rose-50 disabled:opacity-50"
+              >
+                {like.isPending ? '...' : '❤️ Suka'}
+              </button>
             </div>
           </div>
 

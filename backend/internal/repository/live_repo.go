@@ -21,12 +21,12 @@ func NewLiveRepository(pool *db.Pool) *LiveRepository {
 }
 
 const liveCols = `l.id, l.seller_id, l.title, COALESCE(l.thumbnail_url,''), COALESCE(l.youtube_video_id,''),
-	l.status, l.viewer_peak, l.scheduled_at, l.started_at, l.ended_at, l.created_at, u.full_name`
+	l.status, l.viewer_peak, l.like_count, l.scheduled_at, l.started_at, l.ended_at, l.created_at, u.full_name`
 
 func scanLive(row interface{ Scan(...any) error }) (*domain.LiveSession, error) {
 	var s domain.LiveSession
 	err := row.Scan(&s.ID, &s.SellerID, &s.Title, &s.ThumbnailURL, &s.YoutubeVideoID,
-		&s.Status, &s.ViewerPeak, &s.ScheduledAt, &s.StartedAt, &s.EndedAt, &s.CreatedAt, &s.SellerName)
+		&s.Status, &s.ViewerPeak, &s.LikeCount, &s.ScheduledAt, &s.StartedAt, &s.EndedAt, &s.CreatedAt, &s.SellerName)
 	return &s, err
 }
 
@@ -244,4 +244,55 @@ func (r *LiveRepository) TouchStarted(ctx context.Context, sessionID string) tim
 		`UPDATE live_sessions SET started_at = COALESCE(started_at, now()) WHERE id = $1 RETURNING started_at`,
 		sessionID).Scan(&t)
 	return t
+}
+
+// ToggleLike records or retracts a viewer's like in one transaction, so the
+// counter and the votes cannot disagree. Tapping twice is an unlike.
+func (r *LiveRepository) ToggleLike(ctx context.Context, sessionID, userID string) (liked bool, count int, err error) {
+	var exists bool
+	err = r.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM live_likes WHERE session_id = $1 AND user_id = $2)`,
+		sessionID, userID).Scan(&exists)
+	if err != nil {
+		return false, 0, err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	if exists {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM live_likes WHERE session_id = $1 AND user_id = $2`,
+			sessionID, userID); err != nil {
+			return false, 0, err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE live_sessions SET like_count = GREATEST(like_count - 1, 0) WHERE id = $1`,
+			sessionID); err != nil {
+			return false, 0, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO live_likes (session_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			sessionID, userID); err != nil {
+			return false, 0, err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE live_sessions SET like_count = like_count + 1 WHERE id = $1`,
+			sessionID); err != nil {
+			return false, 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, 0, err
+	}
+
+	if err := r.pool.QueryRow(ctx,
+		`SELECT like_count FROM live_sessions WHERE id = $1`, sessionID).Scan(&count); err != nil {
+		return false, 0, err
+	}
+	return !exists, count, nil
 }

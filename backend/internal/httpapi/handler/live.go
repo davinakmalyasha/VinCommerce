@@ -167,6 +167,17 @@ func (h *Live) Pinned(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pinned": pinned})
 }
 
+// Like handles POST /live/{id}/like — toggle a viewer's like.
+func (h *Live) Like(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	liked, count, err := h.svc.ToggleLike(r.Context(), chi.URLParam(r, "id"), user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "like_count": count})
+}
+
 // Catalog handles GET /seller/live/{id}/catalog.
 func (h *Live) Catalog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserFrom(r.Context())

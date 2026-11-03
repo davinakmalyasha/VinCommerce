@@ -147,6 +147,17 @@ func (s *LiveService) PostChat(ctx context.Context, sessionID, userName, body st
 	return nil
 }
 
+// ToggleLike records or retracts a viewer's like and fans the new count out
+// so every viewer sees it without polling.
+func (s *LiveService) ToggleLike(ctx context.Context, sessionID, userID string) (bool, int, error) {
+	liked, count, err := s.live.ToggleLike(ctx, sessionID, userID)
+	if err != nil {
+		return false, 0, err
+	}
+	s.publish(ctx, sessionID, map[string]any{"type": "like", "like_count": count})
+	return liked, count, nil
+}
+
 func (s *LiveService) mustOwn(ctx context.Context, sessionID, sellerID string) (*domain.LiveSession, error) {
 	sess, err := s.live.ByID(ctx, sessionID)
 	if err != nil {
