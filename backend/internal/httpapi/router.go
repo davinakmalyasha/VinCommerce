@@ -534,6 +534,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/categories", support.Categories)
 			r.Get("/articles", support.Articles)
 			r.Get("/articles/{slug}", support.Article)
+			r.With(authMw).Post("/articles/{slug}/helpful", support.ToggleHelpful)
 		})
 
 		r.Route("/tickets", func(r chi.Router) {

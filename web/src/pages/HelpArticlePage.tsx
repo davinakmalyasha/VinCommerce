@@ -1,13 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { useMemo } from 'react'
 import { api } from '../lib/api'
 import type { HelpArticle } from '../types'
 import { Seo } from '../components/Seo'
 import { sanitizeHtml } from '../lib/sanitize'
+import { useSession } from '../stores/session'
 
 export function HelpArticlePage() {
   const { slug } = useParams()
+  const queryClient = useQueryClient()
+  const { user } = useSession()
 
   const { data, isError } = useQuery({
     queryKey: ['help-article', slug],
@@ -17,6 +20,12 @@ export function HelpArticlePage() {
 
   // Admin-authored free-text HTML — sanitize before it ever touches the DOM.
   const safeContent = useMemo(() => sanitizeHtml(data?.content ?? ''), [data?.content])
+
+  const vote = useMutation({
+    mutationFn: async () =>
+      (await api.post<{ helpful: boolean; helpful_count: number }>(`/help/articles/${slug}/helpful`)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['help-article', slug] }),
+  })
 
   if (isError) {
     return <div className="mx-auto max-w-3xl px-4 py-16 text-center text-gray-500">Artikel tidak ditemukan.</div>
@@ -47,6 +56,22 @@ export function HelpArticlePage() {
         <div className="border-t mt-8 pt-4 flex items-center justify-between text-xs text-gray-400">
           <span>Diperbarui {new Date(data.updated_at).toLocaleDateString('id-ID')}</span>
           <span>{data.view_count}× dilihat</span>
+        </div>
+        <div className="border-t mt-4 pt-4">
+          <p className="text-sm text-gray-600 mb-2">Apakah artikel ini membantu?</p>
+          {user ? (
+            <button type="button"
+              onClick={() => vote.mutate()}
+              disabled={vote.isPending}
+              className="px-4 py-2 rounded-lg border border-amber-400 text-amber-600 text-sm hover:bg-amber-50 disabled:opacity-50"
+            >
+              👍 Membantu ({data.helpful_count ?? 0})
+            </button>
+          ) : (
+            <p className="text-xs text-gray-400">
+              <Link to="/login" className="text-amber-600 hover:underline">Masuk</Link> untuk menilai artikel ({data.helpful_count ?? 0} menilai membantu).
+            </p>
+          )}
         </div>
       </div>
     </div>

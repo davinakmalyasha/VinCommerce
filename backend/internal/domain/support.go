@@ -28,18 +28,19 @@ type HelpCategory struct {
 
 // HelpArticle is a knowledge-base entry (help / docs / legal).
 type HelpArticle struct {
-	ID          string     `json:"id"`
-	CategoryID  *string    `json:"category_id,omitempty"`
-	Title       string     `json:"title"`
-	Slug        string     `json:"slug"`
-	Excerpt     string     `json:"excerpt"`
-	Content     string     `json:"content"`
-	Section     string     `json:"section"`
-	IsPublished bool       `json:"is_published"`
-	ViewCount   int        `json:"view_count"`
-	PublishedAt *time.Time `json:"published_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID           string     `json:"id"`
+	CategoryID   *string    `json:"category_id,omitempty"`
+	Title        string     `json:"title"`
+	Slug         string     `json:"slug"`
+	Excerpt      string     `json:"excerpt"`
+	Content      string     `json:"content"`
+	Section      string     `json:"section"`
+	IsPublished  bool       `json:"is_published"`
+	ViewCount    int        `json:"view_count"`
+	HelpfulCount int        `json:"helpful_count"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 
 	Category *HelpCategory `json:"category,omitempty"`
 }

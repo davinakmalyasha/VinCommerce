@@ -178,6 +178,7 @@ export interface HelpArticle {
   section: string
   is_published: boolean
   view_count: number
+  helpful_count: number
   published_at?: string
   created_at: string
   updated_at: string

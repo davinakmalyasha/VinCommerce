@@ -120,6 +120,22 @@ func (h *Support) AllArticles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"articles": items})
 }
 
+// ToggleHelpful handles POST /help/articles/{slug}/helpful (authenticated).
+func (h *Support) ToggleHelpful(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFrom(r.Context())
+	a, err := h.svc.ArticleBySlug(r.Context(), chi.URLParam(r, "slug"))
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	helpful, count, err := h.svc.ToggleArticleHelpful(r.Context(), a.ID, user.ID)
+	if err != nil {
+		writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"helpful": helpful, "helpful_count": count})
+}
+
 // --- tickets ---
 
 type ticketCreateRequest struct {

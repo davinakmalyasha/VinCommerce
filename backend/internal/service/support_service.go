@@ -93,6 +93,11 @@ func (s *SupportService) AllArticles(ctx context.Context) ([]*domain.HelpArticle
 	return s.support.AllArticles(ctx)
 }
 
+// ToggleArticleHelpful records or retracts a helpful vote (authenticated).
+func (s *SupportService) ToggleArticleHelpful(ctx context.Context, articleID, userID string) (bool, int, error) {
+	return s.support.ToggleArticleHelpful(ctx, articleID, userID)
+}
+
 // --- tickets ---
 
 // CreateTicketInput for opening a support ticket.

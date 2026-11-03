@@ -102,7 +102,7 @@ func (r *SupportRepository) Articles(ctx context.Context, section string, catego
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT a.id, a.category_id, a.title, a.slug, a.excerpt, a.content, a.section,
-		       a.is_published, a.view_count, a.published_at, a.created_at, a.updated_at,
+		       a.is_published, a.view_count, a.helpful_count, a.published_at, a.created_at, a.updated_at,
 		       COALESCE(c.name, ''), COALESCE(c.slug, '')
 		FROM help_articles a
 		LEFT JOIN help_categories c ON c.id = a.category_id
@@ -138,7 +138,7 @@ func (r *SupportRepository) ArticleBySlug(ctx context.Context, slug string) (*do
 func (r *SupportRepository) AllArticles(ctx context.Context) ([]*domain.HelpArticle, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT a.id, a.category_id, a.title, a.slug, a.excerpt, a.content, a.section,
-		       a.is_published, a.view_count, a.published_at, a.created_at, a.updated_at,
+		       a.is_published, a.view_count, a.helpful_count, a.published_at, a.created_at, a.updated_at,
 		       COALESCE(c.name, ''), COALESCE(c.slug, '')
 		FROM help_articles a
 		LEFT JOIN help_categories c ON c.id = a.category_id
@@ -171,18 +171,82 @@ func (r *SupportRepository) DeleteArticle(ctx context.Context, articleID string)
 	return nil
 }
 
+// ToggleArticleHelpful upserts a helpful vote and updates the counter in one
+// transaction, mirroring review_helpful so count and votes cannot disagree.
+func (r *SupportRepository) ToggleArticleHelpful(ctx context.Context, articleID, userID string) (helpful bool, count int, err error) {
+	var existing *bool
+	err = r.pool.QueryRow(ctx,
+		`SELECT helpful FROM help_article_helpful WHERE article_id = $1 AND user_id = $2`,
+		articleID, userID).Scan(&existing)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, err
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = nil
+	}
+
+	delta := 0
+	if existing == nil || !*existing {
+		helpful = true
+		delta = 1
+	} else {
+		helpful = false
+		delta = -1
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	if existing == nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO help_article_helpful (article_id, user_id, helpful) VALUES ($1, $2, TRUE)`,
+			articleID, userID); err != nil {
+			return false, 0, err
+		}
+	} else if helpful {
+		if _, err := tx.Exec(ctx,
+			`UPDATE help_article_helpful SET helpful = TRUE WHERE article_id = $1 AND user_id = $2`,
+			articleID, userID); err != nil {
+			return false, 0, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM help_article_helpful WHERE article_id = $1 AND user_id = $2`,
+			articleID, userID); err != nil {
+			return false, 0, err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE help_articles SET helpful_count = GREATEST(helpful_count + $2, 0) WHERE id = $1`,
+		articleID, delta); err != nil {
+		return false, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, 0, err
+	}
+
+	if err := r.pool.QueryRow(ctx,
+		`SELECT helpful_count FROM help_articles WHERE id = $1`, articleID).Scan(&count); err != nil {
+		return false, 0, err
+	}
+	return helpful, count, nil
+}
+
 func (r *SupportRepository) articleBy(ctx context.Context, where string, arg any) (*domain.HelpArticle, error) {
 	var a domain.HelpArticle
 	var catName, catSlug string
 	err := r.pool.QueryRow(ctx, `
 		SELECT a.id, a.category_id, a.title, a.slug, a.excerpt, a.content, a.section,
-		       a.is_published, a.view_count, a.published_at, a.created_at, a.updated_at,
+		       a.is_published, a.view_count, a.helpful_count, a.published_at, a.created_at, a.updated_at,
 		       COALESCE(c.name, ''), COALESCE(c.slug, '')
 		FROM help_articles a
 		LEFT JOIN help_categories c ON c.id = a.category_id
 		`+where, arg).
 		Scan(&a.ID, &a.CategoryID, &a.Title, &a.Slug, &a.Excerpt, &a.Content, &a.Section,
-			&a.IsPublished, &a.ViewCount, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt, &catName, &catSlug)
+			&a.IsPublished, &a.ViewCount, &a.HelpfulCount, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt, &catName, &catSlug)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -203,7 +267,7 @@ func scanArticle(row articleRow) (*domain.HelpArticle, error) {
 	var a domain.HelpArticle
 	var catName, catSlug string
 	err := row.Scan(&a.ID, &a.CategoryID, &a.Title, &a.Slug, &a.Excerpt, &a.Content, &a.Section,
-		&a.IsPublished, &a.ViewCount, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt, &catName, &catSlug)
+		&a.IsPublished, &a.ViewCount, &a.HelpfulCount, &a.PublishedAt, &a.CreatedAt, &a.UpdatedAt, &catName, &catSlug)
 	if err != nil {
 		return nil, err
 	}
