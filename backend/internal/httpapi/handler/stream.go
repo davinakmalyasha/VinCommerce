@@ -41,6 +41,9 @@ func (h *Stream) Live(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.live != nil {
 		h.live.ViewerJoin(r.Context(), sessionID)
+		// Pair every join with a leave: without this the live count only
+		// grew, and the peak derived from it drifted with it.
+		defer h.live.ViewerLeave(sessionID)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

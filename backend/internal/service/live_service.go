@@ -137,6 +137,15 @@ func (s *LiveService) ViewerJoin(ctx context.Context, sessionID string) {
 	s.live.TouchStarted(ctx, sessionID)
 }
 
+// ViewerLeave records a viewer disconnecting from the SSE stream.
+//
+// The request context is already done when this runs (that is why it runs),
+// so it uses a fresh background context: executing the decrement on the
+// cancelled request context would fail and the count would leak upward.
+func (s *LiveService) ViewerLeave(sessionID string) {
+	s.live.DropViewer(context.Background(), sessionID)
+}
+
 // PostChat fans a chat message out to all stream viewers (ephemeral).
 func (s *LiveService) PostChat(ctx context.Context, sessionID, userName, body string) error {
 	body = strings.TrimSpace(body)

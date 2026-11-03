@@ -13,6 +13,7 @@ interface LiveSession {
   thumbnail_url?: string
   status: 'scheduled' | 'live' | 'ended'
   viewer_peak: number
+  viewer_count?: number
   like_count: number
 }
 
@@ -226,7 +227,7 @@ function LiveRoom({ sessionId, onBack }: { sessionId: string; onBack: () => void
                 <h1 className="text-lg font-bold">{session?.title}</h1>
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                {session?.seller_name} · 👁 {session?.viewer_peak ?? 0} penonton · ❤️ {session?.like_count ?? 0} suka
+                {session?.seller_name} · 👁 {session?.viewer_count ?? session?.viewer_peak ?? 0} menonton · ❤️ {session?.like_count ?? 0} suka
               </p>
               <button type="button"
                 onClick={() => like.mutate()}

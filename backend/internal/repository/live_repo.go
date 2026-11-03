@@ -21,12 +21,12 @@ func NewLiveRepository(pool *db.Pool) *LiveRepository {
 }
 
 const liveCols = `l.id, l.seller_id, l.title, COALESCE(l.thumbnail_url,''), COALESCE(l.youtube_video_id,''),
-	l.status, l.viewer_peak, l.like_count, l.scheduled_at, l.started_at, l.ended_at, l.created_at, u.full_name`
+	l.status, l.viewer_peak, l.like_count, l.viewer_count, l.scheduled_at, l.started_at, l.ended_at, l.created_at, u.full_name`
 
 func scanLive(row interface{ Scan(...any) error }) (*domain.LiveSession, error) {
 	var s domain.LiveSession
 	err := row.Scan(&s.ID, &s.SellerID, &s.Title, &s.ThumbnailURL, &s.YoutubeVideoID,
-		&s.Status, &s.ViewerPeak, &s.LikeCount, &s.ScheduledAt, &s.StartedAt, &s.EndedAt, &s.CreatedAt, &s.SellerName)
+		&s.Status, &s.ViewerPeak, &s.LikeCount, &s.ViewerCount, &s.ScheduledAt, &s.StartedAt, &s.EndedAt, &s.CreatedAt, &s.SellerName)
 	return &s, err
 }
 
@@ -221,13 +221,15 @@ func (r *LiveRepository) Unpin(ctx context.Context, sessionID, variantID string)
 	return err
 }
 
-// BumpViewer records a viewer join and raises the peak counter.
-// GREATEST keeps peak a true high-water mark instead of accumulating joins.
+// BumpViewer records a viewer join and maintains the peak as a true
+// high-water mark of concurrent viewers: the peak moves only when the new
+// live count exceeds it. The old formula added one to the peak on every
+// join, so the "peak" was really total joins and grew without bound.
 func (r *LiveRepository) BumpViewer(ctx context.Context, sessionID string) {
 	_, _ = r.pool.Exec(ctx, `
 		UPDATE live_sessions SET
-			viewer_peak = GREATEST(viewer_peak + 1, viewer_count + 1),
-			viewer_count = viewer_count + 1
+			viewer_count = viewer_count + 1,
+			viewer_peak = GREATEST(viewer_peak, viewer_count + 1)
 		WHERE id = $1`, sessionID)
 }
 
