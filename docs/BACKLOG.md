@@ -1618,3 +1618,11 @@ the payout input, commission/shipping/free-shipping cards, seller dashboards
 and analytics aggregates are IDR; reconcile queries compare exactly with no
 epsilon. The tail run first failed the Format check on struct-tag alignment
 -- fixed whitespace-only in `442f575`. Run `41592093934`: 9/9, 46/46 e2e.
+
+**Returns, settlements, held reports, payout input (`7722c22`, anchors
+`baa2121`, view fix `43da114`).** Return-request amounts, the RefundOrder
+boundary, settlement imports/matches, held-outstanding and the payout input
+are IDR; the settlement view drops its float casts (migration 00062) and
+amountsAgree is exact. Three CI rounds: M1/M3/M28 anchors re-aimed, then the
+migration itself failed with 42P16 (a view column type cannot change in
+place) -- fixed with drop-and-recreate. Run `41606339492`: 9/9, 46/46 e2e.
