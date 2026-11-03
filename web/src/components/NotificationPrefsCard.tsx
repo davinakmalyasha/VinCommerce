@@ -19,6 +19,7 @@ const LABELS: Record<string, string> = {
   cart_recovery: 'Pengingat keranjang',
   moderation: 'Moderasi produk',
   ticket: 'Tiket dukungan',
+  qa: 'Tanya jawab produk',
 }
 
 export function NotificationPrefsCard() {

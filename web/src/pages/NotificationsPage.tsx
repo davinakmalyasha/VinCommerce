@@ -28,6 +28,7 @@ const TYPE_LABELS: Record<string, string> = {
   cart_recovery: 'Pengingat keranjang',
   moderation: 'Moderasi',
   ticket: 'Tiket dukungan',
+  qa: 'Tanya jawab',
 }
 
 export function NotificationsPage() {

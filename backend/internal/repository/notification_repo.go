@@ -31,6 +31,8 @@ var prefCategories = []string{
 	// Drift fix: these types were emitted by Notify() but missing from the
 	// category list, making them impossible to mute or see in the prefs UI.
 	"cart_recovery", "moderation", "ticket",
+	// Product Q&A answer/question pings.
+	"qa",
 }
 
 // Preferences lists the user's prefs, materializing defaults for unset categories.

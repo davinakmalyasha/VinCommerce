@@ -134,6 +134,14 @@ func (r *QARepository) QASeller(ctx context.Context, qaID, sellerID string) (boo
 	return ok, err
 }
 
+// SellerForProduct resolves the seller of a product (Q&A notify target).
+func (r *QARepository) SellerForProduct(ctx context.Context, productID string) (string, error) {
+	var sellerID string
+	err := r.pool.QueryRow(ctx,
+		`SELECT seller_id FROM products WHERE id = $1`, productID).Scan(&sellerID)
+	return sellerID, err
+}
+
 // --- bundles ---
 
 // CreateBundle inserts a bundle with items.

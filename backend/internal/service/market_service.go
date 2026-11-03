@@ -179,6 +179,15 @@ func (s *MarketService) AskQuestion(ctx context.Context, productID, userID, ques
 	if err := s.market.Ask(ctx, q.ID, q.ProductID, q.UserID, q.Question); err != nil {
 		return nil, err
 	}
+	// The seller inbox exists, but nothing told the seller to look at it.
+	// A best-effort ping: notification failure must not fail the question.
+	if s.notifs != nil {
+		if sellerID, err := s.market.SellerForProduct(ctx, productID); err == nil && sellerID != userID {
+			_ = s.notifs.Notify(ctx, sellerID, "qa", "Pertanyaan baru di produkmu",
+				"Seorang pembeli bertanya: "+q.Question,
+				map[string]any{"product_id": productID, "qa_id": q.ID})
+		}
+	}
 	return q, nil
 }
 
@@ -200,7 +209,18 @@ func (s *MarketService) AnswerQuestion(ctx context.Context, qaID, sellerID, answ
 	if err := s.market.Answer(ctx, qaID, sellerID, strings.TrimSpace(answer)); err != nil {
 		return nil, err
 	}
-	return s.market.QAByID(ctx, qaID)
+	qa, err := s.market.QAByID(ctx, qaID)
+	if err != nil {
+		return nil, err
+	}
+	// The asker has no other way to learn the answer arrived: no email, no
+	// badge. Same best-effort rule as the ask path.
+	if s.notifs != nil {
+		_ = s.notifs.Notify(ctx, qa.UserID, "qa", "Penjual menjawab pertanyaanmu",
+			"Jawaban: "+qa.Answer,
+			map[string]any{"product_id": qa.ProductID, "qa_id": qa.ID})
+	}
+	return qa, nil
 }
 
 // QAByProduct lists questions (public).
