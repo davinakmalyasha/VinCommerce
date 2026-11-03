@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/vincommerce/backend/internal/domain"
@@ -164,6 +165,7 @@ func (s *SupportService) OpenTicket(ctx context.Context, in CreateTicketInput) (
 		Category:     in.Category,
 		Priority:     in.Priority,
 		Status:       domain.TicketOpen,
+		SlaDueAt:     slaDueFor(in.Priority, time.Now().UTC()),
 	}
 	if err := s.support.CreateTicket(ctx, ticket); err != nil {
 		return nil, err
@@ -176,6 +178,25 @@ func (s *SupportService) OpenTicket(ctx context.Context, in CreateTicketInput) (
 		return nil, err
 	}
 	return ticket, nil
+}
+
+// slaDueFor is the first-response SLA policy: how long staff has to answer a
+// new ticket, by priority. Kept as a pure function so the policy is tested by
+// value; the Contact page's "1x24 jam" copy describes the normal tier.
+func slaDueFor(priority string, now time.Time) *time.Time {
+	var d time.Duration
+	switch priority {
+	case "urgent":
+		d = 4 * time.Hour
+	case "high":
+		d = 24 * time.Hour
+	case "low":
+		d = 7 * 24 * time.Hour
+	default:
+		d = 24 * time.Hour
+	}
+	due := now.Add(d)
+	return &due
 }
 
 // MyTickets lists the customer's tickets.

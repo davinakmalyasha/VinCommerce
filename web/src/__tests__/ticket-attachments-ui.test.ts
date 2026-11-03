@@ -54,4 +54,14 @@ describe('staff reply wiring', () => {
     expect(contact).toContain('/tracking/${selected.tracking_number}')
     expect(contact).toContain('openDocument(`/orders/${selected.id}/invoice`)')
   })
+
+  it('shows the SLA deadline and flags overdue tickets', () => {
+    for (const p of ['pages/MyTicketsPage.tsx', 'pages/TicketDetailPage.tsx', 'pages/admin/AdminTickets.tsx']) {
+      expect(read(p)).toContain('sla_due_at')
+    }
+    expect(read('pages/MyTicketsPage.tsx')).toContain('Terlambat')
+    expect(read('pages/admin/AdminTickets.tsx')).toContain('SLA lewat')
+    const svc = readBackend(join('internal', 'service', 'support_service.go'))
+    expect(svc).toContain('slaDueFor')
+  })
 })

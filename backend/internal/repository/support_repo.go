@@ -283,10 +283,10 @@ func scanArticle(row articleRow) (*domain.HelpArticle, error) {
 // CreateTicket opens a support ticket.
 func (r *SupportRepository) CreateTicket(ctx context.Context, t *domain.SupportTicket) error {
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO support_tickets (id, ticket_number, user_id, order_id, subject, category, priority)
-		VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6, $7)
+		INSERT INTO support_tickets (id, ticket_number, user_id, order_id, subject, category, priority, sla_due_at)
+		VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6, $7, $8)
 		RETURNING created_at`,
-		t.ID, t.TicketNumber, t.UserID, t.OrderID, t.Subject, t.Category, t.Priority).
+		t.ID, t.TicketNumber, t.UserID, t.OrderID, t.Subject, t.Category, t.Priority, t.SlaDueAt).
 		Scan(&t.CreatedAt)
 	return err
 }
@@ -315,12 +315,12 @@ func (r *SupportRepository) TicketByID(ctx context.Context, ticketID string) (*d
 	var t domain.SupportTicket
 	err := r.pool.QueryRow(ctx, `
 		SELECT t.id, t.ticket_number, t.user_id, t.order_id, t.subject, t.category, t.priority,
-		       t.status, t.assigned_to, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
+		       t.status, t.assigned_to, t.sla_due_at, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
 		       COALESCE((SELECT body FROM ticket_messages m WHERE m.ticket_id = t.id AND m.is_internal = FALSE ORDER BY m.created_at DESC LIMIT 1), '')
 		FROM support_tickets t
 		WHERE t.id = $1`, ticketID).
 		Scan(&t.ID, &t.TicketNumber, &t.UserID, &t.OrderID, &t.Subject, &t.Category, &t.Priority,
-			&t.Status, &t.AssignedTo, &t.Rating, &t.RatedAt, &t.CreatedAt, &t.UpdatedAt, &t.ResolvedAt, &t.LastMessage)
+			&t.Status, &t.AssignedTo, &t.SlaDueAt, &t.Rating, &t.RatedAt, &t.CreatedAt, &t.UpdatedAt, &t.ResolvedAt, &t.LastMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -381,7 +381,7 @@ func (r *SupportRepository) tickets(ctx context.Context, where string, arg any) 
 	if arg == nil {
 		rows, err = r.pool.Query(ctx, `
 			SELECT t.id, t.ticket_number, t.user_id, t.order_id, t.subject, t.category, t.priority,
-			       t.status, t.assigned_to, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
+			       t.status, t.assigned_to, t.sla_due_at, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
 			       COALESCE((SELECT body FROM ticket_messages m WHERE m.ticket_id = t.id AND m.is_internal = FALSE ORDER BY m.created_at DESC LIMIT 1), '')
 			FROM support_tickets t
 			`+where+`
@@ -389,7 +389,7 @@ func (r *SupportRepository) tickets(ctx context.Context, where string, arg any) 
 	} else {
 		rows, err = r.pool.Query(ctx, `
 			SELECT t.id, t.ticket_number, t.user_id, t.order_id, t.subject, t.category, t.priority,
-			       t.status, t.assigned_to, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
+			       t.status, t.assigned_to, t.sla_due_at, t.rating, t.rated_at, t.created_at, t.updated_at, t.resolved_at,
 			       COALESCE((SELECT body FROM ticket_messages m WHERE m.ticket_id = t.id AND m.is_internal = FALSE ORDER BY m.created_at DESC LIMIT 1), '')
 			FROM support_tickets t
 			`+where+`
@@ -404,7 +404,7 @@ func (r *SupportRepository) tickets(ctx context.Context, where string, arg any) 
 	for rows.Next() {
 		var t domain.SupportTicket
 		if err := rows.Scan(&t.ID, &t.TicketNumber, &t.UserID, &t.OrderID, &t.Subject, &t.Category, &t.Priority,
-			&t.Status, &t.AssignedTo, &t.Rating, &t.RatedAt, &t.CreatedAt, &t.UpdatedAt, &t.ResolvedAt, &t.LastMessage); err != nil {
+			&t.Status, &t.AssignedTo, &t.SlaDueAt, &t.Rating, &t.RatedAt, &t.CreatedAt, &t.UpdatedAt, &t.ResolvedAt, &t.LastMessage); err != nil {
 			return nil, err
 		}
 		items = append(items, &t)

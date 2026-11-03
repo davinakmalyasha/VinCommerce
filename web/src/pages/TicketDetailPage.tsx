@@ -23,6 +23,7 @@ interface Ticket {
   priority: string
   status: string
   rating?: number | null
+  sla_due_at?: string | null
   created_at: string
 }
 
@@ -64,13 +65,22 @@ export function TicketDetailPage() {
       <Link to="/account/tickets" className="text-sm text-gray-400 hover:text-gray-700">
         ← Tiket Saya
       </Link>
-      <div className="flex items-center justify-between mt-3 mb-6">
+      <div className="flex items-center justify-between mt-3 mb-2">
         <div>
           <p className="font-mono text-xs text-gray-400">{ticket.ticket_number}</p>
           <h1 className="text-xl font-bold">{ticket.subject}</h1>
         </div>
         <span className="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm font-medium">{ticket.status}</span>
       </div>
+      {ticket.sla_due_at && ticket.status !== 'resolved' && ticket.status !== 'closed' && (
+        <p className="text-xs text-gray-500 mb-6">
+          Target respons staf: {formatDate(ticket.sla_due_at)}
+          {new Date(ticket.sla_due_at).getTime() < Date.now() && (
+            <span className="text-red-600 font-medium"> (terlambat)</span>
+          )}
+        </p>
+      )}
+      {(!ticket.sla_due_at || ticket.status === 'resolved' || ticket.status === 'closed') && <div className="mb-6" />}
 
       <div className="space-y-3 mb-6">
         {messages.map((m) => (

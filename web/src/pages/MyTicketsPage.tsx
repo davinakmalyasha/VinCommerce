@@ -11,6 +11,7 @@ interface Ticket {
   category: string
   priority: string
   status: string
+  sla_due_at?: string | null
   last_message: string
   created_at: string
 }
@@ -68,6 +69,13 @@ export function MyTicketsPage() {
             </div>
             <h2 className="font-semibold mt-2">{t.subject}</h2>
             {t.last_message && <p className="text-sm text-gray-500 mt-1 line-clamp-1">{t.last_message}</p>}
+            {t.sla_due_at && t.status !== 'resolved' && t.status !== 'closed' && (
+              new Date(t.sla_due_at).getTime() < Date.now() ? (
+                <p className="text-xs text-red-600 font-medium mt-1">Terlambat — staf akan segera merespons</p>
+              ) : (
+                <p className="text-xs text-gray-400 mt-1">Target respons: {formatDate(t.sla_due_at)}</p>
+              )
+            )}
           </Link>
         ))}
       </div>

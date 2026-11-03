@@ -10,6 +10,7 @@ interface Ticket {
   category: string
   priority: string
   status: string
+  sla_due_at?: string | null
   last_message: string
   created_at: string
 }
@@ -112,6 +113,16 @@ export function AdminTickets() {
                 </span>
                 <span>·</span>
                 <span>{formatDate(t.created_at)}</span>
+                {t.sla_due_at && t.status !== 'resolved' && t.status !== 'closed' && (
+                  <>
+                    <span>·</span>
+                    {new Date(t.sla_due_at).getTime() < Date.now() ? (
+                      <span className="font-medium text-red-600">SLA lewat</span>
+                    ) : (
+                      <span>SLA {formatDate(t.sla_due_at)}</span>
+                    )}
+                  </>
+                )}
               </div>
             </button>
           ))}
