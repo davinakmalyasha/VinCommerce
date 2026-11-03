@@ -5,7 +5,12 @@
 -- that wanted float64. The scanners take integers now, and the casts would
 -- turn exact ledger sums into approximate ones at the reconciliation boundary
 -- -- precisely where approximation is unacceptable.
-CREATE OR REPLACE VIEW settlement_matches AS
+--
+-- DROP + CREATE rather than CREATE OR REPLACE: Postgres refuses to change a
+-- view column's type in place (42P16), and the whole point of this migration
+-- is the type change.
+DROP VIEW IF EXISTS settlement_matches;
+CREATE VIEW settlement_matches AS
 SELECT
     s.id,
     s.gateway,
@@ -34,7 +39,8 @@ SELECT
   ) journal_total ON journal_total.journal_id = j.id;
 
 -- +goose Down
-CREATE OR REPLACE VIEW settlement_matches AS
+DROP VIEW IF EXISTS settlement_matches;
+CREATE VIEW settlement_matches AS
 SELECT
     s.id,
     s.gateway,
