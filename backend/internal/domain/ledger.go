@@ -58,12 +58,12 @@ type LedgerEntryRow struct {
 // reads the way an accountant expects: positive on an asset means "we hold
 // this much", positive on a liability means "we owe this much".
 type TrialBalanceRow struct {
-	AccountCode string  `json:"account_code"`
-	Name        string  `json:"name,omitempty"`
-	Class       string  `json:"class,omitempty"`
-	NormalSide  string  `json:"normal_side,omitempty"`
-	IsSystem    bool    `json:"is_system"`
-	Balance     IDR     `json:"balance"`
+	AccountCode string `json:"account_code"`
+	Name        string `json:"name,omitempty"`
+	Class       string `json:"class,omitempty"`
+	NormalSide  string `json:"normal_side,omitempty"`
+	IsSystem    bool   `json:"is_system"`
+	Balance     IDR    `json:"balance"`
 }
 
 // DriftRow is a cached balance that disagrees with the entries it was derived
@@ -80,12 +80,12 @@ type DriftRow struct {
 // still reported, because a constraint that has never been observed firing is a
 // belief rather than evidence, and this is the observation.
 type UnbalancedJournal struct {
-	JournalID      string  `json:"journal_id"`
-	IdempotencyKey string  `json:"idempotency_key"`
-	TxType         string  `json:"tx_type"`
-	Debits         IDR     `json:"debits"`
-	Credits        IDR     `json:"credits"`
-	Imbalance      IDR     `json:"imbalance"`
+	JournalID      string `json:"journal_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	TxType         string `json:"tx_type"`
+	Debits         IDR    `json:"debits"`
+	Credits        IDR    `json:"credits"`
+	Imbalance      IDR    `json:"imbalance"`
 }
 
 // WalletDrift is a user whose `wallets` row -- the balance the application

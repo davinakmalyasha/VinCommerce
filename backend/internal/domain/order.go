@@ -207,12 +207,12 @@ type Coupon struct {
 
 // ShippingMethod describes a delivery option.
 type ShippingMethod struct {
-	ID       string  `json:"id"`
-	Code     string  `json:"code"`
-	Name     string  `json:"name"`
-	BaseFee  IDR     `json:"base_fee"`
-	PerKgFee IDR     `json:"per_kg_fee"`
-	MinDays  int     `json:"min_days"`
-	MaxDays  int     `json:"max_days"`
-	IsActive bool    `json:"is_active"`
+	ID       string `json:"id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	BaseFee  IDR    `json:"base_fee"`
+	PerKgFee IDR    `json:"per_kg_fee"`
+	MinDays  int    `json:"min_days"`
+	MaxDays  int    `json:"max_days"`
+	IsActive bool   `json:"is_active"`
 }
