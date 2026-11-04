@@ -7,14 +7,13 @@ described a starting point rather than the application.
 
 ## What this app is
 
-A multi-vendor marketplace UI in Indonesian, covering both sides of a trade:
+A marketplace UI in Indonesian, covering both sides of a trade:
 
 - **Buyer** — catalogue, cart, checkout, orders, returns, loyalty, and dispute filing.
-- **Seller** — storefront setup, KYC, products and bulk import, stock, orders,
-  fulfilment, seller hold and payout visibility, and returns.
-- **Admin** — KYC and store review, refunds, the double-entry ledger (trial balance,
-  reconciliation, held balances), fee and payout-lag configuration, feature flags,
-  role grants, and impersonation.
+- **Seller** — store setup and verification, products and bulk import, stock, orders,
+  fulfilment, earnings and payout visibility, and returns.
+- **Admin** — store review, refunds, money overview, fee and payout settings, feature flags,
+  and user management.
 
 ## Stack
 
