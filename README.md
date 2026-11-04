@@ -1,5 +1,9 @@
 # VinCommerce
 
+[![CI](https://github.com/davinakmalyasha/VinCommerce/actions/workflows/ci.yml/badge.svg)](https://github.com/davinakmalyasha/VinCommerce/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](LICENSE)
+[![Bahasa Indonesia](https://img.shields.io/badge/UI-Bahasa_Indonesia-red.svg)](web/src/pages/HomePage.tsx)
+
 An online marketplace where many sellers sell in one place — like Shopee or Tokopedia, built as a portfolio project. Buyers shop from different stores in a single checkout, sellers run their own stores, and admins keep the marketplace safe and fair.
 
 The interface is in Indonesian. Prices are in rupiah.
